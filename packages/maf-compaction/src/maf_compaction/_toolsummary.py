@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import string
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from contextlib import contextmanager
@@ -193,6 +194,9 @@ _WRITTEN_RECORD_KEY: Final[str] = "maf_compaction_written_record"
 
 #: Reason recorded on a record's messages when a consolidated record replaced it.
 CONSOLIDATE_EXCLUDE_REASON: Final[str] = "tool_summary_consolidated"
+
+#: Metadata on a consolidated record: the tools whose results its sources covered, sorted.
+RECORD_TOOLS_KEY: Final[str] = "maf_compaction_record_tools"
 
 #: Hard ceiling put on the forced call's response, so a runaway record cannot cost more than
 #: intended.
@@ -1250,6 +1254,45 @@ def _record_body(
         for part in text.split(RECORD_MARKER)[1:]:
             parts.append(part.strip().removeprefix(_RECORD_PREAMBLE).strip())
     return "\n".join(part for part in parts if part)
+
+
+def covered_tools(
+    messages: list[Message], groups: list[dict[str, Any]], active: list[dict[str, Any]]
+) -> list[frozenset[str]]:
+    """Return, per record in ``groups``, the tools whose results it covers.
+
+    A record this package merged carries its sources' tools (:data:`RECORD_TOOLS_KEY`). Any
+    other covers the tools called since the active record before it; ``active`` holds every
+    active record, so one a merge may not take still ends what the record before it covered.
+    """
+    ends = sorted(int(record["end_index"]) for record in active)
+    covered: list[frozenset[str]] = []
+    for group in groups:
+        start, end = int(group["start_index"]), int(group["end_index"])
+        stored = next(
+            (
+                message.additional_properties[RECORD_TOOLS_KEY]
+                for message in messages[start : end + 1]
+                if RECORD_TOOLS_KEY in message.additional_properties
+            ),
+            None,
+        )
+        if stored is not None:
+            covered.append(frozenset(str(name) for name in stored))
+            continue
+        before = bisect_left(ends, start)
+        after = ends[before - 1] + 1 if before else 0
+        covered.append(
+            frozenset(
+                content.name
+                for message in messages[after:start]
+                for content in message.contents
+                if content.type == "function_call"
+                and content.name
+                and content.name != RECALL_TOOL_NAME
+            )
+        )
+    return covered
 
 
 def build_record_message(text: str) -> Message:
@@ -2382,12 +2425,20 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             )
         )
         lineage = source_lineage(messages, groups, keys=keys)
+        # Taken while the sources are still active: once excluded, a record between them that
+        # stays would end what the earlier ones covered.
+        active = _active_record_groups(messages, spans, recall_results)
+        tools = sorted(
+            {name for covered in covered_tools(messages, groups, active) for name in covered}
+        )
         for group in groups:
             _exclude_record(messages, group)
         insertion_index = int(groups[-1]["end_index"]) + 1
         replacement = build_record_message(text)
         if lineage is not None:
             replacement.additional_properties[LINEAGE_KEY] = lineage
+        if tools:
+            replacement.additional_properties[RECORD_TOOLS_KEY] = tools
         messages.insert(insertion_index, replacement)
         if replaces_value_anchor:
             self._value_target_anchor = _record_identity(replacement, {})

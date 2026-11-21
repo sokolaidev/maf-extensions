@@ -96,6 +96,7 @@ from ._summary_input import (
     async_bounded_prefix_extent,
     bounded_prefix,
     fits_summary_input,
+    summary_input_tokens,
     versioned_prompt,
 )
 from ._summary_limiter import SummaryRateLimited
@@ -117,6 +118,7 @@ from ._toolsummary import (
     active_record_groups,
     build_record_message,
     consolidatable_record_groups,
+    covered_tools,
     find_record_index,
     record_anchor_position,
     record_bodies,
@@ -531,12 +533,21 @@ _MAX_FALLBACK_ROUNDS: Final[int] = 3
 #:
 #: Finding a batch of ``k`` records takes about ``2 * log2(k)`` of them, so this is some sixteen
 #: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
-#: a run of records that each fit the cap alone and never two together: token counts need not
-#: grow with text, so one failed prefix proves nothing, and every start would otherwise render
-#: every longer prefix. A sweep that spends them stops, and the next one resumes each start
-#: where this one left it, so it goes on from where the last left off. A record that does not
-#: fit alone is passed over without a search and costs none of them.
+#: a search over longer runs from a start whose pair does not fit, which runs only with
+#: ``run_past_limit_factor`` above one or ``None``: token counts need not grow with text, so
+#: there one failed prefix proves nothing. A sweep that spends them stops, and the next one
+#: resumes each start where this one left it, so it goes on from where the last left off. A
+#: record that does not fit alone is passed over without a search and costs none of them.
 _MAX_BATCH_PROBES: Final[int] = 128
+
+#: How far past the request cap a run may count and still be searched over longer runs.
+#:
+#: **One: a run over the cap ends the search from its start**, which goes on to the runs starting
+#: at the next record. Appending a record adds its text, so with an ordinary tokenizer no longer
+#: run from the same start fits once one does not, and searching on would cost one probe per
+#: remaining record: a front of records too large to merge in pairs then spent every sweep before
+#: the search reached the records behind it.
+DEFAULT_RUN_PAST_LIMIT_FACTOR: Final[float] = 1.0
 
 #: Share of the sending budget the active records may hold once the chain has started.
 #:
@@ -659,6 +670,28 @@ def _transcript(
     return _numbered_records(record_bodies(messages, groups) if bodies is None else bodies)
 
 
+def _same_tool_segment_ends(tools: list[frozenset[str]]) -> list[int]:
+    """Return, per record, where the run a merge batch from it may take ends.
+
+    Two or more adjacent records covering the same tools form a run of their own; the records
+    between such runs form one together. A batch never crosses from one run into another.
+    """
+    ends = [0] * len(tools)
+    start = 0
+    while start < len(tools):
+        end = start + 1
+        while end < len(tools) and tools[end] == tools[start]:
+            end += 1
+        if end - start < 2:
+            end = start + 1
+            while end < len(tools) and not (end + 1 < len(tools) and tools[end] == tools[end + 1]):
+                end += 1
+        for index in range(start, end):
+            ends[index] = end
+        start = end
+    return ends
+
+
 def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
 
@@ -712,6 +745,9 @@ class _Searched:
     batch: int = 0
     #: Whether where the records ended decided the answer too, so a record appended reopens it.
     ended: bool = False
+    #: The ``run_past_limit_factor`` the run of ``covered`` records counted past, so no longer
+    #: run from this start is searched while they stand and the factor is no larger; None if not.
+    past_limit: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -881,6 +917,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_merge_split_depth: Maximum recursive halvings of a lossy or truncated merge
             batch, default two. Zero disables smaller retries. Every child holds at least
             two records and shares the chain deadline.
+        run_past_limit_factor: How many times the request cap a run of records may count and
+            still be searched over longer runs from the same start. The default, one, ends the
+            search from a start at its first run over the cap and goes on to the next record.
+            ``None`` searches every longer run, for a tokenizer whose count can fall as records
+            are appended.
+        merge_same_tool_first: Merge adjacent records that cover the same tools apart from
+            their neighbours, so two or three records of one tool's results merge into one
+            before records of different tools are merged together. Default on.
+        record_request_input_tokens: The tokens one record merge or rewrite request may hold,
+            in place of ``summary_options["max_tokens"]``, which otherwise bounds both the
+            answer and the request. Set it for a summarizer whose merges compress, for example
+            twice the output cap. Never more than ``max_summary_input_tokens``.
         merge_coverage_share: Starting value coverage for merges and rewrites, defaulting to
             ``tool_results.coverage_share`` without changing tool-group grounding.
         merge_coverage_floor: Lowest merge coverage, defaulting to the starting bar (no
@@ -921,6 +969,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_budget_share: float | None = DEFAULT_RECORD_BUDGET_SHARE,
         chain_seconds: float | None = DEFAULT_CHAIN_SECONDS,
         record_merge_split_depth: int = 2,
+        run_past_limit_factor: float | None = DEFAULT_RUN_PAST_LIMIT_FACTOR,
+        record_request_input_tokens: int | None = None,
+        merge_same_tool_first: bool = True,
         rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
         merge_coverage_share: float | None = None,
         merge_coverage_floor: float | None = None,
@@ -972,8 +1023,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("chain_seconds must be positive and finite or None.")
         if type(record_merge_split_depth) is not int or record_merge_split_depth < 0:
             raise ValueError("record_merge_split_depth must be a non-negative integer.")
+        if run_past_limit_factor is not None and (
+            isinstance(run_past_limit_factor, bool)
+            or not isfinite(run_past_limit_factor)
+            or run_past_limit_factor < 1
+        ):
+            raise ValueError("run_past_limit_factor must be finite and at least 1, or None.")
+        if record_request_input_tokens is not None and (
+            type(record_request_input_tokens) is not int or record_request_input_tokens <= 0
+        ):
+            raise ValueError("record_request_input_tokens must be a positive integer or None.")
         self.chain_seconds = chain_seconds
         self.record_merge_split_depth = record_merge_split_depth
+        self.run_past_limit_factor = run_past_limit_factor
+        self.record_request_input_tokens = record_request_input_tokens
+        self.merge_same_tool_first = merge_same_tool_first
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -1148,6 +1212,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             self._merge_event("deadline")
+            logger.info(
+                "Background record merge stopped at its %.3f-second deadline; ready answers "
+                "stay for the next pass and the search resumes on the next tool round.",
+                self.chain_seconds,
+            )
         except Exception as error:
             self._merge_event("worker_failed")
             logger.warning("Background record merge stopped (%s).", type(error).__name__)
@@ -1373,7 +1442,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             "reshaped_records": sorted(self._reshaped),
             "record_order": [asdict(edit) for edit in self._record_order],
             "searched_records": [
-                [start, limit, found.covered, found.records, found.batch, found.ended]
+                [
+                    start,
+                    limit,
+                    found.covered,
+                    found.records,
+                    found.batch,
+                    found.ended,
+                    found.past_limit,
+                ]
                 for (start, limit), found in sorted(self._searched.items())
             ],
             "search_prompt": self._search_prompt,
@@ -1435,11 +1512,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_order = [RecordEdit(**edit) for edit in data.get("record_order", [])]
         # Earlier snapshots of this schema kept only searches that found nothing.
         searched = data.get("searched_records", data.get("unpaired_records", []))
-        self._searched = {
-            (entry[0], entry[1]): _Searched(*entry[2:])
-            for entry in searched
-            if len(entry) in (4, 6)
-        }
+        self._searched = {}
+        for entry in searched:
+            if len(entry) not in (4, 6, 7):
+                continue
+            fields = list(entry[2:])
+            if len(fields) == 5 and not (
+                fields[4] is None
+                or (isinstance(fields[4], (int, float)) and not isinstance(fields[4], bool))
+            ):
+                # A stop saved without the factor that made it cannot say when it still holds.
+                fields[4] = None
+            self._searched[(entry[0], entry[1])] = _Searched(*fields)
         self._search_prompt = data.get("search_prompt")
         self._record_input_fits = {
             (entry[0], entry[1], entry[2]): entry[3] for entry in data.get("record_input_fits", [])
@@ -2971,7 +3055,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
         whose two-record request does not fit is searched over longer runs, since token counts
-        need not grow with text. What a search from a record found -- its batch, or how far it
+        need not grow with text, until a run counts past ``run_past_limit_factor`` times the
+        cap. What a search from a record found -- its batch, or how far it
         got with nothing fitting -- is remembered with a digest of the records that decided it,
         and a later sweep takes that batch, or resumes the search past those records, while
         they stand unchanged: an appended record is tried without searching again what was
@@ -3002,6 +3087,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         digests: dict[int, str] = {}
         runs: list[int] = [0]
         powers: list[int] = [1]
+        # Per record, where the run a batch from it may take ends (``merge_same_tool_first``).
+        ends: list[int] = []
         probes = 0
         changed = False
 
@@ -3020,7 +3107,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             exclusions: dict[str, int] | None = (
                 {} if record_merge_observer.get() is not None else None
             )
-            groups, _, _ = _consolidatable_record_groups(messages, exclusions=exclusions)
+            groups, _, active = _consolidatable_record_groups(messages, exclusions=exclusions)
             if exclusions is not None and self._background_records is not None:
                 exclusions.update(self._background_records.exclusions)
             missing = [group for group in groups if last(group) not in bodies]
@@ -3034,6 +3121,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 runs.append((runs[-1] * _RUN_BASE + value) % _RUN_MODULUS)
             while len(powers) <= len(groups):
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
+            ends[:] = (
+                _same_tool_segment_ends(covered_tools(messages, groups, active))
+                if self.merge_same_tool_first
+                else [len(groups)] * len(groups)
+            )
             inputs = {(prompt_digest, digests[last(group)], limit) for group in groups}
             self._record_input_fits = {
                 key: fits for key, fits in self._record_input_fits.items() if key in inputs
@@ -3060,18 +3152,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
             return groups, held, over
 
-        def fits(run: list[dict[str, Any]]) -> bool:
-            return fits_summary_input(
-                self.merge_prompt, render(run), tokenizer=self.tokenizer, limit=limit
-            )
+        def size(run: list[dict[str, Any]]) -> int:
+            return summary_input_tokens(self.merge_prompt, render(run), tokenizer=self.tokenizer)
+
+        factor = self.run_past_limit_factor
+
+        def past_limit(tokens: int) -> bool:
+            return factor is not None and tokens > limit * factor
 
         def chain(first: int, count: int) -> str:
             run = (runs[first + count] - runs[first] * powers[count]) % _RUN_MODULUS
             return format(run, "x")
 
-        def remember(first: int, covered: int, batch: int = 0, *, ended: bool = False) -> None:
+        def remember(
+            first: int,
+            covered: int,
+            batch: int = 0,
+            *,
+            ended: bool = False,
+            past_limit: float | None = None,
+        ) -> None:
             key = (digests[last(groups[first])], limit)
-            self._searched[key] = _Searched(covered, chain(first, covered), batch, ended)
+            self._searched[key] = _Searched(
+                covered, chain(first, covered), batch, ended, past_limit
+            )
 
         async def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
@@ -3086,9 +3190,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ):
                 if known.batch:
                     return groups[first : first + known.batch]
+                if (
+                    known.past_limit is not None
+                    and factor is not None
+                    and factor <= known.past_limit
+                ):
+                    return []
                 checked = known.covered
             if checked < 2:
-                if await off_loop(fits, groups[first : first + 2]):
+                pair = await off_loop(size, groups[first : first + 2])
+                if pair <= limit:
                     remember(first, 2, 2)
                     batch, extent = await async_bounded_prefix_extent(
                         groups[first:],
@@ -3105,19 +3216,25 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         remember(first, extent, len(batch))
                     return batch
                 checked = 2
+                if past_limit(pair):
+                    remember(first, checked, past_limit=factor)
+                    return []
             # Token counts need not grow with text, so a longer run may fit where two do not.
             for count in range(checked + 1, remaining + 1):
                 if self._record_answer_ready is not None:
                     await asyncio.sleep(0)
                 try:
-                    fit = await off_loop(fits, groups[first : first + count])
+                    tokens = await off_loop(size, groups[first : first + count])
                 except (_BatchProbesSpent, _ChainTimeSpent):
                     remember(first, checked)
                     raise
-                if fit:
+                if tokens <= limit:
                     remember(first, count, count)
                     return groups[first : first + count]
                 checked = count
+                if past_limit(tokens):
+                    remember(first, checked, past_limit=factor)
+                    return []
             remember(first, checked)
             return []
 
@@ -3229,6 +3346,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             cursor = self._batch_resume[4]
         self._batch_resume = None
         batches: list[tuple[list[dict[str, Any]], str, int]] = []
+        # The first batch the same-tool runs cut below two records, for a sweep that merges none.
+        across: list[dict[str, Any]] | None = None
         exhausted = False
         interrupted = False
         while over:
@@ -3260,6 +3379,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     continue
                 try:
                     batch = await search(cursor)
+                    run = ends[cursor] - cursor
+                    if len(batch) > run:
+                        found = batch
+                        batch = batch[:run] if run >= 2 else []
+                        # A shorter run need not fit where a longer one did.
+                        if batch and await off_loop(size, batch) > limit:
+                            batch = []
+                        if not batch and across is None:
+                            across = found
                 except _BatchProbesSpent:
                     interrupted = True
                     self._merge_event("search_limit", remaining=len(groups) - cursor)
@@ -3282,6 +3410,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     batches.append((batch, transcript, 0))
                     if len(batches) < self._summary_parallelism():
                         continue
+            if not batches and across is not None and not changed:
+                # Same-tool runs are a preference: when no batch within them merges, the first
+                # batch across them the search found is taken rather than none.
+                transcript = await off_loop(
+                    _numbered_records, [bodies[last(group)] for group in across]
+                )
+                batches.append((across, transcript, 0))
+                across = None
             if not batches:
                 break
             seen_messages.update((id(message), message) for message in messages)
@@ -3298,6 +3434,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 handled.update(fresh)
                 seen_messages.update(fresh)
                 changed = True
+                across = None
                 groups, _, over = await off_loop(survey)
                 layout = prompt_digest, limit, len(groups), chain(0, len(groups))
                 self._batch_resume = None
@@ -3550,11 +3687,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _record_request_limit(self) -> int:
         """Return the tokens one record merge or rewrite request may hold.
 
-        With a record share, use the lesser of ``max_summary_input_tokens`` and an active
+        ``record_request_input_tokens`` when set, never more than ``max_summary_input_tokens``.
+        Otherwise, with a record share, the lesser of ``max_summary_input_tokens`` and an active
         ``summary_options.max_tokens`` cap. Reasoning also consumes the output allowance,
         so this limits batch size without promising an untruncated answer.
         """
         limit = self.user_turns.max_summary_input_tokens
+        if self.record_request_input_tokens is not None:
+            return min(limit, self.record_request_input_tokens)
         if self.record_budget_share is None:
             return limit
         options = (
