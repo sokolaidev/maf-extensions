@@ -18,6 +18,7 @@ from maf_compaction import SummaryRequestLimiter
 from maf_compaction import _composed as module
 from maf_compaction import _summary_limiter as limiter_module
 from maf_compaction._composed import _ChainTimeSpent, _RecordMergeWork
+from maf_compaction._offload import steps_inline
 from maf_compaction._preserve import set_preserved
 from maf_compaction._record_replay import source_key
 from maf_compaction._summary_limiter import SummaryRateLimited
@@ -396,7 +397,7 @@ async def test_retry_after_wait_timeout_skips_without_failure_backoff(monkeypatc
     monkeypatch.setattr(limiter_module, "monotonic", clock)
     model = _Summarizer()
     strategy = configured(model).user_turns
-    strategy.summary_timeout_seconds = 0.01
+    strategy.summary_timeout_seconds = 30
     strategy.max_consecutive_summary_failures = 1
     strategy.summary_backoff_seconds = 60
     strategy.retry_without_summary_options = True
@@ -408,7 +409,10 @@ async def test_retry_after_wait_timeout_skips_without_failure_backoff(monkeypatc
     with pytest.raises(SummaryRateLimited):
         async with limiter.request():
             raise RateLimit("120")
-    assert await strategy._summarize(transcript, prompt="Summarize", units=units) is None
+    # Make the Retry-After wait the first suspension under the short deadline.
+    with steps_inline(), monkeypatch.context() as blocked:
+        blocked.setattr(strategy, "summary_timeout_seconds", 0.01)
+        assert await strategy._summarize(transcript, prompt="Summarize", units=units) is None
     assert strategy.user_summary_skips == 1
     assert strategy.user_summary_failures == 0
     assert strategy.session_state()["summary_failures"] == 0
