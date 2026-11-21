@@ -246,7 +246,7 @@ def test_collection_refuses_untrusted_workflow_before_reading_artifacts(monkeypa
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_notifications_create_or_update_only_the_owned_profile_tracker(monkeypatch, existing):
-    marker = "<!-- image-remediation-attention:platform:antivirus -->"
+    marker = "<!-- image-remediation-attention:antivirus -->"
     tracker = {"number": 7, "body": marker, "user": {"login": "github-actions[bot]"}}
     issues = [
         [
@@ -277,12 +277,12 @@ def test_notifications_create_or_update_only_the_owned_profile_tracker(monkeypat
 def test_identical_findings_across_runs_do_not_comment_again(monkeypatch):
     tracker = {
         "number": 7,
-        "body": "<!-- image-remediation-attention:platform:antivirus -->",
+        "body": "<!-- image-remediation-attention:antivirus -->",
         "user": {"login": "github-actions[bot]"},
     }
     monkeypatch.setattr(report, "gh", lambda *args, **kwargs: json.dumps([[tracker]]))
     markers = []
-    monkeypatch.setattr(report, "unchanged", lambda *args: markers.append(args[-1]) or True)
+    monkeypatch.setattr(report, "unchanged", lambda *args: markers.append(args[-2]) or True)
     values = {"plan.json": {"findings": [finding()]}}
     report.notify("platform", source_run(), values, "example/repo", "123", "1")
     values["plan.json"]["findings"][0]["fix"]["available"] = [
@@ -304,6 +304,11 @@ def test_attention_runs_after_all_evidence_jobs_even_when_they_succeed(kind, fil
     )
     assert "failure" not in job["if"]
     assert job["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    assert job["concurrency"] == {
+        "group": "image-remediation-attention",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
     assert job["steps"][-1]["run"].endswith(f"--kind {kind}")
     assert (
         "publish" if kind in {"platform", "go"} else "check" if kind == "scan" else "update"
@@ -313,6 +318,32 @@ def test_attention_runs_after_all_evidence_jobs_even_when_they_succeed(kind, fil
 def test_evidence_cannot_inject_mentions_or_table_markup():
     assert report.cell("@maintainer\n| <script>`") == "&#64;maintainer &#124; &lt;script&gt;&#96;"
     assert len(report.cell("<" * 400)) <= 240
+
+
+def test_shared_issue_deduplicates_each_workflow_independently(monkeypatch):
+    lane = "<!-- image-remediation-workflow:platform -->"
+    state = report.notification_marker("same findings")
+    tracker = {"number": 7, "body": lane + state}
+    comments = [
+        [
+            {
+                "body": "<!-- image-remediation-workflow:scan -->different findings",
+                "user": {"login": "github-actions[bot]"},
+            },
+            {"body": lane + "human text", "user": {"login": "maintainer"}},
+        ]
+    ]
+    monkeypatch.setattr(report, "gh", lambda *args: json.dumps(comments))
+    assert report.unchanged(tracker, "repos/example/repo/issues", state, lane)
+    comments.append(
+        [
+            {
+                "body": lane + report.notification_marker("changed findings"),
+                "user": {"login": "github-actions[bot]"},
+            }
+        ]
+    )
+    assert not report.unchanged(tracker, "repos/example/repo/issues", state, lane)
 
 
 def test_large_plans_fit_in_an_issue_and_point_to_complete_artifacts(monkeypatch):

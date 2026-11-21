@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
-from report_workflow_failure import gh, notification_marker, unchanged
+from report_workflow_failure import gh, notification_marker
 
 WORKFLOWS = {
     "platform": "platform-image-remediation.yml",
@@ -212,6 +212,20 @@ def cell(value: Any) -> str:
     return escaped if len(escaped) <= 240 else escaped[:237] + "..."
 
 
+def unchanged(tracker: dict, endpoint: str, marker: str, lane: str) -> bool:
+    """Compare the latest notification from this workflow within the shared image issue."""
+    pages = json.loads(
+        gh(f"{endpoint}/{tracker['number']}/comments?per_page=100", "--paginate", "--slurp")
+    )
+    bodies = [tracker.get("body") or ""] + [
+        comment.get("body") or ""
+        for page in pages
+        for comment in page
+        if comment.get("user", {}).get("login") == "github-actions[bot]"
+    ]
+    return next((marker in body for body in reversed(bodies) if lane in body), False)
+
+
 def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: str) -> None:
     """Deduplicate notifications without treating source delivery as published recovery."""
     rows = (
@@ -235,7 +249,8 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
     for profile, findings in sorted(grouped.items()):
         if not re.fullmatch(r"[a-z0-9-]+", profile):
             raise ValueError("Invalid image profile")
-        marker = f"<!-- image-remediation-attention:{kind}:{profile} -->"
+        marker = f"<!-- image-remediation-attention:{profile} -->"
+        lane = f"<!-- image-remediation-workflow:{kind} -->"
         tracker = next(
             (
                 issue
@@ -249,7 +264,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         )
         stable = sorted({json.dumps(row, sort_keys=True) for row in findings})
         state = notification_marker(json.dumps(stable))
-        if tracker is not None and unchanged(tracker, endpoint, state):
+        if tracker is not None and unchanged(tracker, endpoint, state, lane):
             continue
         lines = [
             "| Finding | Component | Installed | Reported fixes | Why maintainer action is needed |",
@@ -276,7 +291,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             if name in values:
                 context += f"\n\n{cell(name)}: {cell(json.dumps(values[name], sort_keys=True))}"
         message = (
-            f"{marker}\n\n**Describe the bug**\nImage `{profile}` needs maintainer action after {cell(run['name'])}. "
+            f"{marker}\n{lane}\n\n**Describe the bug**\nImage `{profile}` needs maintainer action after {cell(run['name'])}. "
             f"[Run, logs and retained evidence]({run_url}).\n\n{details}{context}\n\n"
             "**To Reproduce**\nInspect the linked attempt's plan, qualification and delivery artifacts, or its build inventory and applicability assessment.\n\n"
             "**Expected behavior**\nDeliver a qualified source fix, publish a qualified replacement when only a rebuild is needed, or record the remaining blocker and follow-up.\n\n"
@@ -290,7 +305,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             gh(
                 endpoint,
                 body={
-                    "title": f"Image remediation needs maintainer action: {profile} ({kind})",
+                    "title": f"Image remediation needs maintainer action: {profile}",
                     "body": message,
                 },
             )

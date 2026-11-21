@@ -215,7 +215,7 @@ jobs:
       always() && github.repository == 'sokolaidev/maf-extensions' &&
       github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     concurrency:
-      group: image-remediation-attention-platform
+      group: image-remediation-attention
       queue: max
       cancel-in-progress: false
     runs-on: ubuntu-latest
