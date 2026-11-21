@@ -4,6 +4,7 @@
 # The mirror leaves this build holding unpacked providers, which Terraform links into
 # every call instead of copying; the ZIPs never reach a published layer.
 ARG BASE_IMAGE=scratch
+ARG MODULE_ARCHIVES=empty-archives
 FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS provider-toolchain
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache python3 git
@@ -20,13 +21,25 @@ RUN --mount=type=cache,target=/go/pkg --mount=type=cache,target=/root/.cache/go-
 FROM scratch AS provider-packages
 COPY --from=provider-build /builds/ /
 
+FROM provider-toolchain AS download-archives
+COPY --from=scripts terraform_dependencies.py /src/scripts/
+COPY runner.py shared_avm_archives.py /src/images/terraform-sandbox/
+COPY dependencies.terraform-avm.json dependencies.opentofu-avm.json /src/
+RUN python3 -I /src/images/terraform-sandbox/shared_avm_archives.py /src/dependencies.terraform-avm.json /src/dependencies.opentofu-avm.json /archives
+
+FROM scratch AS avm-archives
+COPY --from=download-archives /archives/ /
+
+FROM scratch AS empty-archives
+FROM ${MODULE_ARCHIVES} AS module-archives
+
 FROM ${BASE_IMAGE} AS prepare
 ARG MANIFEST
 COPY --from=scripts terraform_dependencies.py /src/scripts/terraform_dependencies.py
 COPY runner.py /src/images/terraform-sandbox/runner.py
 COPY ${MANIFEST} /src/manifest.json
 COPY --from=provider-build /builds/ /provider-builds/
-RUN python3 -I /src/scripts/terraform_dependencies.py --manifest /src/manifest.json --output /prepared --provider-builds /provider-builds
+RUN --mount=type=bind,from=module-archives,target=/module-archives python3 -I /src/scripts/terraform_dependencies.py --manifest /src/manifest.json --output /prepared --provider-builds /provider-builds --module-archives /module-archives
 
 # The preparation alone; export it with `--target prepared --output type=local,dest=<dir>`.
 # Adding `--build-context prepared=<dir>` builds from a stored one without preparing again.
@@ -142,7 +155,7 @@ expected = {
 assert inventory(p / "registry") == expected, "registry modules must contain exactly the verified files"
 PY
 # Initialize every provider version and every root package offline through the launcher.
-# A root is a package no other package calls; the packages it calls initialize with it.
+# Packages used both directly and from other modules must also initialize as roots.
 RUN --network=none python3 -I - <<'PY'
 import importlib.util
 import json
@@ -169,18 +182,21 @@ for rank in range(max((len(items) for items in ranks.values()), default=0)):
         if rank < len(items)
     )
     probes.append((f"providers rank {rank}", f"terraform {{\n  required_providers {{\n{requirements}  }}\n}}\n"))
-called = {
-    edge["registry"]
-    for package in packages
-    for edges in package["graph"].values()
-    for edge in edges.values()
-    if "registry" in edge
-}
-for package in packages:
-    if package["name"] not in called:
-        probes.append(
-            (package["name"], f'module "root" {{\n  source  = "{package["source"]}"\n  version = "= {package["version"]}"\n}}\n')
-        )
+if receipt["engine"] == "opentofu":
+    roots = [package for package in packages if "." in package["graph"]]
+else:
+    called = {
+        edge["registry"]
+        for package in packages
+        for edges in package["graph"].values()
+        for edge in edges.values()
+        if "registry" in edge
+    }
+    roots = [package for package in packages if package["name"] not in called]
+for package in roots:
+    probes.append(
+        (package["name"], f'module "root" {{\n  source  = "{package["source"]}"\n  version = "= {package["version"]}"\n}}\n')
+    )
 
 
 def probe_succeeded(label, result):

@@ -1143,12 +1143,30 @@ def artifact_sequence(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any
     ]
 
 
+def module_archive(
+    artifact: dict[str, Any], directory: Path | None, deadline: float, max_bytes: int
+) -> bytes:
+    """Recheck a shared archive against this manifest, fetching engine-specific pins on a miss."""
+    if directory is not None:
+        path = directory / artifact["sha256"]
+        if path.exists() or path.is_symlink():
+            require(path.is_file() and not path.is_symlink(), "artifact-mismatch")
+            limit = min(MAX_ARCHIVE, max_bytes)
+            with path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            require(len(data) <= limit, "download-size")
+            require(hashlib.sha256(data).hexdigest() == artifact["sha256"], "artifact-mismatch")
+            return data
+    return fetch(artifact, deadline, max_bytes=max_bytes)
+
+
 def prepare(
     manifest: dict[str, Any],
     output: Path,
     *,
     progress: Path | None = None,
     provider_builds: Path | None = None,
+    module_archives: Path | None = None,
 ) -> str:
     """Write a fresh preparation directory; the CLI publishes it only on complete success.
 
@@ -1195,11 +1213,12 @@ def prepare(
     total = 0
     for position, (kind, item) in enumerate(sequence):
         mark(position)
-        data = (
-            built_provider(item, provider_builds)
-            if kind == "providers" and "source_build" in item
-            else fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
-        )
+        if kind == "providers" and "source_build" in item:
+            data = built_provider(item, provider_builds)
+        elif kind == "registry_modules":
+            data = module_archive(item["artifact"], module_archives, deadline, MAX_TOTAL - total)
+        else:
+            data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
         total += len(data)
         require(total <= MAX_TOTAL, "total-size")
         if kind == "providers":
@@ -1262,7 +1281,9 @@ def load_manifest(data: bytes) -> dict[str, Any]:
     return checked_manifest(unique_json(data, "manifest-duplicate"))
 
 
-def _worker(output: str, progress: str, provider_builds: str = "") -> None:
+def _worker(
+    output: str, progress: str, provider_builds: str = "", module_archives: str = ""
+) -> None:
     """Run only as the child of the CLI's deadline and temporary-output supervisor."""
     try:
         manifest = load_manifest(sys.stdin.buffer.read(MAX_MANIFEST + 1))
@@ -1271,6 +1292,7 @@ def _worker(output: str, progress: str, provider_builds: str = "") -> None:
             Path(output),
             progress=Path(progress),
             **({"provider_builds": Path(provider_builds)} if provider_builds else {}),
+            **({"module_archives": Path(module_archives)} if module_archives else {}),
         )
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
@@ -1320,6 +1342,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--provider-builds", type=Path)
+    parser.add_argument("--module-archives", type=Path)
     args = parser.parse_args()
     context = ""
     try:
@@ -1335,6 +1358,11 @@ def main() -> None:
         ) as temporary:
             prepared = Path(temporary) / "prepared"
             progress = Path(temporary) / "progress"
+            inputs = []
+            if args.provider_builds or args.module_archives:
+                inputs.append(str(args.provider_builds.absolute()) if args.provider_builds else "")
+            if args.module_archives:
+                inputs.append(str(args.module_archives.absolute()))
             try:
                 result = subprocess.run(
                     [
@@ -1344,7 +1372,7 @@ def main() -> None:
                         str(Path(__file__).resolve()),
                         str(prepared),
                         str(progress),
-                        *([str(args.provider_builds.absolute())] if args.provider_builds else []),
+                        *inputs,
                     ],
                     input=data,
                     stdout=subprocess.DEVNULL,

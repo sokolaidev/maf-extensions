@@ -17,6 +17,26 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Restore shared AVM commit archives
+      id: archives
+      if: inputs.manifest == '' && (inputs.profile == 'terraform-avm' || inputs.profile == 'opentofu-avm')
+      continue-on-error: true
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/avm-archives
+        key: avm-archives-v1-${{ hashFiles('images/terraform-sandbox/dependencies.terraform-avm.json', 'images/terraform-sandbox/dependencies.opentofu-avm.json') }}
+    - name: Export the shared AVM archive stage
+      if: steps.archives.outcome == 'success'
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.archives.outputs.cache-hit }}
+      run: |
+        if [ "$CACHE_HIT" != true ]; then
+          docker build --platform linux/amd64 --build-context scripts=scripts --target avm-archives \
+            --output "type=local,dest=$RUNNER_TEMP/avm-archives" \
+            -f images/terraform-sandbox/prepared.Dockerfile images/terraform-sandbox
+        fi
+        echo "MAF_AVM_ARCHIVES=$RUNNER_TEMP/avm-archives" >> "$GITHUB_ENV"
     - name: Identify reviewed provider inputs
       id: plan
       shell: bash

@@ -17,15 +17,17 @@ from terraform_dependencies import satisfies  # noqa: E402
 pytestmark = pytest.mark.workflow
 
 
-def report(engine="terraform"):
+def report(engine="terraform", *, network_fixture=False):
     version = avm.read(avm.CONTEXT / "image.json")["engines"][engine]["version"]
-    refusals = {"uncached-version", "wrong-lock", "upstream-lock", "azure-root-uncached"}
-    return {
-        "receipt": avm.expected_receipt(
-            "dependencies.terraform-avm.json"
-            if engine == "terraform"
-            else "dependencies.opentofu-avm-network.json"
-        ),
+    refusals = {
+        "uncached-version",
+        "wrong-lock",
+        "upstream-lock",
+        "azure-root-uncached",
+        "terraform-host",
+    }
+    data = {
+        "receipt": avm.expected_receipt(f"dependencies.{engine}-avm.json"),
         "checks": [
             {
                 "name": name,
@@ -40,15 +42,30 @@ def report(engine="terraform"):
                 else 0,
                 "validationValid": None if name in refusals else name != "azure-root-invalid",
                 "missingNameDiagnostic": name == "azure-root-invalid",
-                "providerLinks": 6 if name.startswith("azure-root") else 3,
+                "providerLinks": 6
+                if name.startswith("azure-root") or name == "workspace-and-identity"
+                else 3,
                 "providerCopies": 0,
                 "providersInMirror": True,
-                "nestedModuleLoaded": not name.startswith("azure-root"),
+                "nestedModuleLoaded": not name.startswith("azure-root")
+                and name != "workspace-and-identity",
+                "catalogueModulesLoaded": name == "workspace-and-identity",
                 "expectedRefusal": name in refusals,
             }
             for name in avm.cases(engine)
         ],
     }
+    if engine == "opentofu" and not network_fixture:
+        constraint = next(check for check in data["checks"] if check["name"] == "constraint")
+        constraint.update(
+            networkModules={"network": "0.23.0", "network.interfaces": "0.10.0"},
+            networkProviders=[
+                "registry.opentofu.org/azure/azapi",
+                "registry.opentofu.org/hashicorp/random",
+            ],
+            providerLinks=2,
+        )
+    return data
 
 
 def test_success_retains_catalogue_identity_and_consumer_results():
@@ -149,14 +166,16 @@ def test_runtime_checks_identity_and_observes_cleanup(monkeypatch, tmp_path, fai
         assert commands[-1] == ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"]
 
 
-def test_build_uses_full_catalogue_not_network_fixture():
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_build_uses_full_catalogue_not_network_fixture(engine):
     script = (avm.ROOT / "scripts/build_scan_image.sh").read_text()
-    recipe = script.split("  terraform-avm)", 1)[1].split("    ;;", 1)[0]
-    assert "--engine terraform --profile builtin" in recipe
-    assert "--build-arg MANIFEST=dependencies.terraform-avm.json" in recipe
-    assert "dependencies.terraform-avm-network.json" not in recipe
+    recipe = script.split(f"  {engine}-avm)", 1)[1].split("    ;;", 1)[0]
+    assert f"--engine {engine} --profile builtin" in recipe
+    assert f"--build-arg MANIFEST=dependencies.{engine}-avm.json" in recipe
+    assert "--build-arg MODULE_ARCHIVES=avm-archives" in recipe
+    assert f"dependencies.{engine}-avm-network.json" not in recipe
     assert "images/terraform-sandbox/prepared.Dockerfile" in recipe
-    assert "images/terraform-sandbox/AVM.md" in recipe
+    assert ("OPENTOFU-AVM.md" if engine == "opentofu" else "/AVM.md") in recipe
 
 
 @pytest.mark.parametrize(
@@ -216,6 +235,9 @@ def test_opentofu_release_evidence_is_bound_to_its_own_manifest(failure):
 @pytest.mark.parametrize(
     "index,field,value",
     [
+        (1, "networkModules", {"network": "0.22.2", "network.interfaces": "0.6.0"}),
+        (1, "networkProviders", ["registry.opentofu.org/hashicorp/random"]),
+        (1, "providerLinks", 1),
         (6, "initExitCode", 1),
         (6, "validateExitCode", 1),
         (6, "validationValid", False),
@@ -230,6 +252,9 @@ def test_opentofu_release_evidence_is_bound_to_its_own_manifest(failure):
         (8, "initExitCode", 0),
         (8, "validateExitCode", 0),
         (8, "expectedRefusal", False),
+        (9, "catalogueModulesLoaded", False),
+        (9, "providerLinks", 4),
+        (10, "expectedRefusal", False),
     ],
 )
 def test_azure_root_false_success_is_refused(index, field, value):
@@ -240,7 +265,7 @@ def test_azure_root_false_success_is_refused(index, field, value):
 
 
 def test_new_candidates_require_azure_probes_but_old_published_images_replay_their_evidence():
-    data = report("opentofu")
+    data = report("opentofu", network_fixture=True)
     data["checks"] = data["checks"][: len(avm.CASES)]
     with pytest.raises(ValueError, match="incomplete"):
         avm.evidence(json.dumps(data).encode(), "opentofu")
@@ -255,7 +280,8 @@ def test_new_candidates_require_azure_probes_but_old_published_images_replay_the
 
 
 def test_published_expanded_mirror_requires_all_azure_probes():
-    data = report("opentofu")
+    data = report("opentofu", network_fixture=True)
+    data["checks"] = data["checks"][: len(avm.CASES + avm.AZURE_CASES)]
     published = {**data, "opentofuVersion": data["checks"][0]["version"]}
     assert avm.cases("opentofu", published) == avm.CASES + avm.AZURE_CASES
     data = {**data, "checks": data["checks"][:-1]}
@@ -264,9 +290,10 @@ def test_published_expanded_mirror_requires_all_azure_probes():
 
 
 def test_release_mirror_covers_plain_azure_roots_with_matching_policy_and_source_builds():
-    manifest = avm.read(avm.CONTEXT / "dependencies.opentofu-avm-network.json")
-    policy = avm.read(avm.CONTEXT / "dependencies.opentofu-avm-network.policy.json")
-    providers = {item["source"]: item for item in manifest["providers"]}
+    manifest = avm.read(avm.CONTEXT / "dependencies.opentofu-avm.json")
+    policy = avm.read(avm.CONTEXT / "dependencies.opentofu-avm.policy.json")
+    legacy = avm.read(avm.CONTEXT / "dependencies.opentofu-avm-network.json")
+    assert all(provider in manifest["providers"] for provider in legacy["providers"])
     assert manifest["engine"] == policy["engine"] == "opentofu"
     for name, constraint in {
         "azurerm": "~> 4.0",
@@ -277,9 +304,16 @@ def test_release_mirror_covers_plain_azure_roots_with_matching_policy_and_source
         "tls": "~> 4.0",
     }.items():
         source = "registry.opentofu.org/hashicorp/" + name
-        provider = providers[source]
-        assert satisfies(provider["version"], constraint, "provider-constraint")
-        assert {"address": source, "constraint": "= " + provider["version"]} in policy["providers"]
+        provider = next(
+            p
+            for p in manifest["providers"]
+            if p["source"] == source and satisfies(p["version"], constraint, "provider-constraint")
+        )
+        assert any(
+            bound["address"] == source
+            and satisfies(provider["version"], bound["constraint"], "provider-constraint")
+            for bound in policy["providers"]
+        )
         assert (
             provider["source_build"]["repository"]
             == "https://github.com/opentofu/terraform-provider-" + name

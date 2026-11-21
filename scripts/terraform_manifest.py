@@ -322,6 +322,7 @@ class Resolution:
             self.explicit[address.casefold()] = entry
         self.catalog = policy.get("catalog")
         self.skipped: dict[str, str] = {}
+        self.excluded_versions: dict[Key, str] = {}
         if self.catalog is not None:
             exact_keys(self.catalog, {"namespace", "prefixes"}, "catalog", frozenset({"exclude"}))
             if (
@@ -334,11 +335,18 @@ class Resolution:
             ):
                 raise ValueError("catalog needs a namespace and at least one name prefix")
             for item in self.catalog.get("exclude", []):
-                exact_keys(item, {"source", "reason"}, "catalog exclusion")
+                exact_keys(item, {"source", "reason"}, "catalog exclusion", frozenset({"version"}))
                 address = full_address(
                     item["source"], "catalog exclusion", modules=True, host=self.host
                 )
-                self.skipped[address.casefold()] = item["reason"]
+                if "version" in item:
+                    if not isinstance(item["version"], str) or not RELEASE.fullmatch(
+                        item["version"]
+                    ):
+                        raise ValueError("catalog exclusion needs an exact release version")
+                    self.excluded_versions[address.casefold(), item["version"]] = item["reason"]
+                else:
+                    self.skipped[address.casefold()] = item["reason"]
         self.versions: dict[str, list[str]] = {}
         self.addresses: dict[str, str] = {}
         self.releases: dict[str, list[str]] = {}
@@ -363,10 +371,17 @@ class Resolution:
             self.addresses[source.casefold()] = module_address(source, self.host)
         return self.addresses[source.casefold()]
 
-    def release(self, source: str, constraint: str) -> str:
+    def available(self, source: str) -> list[str]:
         if source not in self.versions:
             self.versions[source] = module_versions(source, self.host)
-        return newest_release(self.versions[source], constraint, source)
+        return [
+            version
+            for version in self.versions[source]
+            if (source.casefold(), version) not in self.excluded_versions
+        ]
+
+    def release(self, source: str, constraint: str) -> str:
+        return newest_release(self.available(source), constraint, source)
 
     def archive(self, key: Key) -> dict[str, Any]:
         if key not in self.archives:
@@ -598,17 +613,20 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
         source = resolution.address(entry["source"])
         required.append((source, resolution.release(source, entry["constraint"])))
     optional: list[Key] = []
-    excluded: list[dict[str, str]] = []
+    excluded = [
+        {"source": source, "version": version, "reason": message}
+        for (source, version), message in resolution.excluded_versions.items()
+    ]
     if resolution.catalog is not None:
         for source in catalog_sources(
             resolution.catalog["namespace"], resolution.catalog["prefixes"], resolution.host
         ):
             if source.casefold() in resolution.explicit:
                 continue
-            try:
-                version = resolution.release(source, ANY_RELEASE)
-            except ValueError:
+            available = resolution.available(source)
+            if not available:
                 continue
+            version = newest_release(available, ANY_RELEASE, source)
             if not re.fullmatch(re.escape(resolution.host) + "/" + prep._REGISTRY_PACKAGE, source):
                 excluded.append(
                     {

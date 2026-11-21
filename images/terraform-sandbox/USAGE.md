@@ -17,7 +17,7 @@ Use `--engine opentofu` for OpenTofu, or `--profile random` to add the `random` 
 Terraform image with the Azure Verified Modules catalog baked in:
 
 ```sh
-uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin && docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
+uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin && docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
 ```
 
 The build downloads about 540 MB and produces an image of about 3.4 GB.
@@ -100,13 +100,14 @@ The six Docker cases use `--network=none`: one root per line, a supplied `h1:` l
 
 ## Build an image with Azure Verified Modules
 
-For the OpenTofu network image and catalog generation, see [OpenTofu AVM](OPENTOFU-AVM.md). The Terraform instructions below use [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) for the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.
+For the OpenTofu catalogue image and manifest generation, see [OpenTofu AVM](OPENTOFU-AVM.md). The Terraform instructions below use [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) for the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.
 
 ### 1. Change the policy
 
 - To approve a provider, add it to `providers` with a version bound.
 - To bake a module outside the catalog, add it to `registry_modules` with a version constraint.
 - To leave a catalog module out, add it to `catalog.exclude` with a reason.
+- To skip an incompatible release and keep an older compatible version, include the exact `version` in the exclusion.
 
 ### 2. Generate the manifest
 
@@ -154,13 +155,13 @@ Tag with the engine version, the profile and a revision you never reuse.
 
 ```sh
 uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin
-docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
 ```
 
 Export the prepared directory to keep it, or to run the checks:
 
 ```sh
-docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile --target prepared --output type=local,dest=dist/dependencies/terraform-avm images/terraform-sandbox
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile --target prepared --output type=local,dest=dist/dependencies/terraform-avm images/terraform-sandbox
 ```
 
 If an offline probe fails, the build prints that root's `init` output. Add the module to `catalog.exclude` with a reason, then regenerate and rebuild.
@@ -192,7 +193,7 @@ For local reuse on a Docker host, keep the cache outside the checkout and export
 
 ```bash
 python images/terraform-sandbox/prepare_providers.py prepare --profile terraform-avm --cache-directory "$HOME/.cache/maf-provider-packages" --output dist/provider-builds
-docker build --platform linux/amd64 --build-context scripts=scripts --build-context provider-build=dist/provider-builds --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
+docker build --platform linux/amd64 --build-context scripts=scripts --build-context provider-build=dist/provider-builds --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
 ```
 
 The helper uses the pinned provider toolchain and writes `providers.jsonl` with each provider's hit/miss/rejection, verification/build/total seconds and byte count, plus `summary.json` with total provider preparation time including toolchain setup and cache size. Workflow timing artifacts are retained for 14 days. Cache transport time and complete image preparation time remain visible in the job's step timings. The separate `Provider package cache qualification` workflow measures a cold Terraform random-provider profile and an overlapping OpenTofu random/null-provider profile on a fresh runner; it requires the shared provider to skip compilation and the additional provider to build. This bounded benchmark verifies cross-profile package reuse, not full AVM image qualification or a promised speedup for the entire catalogue.

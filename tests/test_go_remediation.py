@@ -741,8 +741,11 @@ def test_upstream_archives_are_not_converted_to_source_builds(checkout, tmp_path
 
 
 def test_opentofu_compress_fix_maps_engine_and_all_provider_source_locks(checkout, tmp_path):
-    manifest = read(checkout / planner.CONTEXT / "dependencies.opentofu-avm-network.json")
-    item = manifest["providers"][0]
+    fixture = "dependencies.opentofu-avm-network.json"
+    catalogue = "dependencies.opentofu-avm.json"
+    directory = checkout / planner.CONTEXT
+    item = read(directory / fixture)["providers"][0]
+    index = read(directory / catalogue)["providers"].index(item)
     match = finding(
         "/usr/local/bin/tofu",
         module="github.com/klauspost/compress",
@@ -753,7 +756,8 @@ def test_opentofu_compress_fix_maps_engine_and_all_provider_source_locks(checkou
     proposal = planner.plan(checkout, [retained(tmp_path, [match], profile="opentofu-avm")])
     assert {(update["path"], update["owner"]) for update in proposal["updates"]} == {
         (planner.RECIPE, "opentofu"),
-        (f"{planner.CONTEXT}/dependencies.opentofu-avm-network.json", "0"),
+        (f"{planner.CONTEXT}/{fixture}", "0"),
+        (f"{planner.CONTEXT}/{catalogue}", str(index)),
     }
     assert all(update["after"] == "v1.20.2" for update in proposal["updates"])
 

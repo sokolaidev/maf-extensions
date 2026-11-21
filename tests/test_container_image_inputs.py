@@ -245,6 +245,19 @@ def test_stages_supplied_parents_and_python_heredocs_are_not_external_images(tmp
 
 
 @pytest.mark.parametrize(
+    "default,stage", [("alpine:latest", "avm-archives"), ("empty-archives", "other")]
+)
+def test_module_archive_selector_requires_both_local_stages(tmp_path, default, stage):
+    recipe = tmp_path / "Dockerfile"
+    recipe.write_text(
+        f"ARG MODULE_ARCHIVES={default}\nFROM scratch AS empty-archives\n"
+        f"FROM scratch AS {stage}\nFROM ${{MODULE_ARCHIVES}} AS module-archives\n"
+    )
+    with pytest.raises(ValueError, match="module archive stages"):
+        inventory(recipe)
+
+
+@pytest.mark.parametrize(
     "reference",
     [
         "python:3.14-slim-trixie",

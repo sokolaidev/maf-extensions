@@ -731,6 +731,22 @@ def test_archive_symlink_and_expansion():
         prep.zip_files(bundle({"large": "x" * 1001}), limit=1000)
 
 
+def test_shared_module_archives_recheck_digest_and_remaining_budget(tmp_path, monkeypatch):
+    pin = artifact()
+    path = tmp_path / pin["sha256"]
+    calls = []
+    monkeypatch.setattr(prep, "fetch", lambda *args, **kwargs: calls.append(args) or b"fetched")
+    assert prep.module_archive(pin, tmp_path, 1, 8) == b"fetched"
+    path.write_bytes(b"artifact")
+    assert prep.module_archive(pin, tmp_path, 1, 8) == b"artifact"
+    with pytest.raises(prep.Refused, match="download-size"):
+        prep.module_archive(pin, tmp_path, 1, 7)
+    path.write_bytes(b"tampered")
+    with pytest.raises(prep.Refused, match="artifact-mismatch"):
+        prep.module_archive(pin, tmp_path, 1, 8)
+    assert len(calls) == 1
+
+
 def test_package_hash_is_terraform_h1():
     data = bundle({"terraform-provider-random_v3.7.2": "binary", "LICENSE": "MIT"})
     lines = (

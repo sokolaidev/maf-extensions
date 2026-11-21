@@ -5,6 +5,9 @@ provider_args=(--build-arg "MAF_GO_BUILD_CONCURRENCY=${MAF_GO_BUILD_CONCURRENCY:
 if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then
   provider_args+=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")
 fi
+if [ -n "${MAF_AVM_ARCHIVES:-}" ]; then
+  provider_args+=(--build-context "avm-archives=$MAF_AVM_ARCHIVES")
+fi
 
 case "$1" in
   azure-pricing)
@@ -69,11 +72,11 @@ PY
     ;;
   terraform-avm)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
-    docker build --platform linux/amd64 "${provider_args[@]}" --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.terraform-avm.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/AVM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
+    docker build --platform linux/amd64 "${provider_args[@]}" --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.terraform-avm.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/AVM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
     ;;
   opentofu-avm)
     uv run --locked python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin --tag maf-image-scan:base
-    docker build --platform linux/amd64 "${provider_args[@]}" --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.opentofu-avm-network.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/OPENTOFU-AVM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
+    docker build --platform linux/amd64 "${provider_args[@]}" --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MODULE_ARCHIVES=avm-archives --build-arg MANIFEST=dependencies.opentofu-avm.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/OPENTOFU-AVM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
     ;;
   hyperlight-aks-probe)
     uv run --locked python scripts/build_hyperlight_aks_image.py --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag maf-image-scan:target

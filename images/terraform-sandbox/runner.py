@@ -689,6 +689,17 @@ def execute(
         phases = result["phases"]
         begin_phase("init")
         phases["init"] = supervisor.execute_phase(init, root)
+        if (
+            engine == "opentofu"
+            and packages
+            and phases["init"]["exit_code"] != 0
+            and "registry.terraform.io does not provide a modules service"
+            in " ".join(phases["init"]["stderr"].split())
+        ):
+            phases["init"]["stderr"] += (
+                "\nFor a baked OpenTofu module, remove the registry.terraform.io/ prefix "
+                "from the module source.\n"
+            )
         begin_phase("providers")
         if original_lock is not None and lock.read_bytes() != original_lock:
             raise ValueError("supplied lock changed")

@@ -532,6 +532,33 @@ def test_a_catalog_bakes_what_it_can_and_records_the_rest(monkeypatch):
     assert reasons["avm-ptn-skipped"] == "reviewed out"
 
 
+def test_version_exclusion_keeps_compatible_catalogue_and_nested_releases(monkeypatch):
+    table, gets = catalog_routes()
+    source = "registry.terraform.io/Azure/avm-utl-interfaces/azure"
+    url = f"{REGISTRY_MODULES}/Azure/avm-utl-interfaces/azure/versions"
+    table[url] = json.dumps(
+        {"modules": [{"versions": [{"version": v} for v in ("0.6.0", "0.6.1")]}]}
+    ).encode()
+    install(monkeypatch, table, gets)
+    policy = copy.deepcopy(CATALOG_POLICY)
+    policy["catalog"]["exclude"].append(
+        {"source": source, "version": "0.6.1", "reason": "requires a newer engine"}
+    )
+    result = generator.generate(policy)
+    with pytest.raises(ValueError, match="no release"):
+        generator.Resolution(policy).release(source, "= 0.6.1")
+    assert any(p["name"] == INTERFACES_NAME for p in result["registry_modules"])
+    assert not any(
+        p["source"].casefold() == source.casefold() and p["version"] == "0.6.1"
+        for p in result["registry_modules"]
+    )
+    assert {
+        "source": source.casefold(),
+        "version": "0.6.1",
+        "reason": "requires a newer engine",
+    } in result["excluded"]
+
+
 def test_catalog_keeps_provider_picks_for_roots_on_different_lines(monkeypatch):
     table, gets = catalog_routes()
     for url, data in list(table.items()):

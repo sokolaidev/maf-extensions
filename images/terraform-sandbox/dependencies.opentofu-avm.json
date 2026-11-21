@@ -1,0 +1,3263 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {
+      "source": "registry.opentofu.org/azure/alz",
+      "version": "0.22.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-alz/releases/download/v0.22.1/terraform-provider-alz_0.22.1_linux_amd64.zip",
+        "sha256": "46d118b4c1cf9650a536d8c2c0da42a86a7bfbb09376e3e5f95e95444cd629d9",
+        "provenance": "azure alz v0.22.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "673391582"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-alz",
+        "revision": "d5242f754628e1f1c39be194f4b79c612a82ad2b",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-alz/zip/d5242f754628e1f1c39be194f4b79c612a82ad2b",
+          "sha256": "ebaa641f5494f63dcb2ed3552be6eb61505bf6c1fc300155d867c2843a532992",
+          "provenance": "Upstream v0.22.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "github.com/klauspost/compress": "v1.20.2",
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "222dc04569a09b0c301b48b4c8fc02407c80490f7bfe121ce14b5faae59c1a95",
+          "go.sum": "61c46af652075134bfc7416ebd78b687503c724d9f83dc3d4186657825c835b2"
+        },
+        "sha256": "7d9fc9d861fd942037fbdb4bf242cca7ec3766032f1c3e7d9c43b967e6e38085"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "1.15.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-azapi/releases/download/v1.15.0/terraform-provider-azapi_1.15.0_linux_amd64.zip",
+        "sha256": "7ec49c0a8799d469eb6e2a1f856693f9862f1b73f5ed70adc1b346e5a4c6458d",
+        "provenance": "azure azapi v1.15.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "6398642a7882f25eb8ecb94da18f302a95f06880",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/6398642a7882f25eb8ecb94da18f302a95f06880",
+          "sha256": "61ed512e27217823c21ca0dfd0bb427e99955fd470e8f5bd5a500bbcda9fec27",
+          "provenance": "Upstream v1.15.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "github.com/golang-jwt/jwt/v5": "v5.2.2",
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "ad16c35f7b5fa28bd23d2c50e4ffd37d62fd48238e581339abacb5aca541b188",
+          "go.sum": "a692cfab7183ae1ec2c78794495ad3f199ed12a4a1f42c2be694073e0bb5dc36"
+        },
+        "sha256": "344e2665373efd5f259c7f94a961f832d8d7acffdee3f618bf99f2d54b3ef90e"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "2.12.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-azapi/releases/download/v2.12.0/terraform-provider-azapi_2.12.0_linux_amd64.zip",
+        "sha256": "71402acfa1ad35788a5d1669bdd59040434a45aea990d062dcc41f17163c8e1b",
+        "provenance": "azure azapi v2.12.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "52241c97e85e231e81ad57895080f38138236ad2",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/52241c97e85e231e81ad57895080f38138236ad2",
+          "sha256": "deb2e0fcfc6192d2a6ad165a271c3d64012afaf8ebf491867c9e7db8130e0059",
+          "provenance": "Upstream v2.12.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "b010e32130ce57a99897d37c42a17b8e5e0a69af7a9f3381842ed9791d15a5f9",
+          "go.sum": "9f7e410a1794856b7acb9b5d7d950815d39efd4c5c05fa4ee9b9c9575db9ba05"
+        },
+        "sha256": "b18a0cf42f8ddcf4f520a870e9592071ea4e6851573bef58b5a23bb3d4c27b2e"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "2.14.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-azapi/releases/download/v2.14.0/terraform-provider-azapi_2.14.0_linux_amd64.zip",
+        "sha256": "5b29d4767193fd159f537aa210d4d0440eea5b56509ea419ae23d2016e45529d",
+        "provenance": "azure azapi v2.14.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "260e3683da9a1c24578aaf994d6e67419653cead",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/260e3683da9a1c24578aaf994d6e67419653cead",
+          "sha256": "234d65bcaeb00a82e866e1b72af1b4630f653f1227f757efbbbc9c3dcac2c7b1",
+          "provenance": "Upstream v2.14.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "5e53ebb44d9c336287e054f809b5f15551bf833ec8ec64fbde2534229c57a840",
+          "go.sum": "98e0a9b81fde8705f9292785f911e3c9faa56f47a58da3b565df0638db43e543"
+        },
+        "sha256": "148555a4e265ad52dd5145106f909c0848323c51609842ea5c588f97a6603dea"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/azure/modtm",
+      "version": "0.3.5",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-modtm/releases/download/v0.3.5/terraform-provider-modtm_0.3.5_linux_amd64.zip",
+        "sha256": "ae16303a74c83e0d8f4413d568eaf04c3c0d2b07250dbd7ae07bffae01197f36",
+        "provenance": "azure modtm v0.3.5 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "680040111"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-modtm",
+        "revision": "592605782eddc4fc35f2f4c13792b2bc1ab3cc7d",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-modtm/zip/592605782eddc4fc35f2f4c13792b2bc1ab3cc7d",
+          "sha256": "0adc7b8bb71695501e433501b3222e929f652f491e903ccdc3b5fc9bf6342816",
+          "provenance": "Upstream v0.3.5 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "github.com/go-git/go-git/v5": "v5.19.2",
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "32f675cfe99e274f8e5b4dd3875c7ed2378cbebb3072d8b0a12489d913dd905a",
+          "go.sum": "724ba46f9c71fbf40b47165c25eedd684747af17a7fda30373fc514087875e2f"
+        },
+        "sha256": "09ed036b943a1385b3f2da3194a97827f2dceb91c762049c73f5772c4dda2ddb"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/azure/modtm",
+      "version": "0.4.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-modtm/releases/download/v0.4.0/terraform-provider-modtm_0.4.0_linux_amd64.zip",
+        "sha256": "6968bbd28ccdeefa33a77393e1695a896b02e6eeab6ca3384a371675e86587f4",
+        "provenance": "azure modtm v0.4.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "680040111"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-modtm",
+        "revision": "1fe2fcd0f69d697b6d3e3530835416ef2c7114e7",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-modtm/zip/1fe2fcd0f69d697b6d3e3530835416ef2c7114e7",
+          "sha256": "11736444c131b584e06bd7c189b724d78f4715975c6f007f4a292b8358e13024",
+          "provenance": "Upstream v0.4.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "9d7ac8d3509887e40bdaaf7360de1dee4709e7bd50ed8f92bdac045ceebb7aac",
+          "go.sum": "0b1228cfb95b7bdd6e92b1825eeca184de69a9c05b75fcf4ec47e144ff9f2e7d"
+        },
+        "sha256": "01199fe9e6afbe3bf3a566a64bbee49429cd33fab4d214b8702dc76600ffdb14"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/assert",
+      "version": "0.16.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-assert/releases/download/v0.16.0/terraform-provider-assert_0.16.0_linux_amd64.zip",
+        "sha256": "bebed6c1873871eb824103f08e72055c077f01b10a40944760d19ffdd721d9ab",
+        "provenance": "opentofu assert v0.16.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "863539808"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-assert",
+        "revision": "72adcd74ea48cfb8d33cd0647b12b4af957b31cf",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-assert/zip/72adcd74ea48cfb8d33cd0647b12b4af957b31cf",
+          "sha256": "253c5485fe4078b274114e19450957cb3bce5d90281f9a16bd48c76581e77b17",
+          "provenance": "Upstream v0.16.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "4e8024b0692a1c83f077f74d7dc0e51e602c3f1f3d97fce469c0454c073004ac",
+          "go.sum": "765a326c7a634b3ab01ef08829044cd186b9e5eb14c8ef066337a999ee682ee5"
+        },
+        "sha256": "351fdef716dafedf889e7bf7d101b51b8533bcd6df04109625c644d956505fa8"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azuread",
+      "version": "2.50.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azuread/releases/download/v2.50.0/terraform-provider-azuread_2.50.0_linux_amd64.zip",
+        "sha256": "076e550a6d9e1ec1c4614707e3ff0d75deba54908be77408e18acb270f1aba84",
+        "provenance": "opentofu azuread v2.50.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499692"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azuread",
+        "revision": "8a724fef33b3259594ea360413626b141d87b4d4",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azuread/zip/8a724fef33b3259594ea360413626b141d87b4d4",
+          "sha256": "951e12179573d273d23e190e5f244f96747498fba5f55e3032569f53684671a3",
+          "provenance": "Upstream v2.50.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/oauth2": "v0.36.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "a95f81250cd46ec4618f256849acbbc4be83eed4393733f9f132b7e0f9a887b9",
+          "go.sum": "e293b8d254c713223457d66c90ce6cc0279485778f6b4f9bdfa48e983481d0b8"
+        },
+        "sha256": "79fda32e595d6243d75222c657fd910059561449aa5d9ea5f7073ded7071ba9a"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azuread",
+      "version": "3.10.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azuread/releases/download/v3.10.0/terraform-provider-azuread_3.10.0_linux_amd64.zip",
+        "sha256": "504017a69b92a9bee4e80f6bd92073f094b3d658d46ffdcc4d38de8304b94781",
+        "provenance": "opentofu azuread v3.10.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499692"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azuread",
+        "revision": "e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azuread/zip/e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+          "sha256": "25ed0ce7c721b3a09c15defd00ffa3256c1c98f214fe788cdb2184990d6430d6",
+          "provenance": "OpenTofu v3.10.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "46a545a12090c8da8e38122b2c201927bd1aa96a5b0379ee82c95b1a871a3a24",
+          "go.sum": "c5d2787f63e5bd636693140b03b3b9a4dc30bc675666768317638eaca14e9d3d"
+        },
+        "sha256": "1140a0bde66b671bfe86e2cc65a4c0b996a9ee58cc2f8b0fdbd527b951f76053"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "3.117.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v3.117.1/terraform-provider-azurerm_3.117.1_linux_amd64.zip",
+        "sha256": "7c7741f66ff5b05051db4b6c3d9bad68c829f9e920a7f1debdca0ab8e50836a3",
+        "provenance": "opentofu azurerm v3.117.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azurerm",
+        "revision": "42a67742eb980e14eeab4ca0ed98d5c38c0fe414",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azurerm/zip/42a67742eb980e14eeab4ca0ed98d5c38c0fe414",
+          "sha256": "4003444363fa1380f3f25421a9c534a1103b99bda99b1f67c117e9483f8df1c2",
+          "provenance": "Upstream v3.117.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "github.com/golang-jwt/jwt/v4": "v4.5.2",
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/oauth2": "v0.36.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "bd805472c4db2bba32d798b812c97bc2a6d691ed1e8b63c878c6d6b28563a0cc",
+          "go.sum": "e4013aa53791bf2aed102ea119c09fa808a1db573c902f375fe13255d5e68af4"
+        },
+        "sha256": "6c88da467b07b0958e67c5dbe3b308bbd069e54c25a8215bc125de619e651f00"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "4.81.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v4.81.0/terraform-provider-azurerm_4.81.0_linux_amd64.zip",
+        "sha256": "faf96f32e7bd9bf4886a34635c93e80f512214228531e7548ac5b2e3b93a525d",
+        "provenance": "opentofu azurerm v4.81.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azurerm",
+        "revision": "5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azurerm/zip/5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+          "sha256": "0add085dff37898e77b654c378defbcd289569e09f83ab970c4da7adc97ab0a2",
+          "provenance": "OpenTofu v4.81.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+          "go.sum": "e80a233ea5553f68ac30258bf469a28cc922eb8e1b4678da96dbf2ecc45d123f"
+        },
+        "sha256": "1b876e5a4d128b4a184715e713f27ff629a9d59535371edae5b8454919376f6e"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "5.10.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v5.10.0/terraform-provider-azurerm_5.10.0_linux_amd64.zip",
+        "sha256": "3a7d2f6d292d3be0e446610be87169a4fa1ecc948df1a7a473740cb1c5ccd152",
+        "provenance": "opentofu azurerm v5.10.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azurerm",
+        "revision": "b24dfdc1dafe6d0721572b0f6debecb7ab5e81c6",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azurerm/zip/b24dfdc1dafe6d0721572b0f6debecb7ab5e81c6",
+          "sha256": "ad18bd4c03a8bf8e783833a3f045d1bd8c9d86c68f677a45d9703364caff8dee",
+          "provenance": "Upstream v5.10.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "4285cf165852cebd7196da4e9f69946c52a5b786de4fbdda2aa602dfcfe14c24",
+          "go.sum": "800cae90405b813d3b904f1527aa490edd310134d50a40f92f9f05ee9fe31dfb"
+        },
+        "sha256": "6d65e466c735568e0385b7035b6cc9cc31ed25a6095df0ea976ff485ccb3695f"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/local",
+      "version": "2.9.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-local/releases/download/v2.9.1/terraform-provider-local_2.9.1_linux_amd64.zip",
+        "sha256": "5f25e3e5e58d516e3c81ef1ba712bdab3a40e45028bbb62c7ec98659a6dab65f",
+        "provenance": "opentofu local v2.9.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499490"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-local",
+        "revision": "95ad8e4b1c13f74be02143846e13cc8f588bc096",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-local/zip/95ad8e4b1c13f74be02143846e13cc8f588bc096",
+          "sha256": "158e4f621d4c7ce75c1c62cf2a6fb824be13ee93ac5924be363048dd4f680cd4",
+          "provenance": "OpenTofu v2.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "2277c61f5bbd091ea1628c159640183b281fdddc2fdb23bdc03a612e576c2868",
+          "go.sum": "0c733b077da9ead21958111c147e52efdfd8fd6fcae25f7513ca9fdce047844b"
+        },
+        "sha256": "ec05304e103a8ec7b5674c7d2d524c7351e80d6bfa8a6f368e37d20b2582de38"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/null",
+      "version": "3.3.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-null/releases/download/v3.3.2/terraform-provider-null_3.3.2_linux_amd64.zip",
+        "sha256": "73ac02bc3b680e1ea75aab24ec2a359c8f0a021f73d43b2feae0a899e75a93ad",
+        "provenance": "opentofu null v3.3.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499464"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-null",
+        "revision": "a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-null/zip/a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+          "sha256": "a621b7e0a304e55ac68ac17429293f825486a9086cc5977f485fde6a8d85bd8a",
+          "provenance": "OpenTofu v3.3.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "3fed711bd2f2e555494757cc1a1c857c8085dfc7dd900f978ab29cdc5dc4e9d7",
+          "go.sum": "64b0e94726ae5037a7268f017f4691c7d37d27c35e854011aae40f7916dd31dd"
+        },
+        "sha256": "07536b5fe7e2d0952604ea8cff16848f52b8ed146e8f6202c2e49d19d30fe231"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.7.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+        "sha256": "9b0ac4c1d8e36a86b59ced94fa517ae9b015b1d044b3455465cc6f0eab70915d",
+        "provenance": "opentofu random v3.7.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499456"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-random",
+        "revision": "bc2ddb552b4676d16997987a9bf2875c7b98d342",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-random/zip/bc2ddb552b4676d16997987a9bf2875c7b98d342",
+          "sha256": "a1ce2bca7712f6b295644135486fee8fe45de66acc00c3ba3556eea82c12c8b3",
+          "provenance": "Upstream v3.7.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "85bfaa7364c695c9e760d507a1aa036f1815d395b8de347d751a8ba0f8e2da49",
+          "go.sum": "24cc70bcb0a0a040bee69388111ac5e174e115619e51dade6b56691ce9abf6cf"
+        },
+        "sha256": "70589f793c82f302da33b9e766624ea168d5cfa39230fa4b47fc01824afd8fed"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.9.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
+        "sha256": "624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a",
+        "provenance": "opentofu random v3.9.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499456"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-random",
+        "revision": "b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-random/zip/b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+          "sha256": "fa98baac39c33bec2999ee02de8693fa1e36b2fe10c57e378ba22ee44351c6f1",
+          "provenance": "OpenTofu v3.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+          "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
+        },
+        "sha256": "59cd1607ac11d0dd0611fd6f5c61a76c39826f5bd3dde2ff7cdf3dffcfab5112"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/time",
+      "version": "0.14.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-time/releases/download/v0.14.2/terraform-provider-time_0.14.2_linux_amd64.zip",
+        "sha256": "0c5caf61f978612c78eead85fac256ce42a62e5a04616afedf41065a98639c9f",
+        "provenance": "opentofu time v0.14.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499419"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-time",
+        "revision": "c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-time/zip/c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+          "sha256": "e3a369517f5ba6d0b2da49b39daf0476c2093c3b245d941e204887f1429d0332",
+          "provenance": "OpenTofu v0.14.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "22a99896821aadaeb64d75b2a92a5ec035146b6241a36726c546f25ba46d6101",
+          "go.sum": "60fb37c9a3dfa2aaebc122936f82262a830ef997b93d00af7a89be8c5c3f25d6"
+        },
+        "sha256": "50bca20dc00b6c4b1196bb04f11decab5948366b0ab9ad3c3a94b9025324a87a"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/tls",
+      "version": "4.4.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-tls/releases/download/v4.4.1/terraform-provider-tls_4.4.1_linux_amd64.zip",
+        "sha256": "3fcc9caff4fd3b7b4790ad0a2050379d953de46298c61455535bfbeffe93e53f",
+        "provenance": "opentofu tls v4.4.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499409"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-tls",
+        "revision": "623d9ccc2d963372cfcaa54b252a1c507ca69900",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-tls/zip/623d9ccc2d963372cfcaa54b252a1c507ca69900",
+          "sha256": "4469500e686b1634dbf7007f0b4efab88ebaf313538737c8fe79190cb9cdaf76",
+          "provenance": "OpenTofu v4.4.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "83ec43b0a56fcff6cb2244d8036702e70f655b0507f722162c03a6383619ce58",
+          "go.sum": "1d97cbcb55a3f065b98ba35e16907279b6972c5875603a39d0758c7808786366"
+        },
+        "sha256": "8d407591c0ded2188717703d34303065bbdb444029f825a2044fefc7bab935d4"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/tls",
+      "version": "4.4.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-tls/releases/download/v4.4.2/terraform-provider-tls_4.4.2_linux_amd64.zip",
+        "sha256": "9607e7c627014eb6a1d583860b572291283adb50bd6e8be5a7a7821e42b3d31d",
+        "provenance": "opentofu tls v4.4.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499409"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-tls",
+        "revision": "25872ff389752724778971302fbc661f2a87b516",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-tls/zip/25872ff389752724778971302fbc661f2a87b516",
+          "sha256": "271c260f40166da8930c3b4b3a3a90159edffbd9578b87661d537557d3f6393f",
+          "provenance": "Upstream v4.4.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "7e4363e8e743912f3d70d0561b3e9c5908e3c3f70b6664951b2f7a853935255f",
+          "go.sum": "ddf01e40e641572250e96b55bad667eb7342b49ef8e00d9be893aa2c92811c64"
+        },
+        "sha256": "71901d75839fc429f5c2d6fdb96ceaef3433c2594557dccb93c4b272843f32a3"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/integrations/github",
+      "version": "6.13.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/integrations/terraform-provider-github/releases/download/v6.13.0/terraform-provider-github_6.13.0_linux_amd64.zip",
+        "sha256": "5dd05dee677f6ebdbed00cbb1b9be444ab2d1062d345cbc9ec50a47cb41b8622",
+        "provenance": "integrations github v6.13.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "93446099"
+      },
+      "source_build": {
+        "repository": "https://github.com/integrations/terraform-provider-github",
+        "revision": "20728bb30c112287ac3e8243cdb0307a45c6a0a0",
+        "artifact": {
+          "url": "https://codeload.github.com/integrations/terraform-provider-github/zip/20728bb30c112287ac3e8243cdb0307a45c6a0a0",
+          "sha256": "93fa389add86cd02e1e0c4a86ac0fa612ef50971d6302ff2386450961a2649e4",
+          "provenance": "Upstream v6.13.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "github.com/go-jose/go-jose/v4": "v4.1.6",
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "852fec728c98dfd0a2348ab0d412dc14a151b8f609b4f095acb22764dd8d2004",
+          "go.sum": "a788c614cdd9858a1273cd480ff554c3897e18860cf3d6b9b9d03571d350f5cf"
+        },
+        "sha256": "a6c8b1eead24d5559d58092b72cbb8296d16299b9a778f23e9b107fd486ff12c"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/microsoft/azuredevops",
+      "version": "1.16.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/microsoft/terraform-provider-azuredevops/releases/download/v1.16.0/terraform-provider-azuredevops_1.16.0_linux_amd64.zip",
+        "sha256": "a1561528f3bc53957a9fb9dd726fa46bea08b8a25a346c12a67e6d0e7bbedcc3",
+        "provenance": "microsoft azuredevops v1.16.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "273244625"
+      },
+      "source_build": {
+        "repository": "https://github.com/microsoft/terraform-provider-azuredevops",
+        "revision": "49268e97b8c0454a16495df5d39060957557e117",
+        "artifact": {
+          "url": "https://codeload.github.com/microsoft/terraform-provider-azuredevops/zip/49268e97b8c0454a16495df5d39060957557e117",
+          "sha256": "5421c1fdf1bf4393bed788d439708a1f88e712cb7e45b332aff6ae6e1a8dcecf",
+          "provenance": "Upstream v1.16.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "a38456a8bc53f3a89db722930e57d35788a653f74bee2604855a69fb4d019f15",
+          "go.sum": "c104e93540be96e012ec9841b7b2b7ae0814fd7ef3fb5a54293c5d96127d4319"
+        },
+        "sha256": "e4b4f425e6ec9861bb882b569ec1c7beceea04f96b3e62aa7eec854156f368cc"
+      }
+    }
+  ],
+  "modules": [],
+  "registry_modules": [
+    {
+      "name": "avm-ptn-aiml-ai-foundry-azurerm-0.14.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-aiml-ai-foundry/azurerm",
+      "version": "0.14.0",
+      "revision": "e6161c55a12bd2d983777513a09f806e42ef8cc3",
+      "graph": {
+        ".": {
+          "ai_foundry_project": {"local": "modules/ai-foundry-project"},
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "avm_utl_regions": {"registry": "avm-utl-regions-azurerm-0.13.0"},
+          "cosmosdb": {"registry": "avm-res-documentdb-databaseaccount-azurerm-0.11.0"},
+          "key_vault": {"registry": "avm-res-keyvault-vault-azurerm-0.10.2"},
+          "storage_account": {"registry": "avm-res-storage-storageaccount-azurerm-0.6.9"}
+        },
+        "modules/ai-foundry-project": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-aiml-ai-foundry/zip/e6161c55a12bd2d983777513a09f806e42ef8cc3",
+        "sha256": "ad77ca8cc38a06fcaa3a65b1593eb879bead9f43a14a048fe1e3ad5428269842",
+        "provenance": "Registry 0.14.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-aks-dev-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-aks-dev/azurerm",
+      "version": "0.4.0",
+      "revision": "07efa9f9a4ccb58d6daede6986964e6baf1b85cc",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-aks-dev/zip/07efa9f9a4ccb58d6daede6986964e6baf1b85cc",
+        "sha256": "55791b2ca1a758fec3e616488fd34cfda426eeab9f5e1713c32eaaa8a216ebe9",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-aks-economy-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-aks-economy/azurerm",
+      "version": "0.2.0",
+      "revision": "bf68805713d058462c60ed31cb365285ebe4cca0",
+      "graph": {
+        ".": {
+          "avm_res_network_virtualnetwork": {"registry": "avm-res-network-virtualnetwork-azurerm-0.23.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-aks-economy/zip/bf68805713d058462c60ed31cb365285ebe4cca0",
+        "sha256": "bc9ea8e721d7c7a24cf5a6b80dc3f1269f7add0aeba2cb1e4b48089e776fb97a",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-aks-enterprise-azurerm-0.1.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-aks-enterprise/azurerm",
+      "version": "0.1.0",
+      "revision": "c24177eb4a1f0259cfc0d889295e4d35f5db80a9",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-aks-enterprise/zip/c24177eb4a1f0259cfc0d889295e4d35f5db80a9",
+        "sha256": "aca3297d167d0ef62a503dc95e7f5421131ba1ebde9965132a49612441d7a19b",
+        "provenance": "Registry 0.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-aks-production-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-aks-production/azurerm",
+      "version": "0.6.0",
+      "revision": "4694f786857dce4297132d2a30b635ca90c60083",
+      "graph": {
+        ".": {
+          "avm_res_containerregistry_registry": {"registry": "avm-res-containerregistry-registry-azurerm-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-aks-production/zip/4694f786857dce4297132d2a30b635ca90c60083",
+        "sha256": "69b10b49720f2dd03017c166ab519ee82968f6994fcf7583829befc3c8ab9f86",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-alz-azurerm-0.23.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-alz/azurerm",
+      "version": "0.23.0",
+      "revision": "7a958bfded6e3cce6c0b09ede8b9a2575d629353",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-alz/zip/7a958bfded6e3cce6c0b09ede8b9a2575d629353",
+        "sha256": "a71db15eb928e38d9ca314682f42cb541ce6b5c988087b118b89587407d4e219",
+        "provenance": "Registry 0.23.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-alz-connectivity-hub-and-spoke-vnet-azurerm-0.18.4",
+      "source": "registry.opentofu.org/azure/avm-ptn-alz-connectivity-hub-and-spoke-vnet/azurerm",
+      "version": "0.18.4",
+      "revision": "e5ca09d10bbb346ff876f9d9cb5cd69b204fd176",
+      "graph": {
+        ".": {
+          "bastion_host": {"registry": "avm-res-network-bastionhost-azurerm-0.9.0"},
+          "bastion_public_ip": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "ddos_protection_plan": {"registry": "avm-res-network-ddosprotectionplan-azurerm-0.3.0"},
+          "dns_resolver": {"registry": "avm-res-network-dnsresolver-azurerm-0.7.3"},
+          "dns_resolver_policy": {"local": "modules/dns-resolver-policy"},
+          "gateway_route_table": {"registry": "avm-res-network-routetable-azurerm-0.5.0"},
+          "gateway_route_table_routes": {"registry": "avm-res-network-routetable-azurerm-0.5.0", "dir": "modules/route"},
+          "hub_and_spoke_vnet": {"local": "modules/hub-virtual-network-mesh"},
+          "private_dns_zone_auto_registration": {"registry": "avm-res-network-privatednszone-azurerm-0.6.0"},
+          "private_dns_zones": {"registry": "avm-ptn-network-private-link-private-dns-zones-azurerm-0.23.2"},
+          "regions": {"registry": "avm-utl-regions-azurerm-0.13.0"},
+          "virtual_network_gateway": {"local": "modules/virtual-network-gateway"},
+          "virtual_network_ip_prefixes": {"registry": "avm-utl-network-ip-addresses-azurerm-0.1.0"},
+          "virtual_network_subnet_ip_prefixes": {"registry": "avm-utl-network-ip-addresses-azurerm-0.1.0"}
+        },
+        "modules/dns-resolver-policy": {},
+        "modules/hub-virtual-network-mesh": {
+          "fw_default_ips": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "fw_management_ips": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "fw_policies": {"registry": "avm-res-network-firewallpolicy-azurerm-0.3.3"},
+          "hub_firewalls": {"registry": "avm-res-network-azurefirewall-azurerm-0.4.0"},
+          "hub_routing_firewall": {"registry": "avm-res-network-routetable-azurerm-0.3.1"},
+          "hub_routing_user_subnets": {"registry": "avm-res-network-routetable-azurerm-0.3.1"},
+          "hub_virtual_network_peering": {"registry": "avm-res-network-virtualnetwork-azurerm-0.22.2", "dir": "modules/peering"},
+          "hub_virtual_network_subnets": {"registry": "avm-res-network-virtualnetwork-azurerm-0.22.2", "dir": "modules/subnet"},
+          "hub_virtual_networks": {"registry": "avm-res-network-virtualnetwork-azurerm-0.22.2"},
+          "nat_gateway": {"registry": "avm-res-network-natgateway-azurerm-0.3.2"}
+        },
+        "modules/virtual-network-gateway": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet/zip/e5ca09d10bbb346ff876f9d9cb5cd69b204fd176",
+        "sha256": "a5213d8f639cf740ade4a88978ed6f3a5baa026f08d0137e187fc4626b7ba14c",
+        "provenance": "Registry 0.18.4 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-alz-connectivity-virtual-wan-azurerm-0.18.2",
+      "source": "registry.opentofu.org/azure/avm-ptn-alz-connectivity-virtual-wan/azurerm",
+      "version": "0.18.2",
+      "revision": "2233c36f2c23bbf1516c99eccf5abed7e9b7229f",
+      "graph": {
+        ".": {
+          "bastion_host": {"registry": "avm-res-network-bastionhost-azurerm-0.6.0"},
+          "bastion_public_ip": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "ddos_protection_plan": {"registry": "avm-res-network-ddosprotectionplan-azurerm-0.3.0"},
+          "dns_resolver": {"registry": "avm-res-network-dnsresolver-azurerm-0.7.3"},
+          "firewall_policy": {"registry": "avm-res-network-firewallpolicy-azurerm-0.3.3"},
+          "private_dns_zone_auto_registration": {"registry": "avm-res-network-privatednszone-azurerm-0.4.3"},
+          "private_dns_zones": {"registry": "avm-ptn-network-private-link-private-dns-zones-azurerm-0.23.2"},
+          "regions": {"registry": "avm-utl-regions-azurerm-0.13.2"},
+          "route_map": {"local": "modules/route-map"},
+          "virtual_network_ip_prefixes": {"registry": "avm-utl-network-ip-addresses-azurerm-0.1.0"},
+          "virtual_network_side_car": {"registry": "avm-res-network-virtualnetwork-azurerm-0.22.2"},
+          "virtual_network_subnet_ip_prefixes": {"registry": "avm-utl-network-ip-addresses-azurerm-0.1.0"},
+          "virtual_wan": {"local": "modules/virtual-wan"}
+        },
+        "modules/expressroute-gateway": {},
+        "modules/expressroute-gateway-connection": {},
+        "modules/firewall": {
+          "customer_firewalls": {"local": "modules/firewall-customer-ip"}
+        },
+        "modules/firewall-customer-ip": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        },
+        "modules/route-map": {},
+        "modules/site-to-site-gateway": {},
+        "modules/site-to-site-gateway-connection": {},
+        "modules/site-to-site-vpn-site": {},
+        "modules/virtual-hub": {},
+        "modules/virtual-network-connection": {},
+        "modules/virtual-wan": {
+          "er_connections": {"local": "modules/expressroute-gateway-connection"},
+          "express_route_gateways": {"local": "modules/expressroute-gateway"},
+          "firewalls": {"local": "modules/firewall"},
+          "virtual_hubs": {"local": "modules/virtual-hub"},
+          "virtual_network_connections": {"local": "modules/virtual-network-connection"},
+          "vpn_gateway": {"local": "modules/site-to-site-gateway"},
+          "vpn_site": {"local": "modules/site-to-site-vpn-site"},
+          "vpn_site_connection": {"local": "modules/site-to-site-gateway-connection"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-alz-connectivity-virtual-wan/zip/2233c36f2c23bbf1516c99eccf5abed7e9b7229f",
+        "sha256": "9d3bd2725d427771252aa764d39af280b5262bd6be8eeeefea43139afaeacd4b",
+        "provenance": "Registry 0.18.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-alz-management-azurerm-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-alz-management/azurerm",
+      "version": "0.10.0",
+      "revision": "3026684f8aa489dd9f88f637afdf859cb1bcee27",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-alz-management/zip/3026684f8aa489dd9f88f637afdf859cb1bcee27",
+        "sha256": "ec90679776bd22244a76ffd963ef89444dc3f1fe6390384b5e878d692cfebc10",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-alz-sub-vending-azure-0.3.4",
+      "source": "registry.opentofu.org/azure/avm-ptn-alz-sub-vending/azure",
+      "version": "0.3.4",
+      "revision": "28577b03cf4ad2cd5faa2e9ee7991f07c7c2dab0",
+      "graph": {
+        ".": {
+          "budget": {"local": "modules/budget"},
+          "networksecuritygroup": {"local": "modules/network-security-group"},
+          "resourcegroup": {"local": "modules/resource-group"},
+          "resourceproviders": {"local": "modules/resource-provider"},
+          "roleassignment": {"local": "modules/role-assignment"},
+          "roleassignment_umi": {"local": "modules/role-assignment"},
+          "routetable": {"local": "modules/route-table"},
+          "subscription": {"local": "modules/subscription"},
+          "usermanagedidentity": {"local": "modules/user-assigned-managed-identity"},
+          "virtualnetwork": {"local": "modules/virtual-network"}
+        },
+        "modules/budget": {},
+        "modules/network-security-group": {
+          "security_rule": {"local": "modules/network-security-group/modules/security-rule"}
+        },
+        "modules/network-security-group/modules/security-rule": {},
+        "modules/resource-group": {},
+        "modules/resource-provider": {},
+        "modules/role-assignment": {
+          "role_definitions": {"registry": "avm-utl-roledefinitions-azure-0.1.0"}
+        },
+        "modules/route-table": {
+          "route": {"local": "modules/route-table/modules/route"}
+        },
+        "modules/route-table/modules/route": {},
+        "modules/subscription": {},
+        "modules/user-assigned-managed-identity": {},
+        "modules/virtual-network": {
+          "peering_hub_inbound": {"registry": "avm-res-network-virtualnetwork-azurerm-0.14.1", "dir": "modules/peering"},
+          "peering_hub_outbound": {"registry": "avm-res-network-virtualnetwork-azurerm-0.14.1", "dir": "modules/peering"},
+          "peering_mesh": {"registry": "avm-res-network-virtualnetwork-azurerm-0.14.1", "dir": "modules/peering"},
+          "virtual_networks": {"registry": "avm-res-network-virtualnetwork-azurerm-0.20.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-ptn-alz-sub-vending/zip/28577b03cf4ad2cd5faa2e9ee7991f07c7c2dab0",
+        "sha256": "9950a9e32c1c0e67ee004f0a4cd0dffd53366aaf8b6dfa60004c61e87465f418",
+        "provenance": "Registry 0.3.4 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-avd-lza-insights-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-avd-lza-insights/azurerm",
+      "version": "0.5.0",
+      "revision": "f2f675207e3f2ebde5272f7f52c3befe45c3031a",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-avd-lza-insights/zip/f2f675207e3f2ebde5272f7f52c3befe45c3031a",
+        "sha256": "74e9742c247a0facdafe1d27e758b22f7da8f05097f941a7da3096c434ead064",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-avd-lza-managementplane-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-avd-lza-managementplane/azurerm",
+      "version": "0.4.0",
+      "revision": "b9918b1fa6b119085c757b2db904ebca380bba5f",
+      "graph": {
+        ".": {
+          "avm_res_desktopvirtualization_applicationgroup": {"registry": "avm-res-desktopvirtualization-applicationgroup-azurerm-0.4.0"},
+          "avm_res_desktopvirtualization_hostpool": {"registry": "avm-res-desktopvirtualization-hostpool-azurerm-0.6.0"},
+          "avm_res_desktopvirtualization_scaling_plan": {"registry": "avm-res-desktopvirtualization-scalingplan-azurerm-0.4.0"},
+          "avm_res_desktopvirtualization_workspace": {"registry": "avm-res-desktopvirtualization-workspace-azurerm-0.4.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-avd-lza-managementplane/zip/b9918b1fa6b119085c757b2db904ebca380bba5f",
+        "sha256": "e8bbe60bfa24e44b94089d8f3933bc7dfa0a2d60c56cfec86cb75a31893fb595",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-azuremonitorwindowsagent-azurerm-3.1.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-azuremonitorwindowsagent/azurerm",
+      "version": "3.1.0",
+      "revision": "3a8f535f3be9f4635c4eec3afcc823f04bd1b52d",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-azuremonitorwindowsagent/zip/3a8f535f3be9f4635c4eec3afcc823f04bd1b52d",
+        "sha256": "d048b26c0b1a75a2b34041fe58f9b16eccdf9d72f3d651041f7584f679cc865d",
+        "provenance": "Registry 3.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-cicd-agents-and-runners-azurerm-0.6.2",
+      "source": "registry.opentofu.org/azure/avm-ptn-cicd-agents-and-runners/azurerm",
+      "version": "0.6.2",
+      "revision": "4f8138282d9076ecbc79e0095720814be5100df0",
+      "graph": {
+        ".": {
+          "container_app_job": {"local": "modules/container-app-job"},
+          "container_instance": {"local": "modules/container-instance"},
+          "container_registry": {"local": "modules/container-registry"},
+          "log_analytics_workspace": {"registry": "avm-res-operationalinsights-workspace-azurerm-0.5.1"},
+          "user_assigned_managed_identity": {"registry": "avm-res-managedidentity-userassignedidentity-azurerm-0.3.3"},
+          "virtual_network": {"registry": "avm-res-network-virtualnetwork-azurerm-0.8.1"}
+        },
+        "modules/container-app-job": {},
+        "modules/container-instance": {},
+        "modules/container-registry": {
+          "container_registry": {"registry": "avm-res-containerregistry-registry-azurerm-0.8.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-cicd-agents-and-runners/zip/4f8138282d9076ecbc79e0095720814be5100df0",
+        "sha256": "e8781d1809883cefae28eeebc825708370176ac9bf9088f9e5cbd85b25eb7242",
+        "provenance": "Registry 0.6.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-hci-ad-provisioner-azurerm-1.1.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-hci-ad-provisioner/azurerm",
+      "version": "1.1.0",
+      "revision": "241e786081a1ff83e8ef5af9d0ceabcda449354e",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-hci-ad-provisioner/zip/241e786081a1ff83e8ef5af9d0ceabcda449354e",
+        "sha256": "7e5bcb574ea47d3d898cd24bcaf1451fe3e88cb9caa40013bd0ccbc906289559",
+        "provenance": "Registry 1.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-hci-server-provisioner-azurerm-1.1.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-hci-server-provisioner/azurerm",
+      "version": "1.1.0",
+      "revision": "bc2155022c9d6381373d650595ca16e451652311",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-hci-server-provisioner/zip/bc2155022c9d6381373d650595ca16e451652311",
+        "sha256": "941ab5f6b0a81732ad9f8a23c6fb6357f56495694f47b9f227f8ea07067ad47b",
+        "provenance": "Registry 1.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-hubnetworking-azurerm-0.13.2",
+      "source": "registry.opentofu.org/azure/avm-ptn-hubnetworking/azurerm",
+      "version": "0.13.2",
+      "revision": "9c3096808897103cbea7aa3c37e64e9a1fe26a49",
+      "graph": {
+        ".": {
+          "fw_default_ips": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "fw_management_ips": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"},
+          "fw_policies": {"registry": "avm-res-network-firewallpolicy-azurerm-0.3.3"},
+          "hub_firewalls": {"registry": "avm-res-network-azurefirewall-azurerm-0.4.0"},
+          "hub_routing_firewall": {"registry": "avm-res-network-routetable-azurerm-0.3.1"},
+          "hub_routing_user_subnets": {"registry": "avm-res-network-routetable-azurerm-0.3.1"},
+          "hub_virtual_network_peering": {"registry": "avm-res-network-virtualnetwork-azurerm-0.12.0", "dir": "modules/peering"},
+          "hub_virtual_network_subnets": {"registry": "avm-res-network-virtualnetwork-azurerm-0.12.0", "dir": "modules/subnet"},
+          "hub_virtual_networks": {"registry": "avm-res-network-virtualnetwork-azurerm-0.12.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-hubnetworking/zip/9c3096808897103cbea7aa3c37e64e9a1fe26a49",
+        "sha256": "dff16187dbac3d4bb1d8d9069e397938a9f9c60b71727f7e5f547bf94f31d757",
+        "provenance": "Registry 0.13.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-monitoring-amba-alz-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-monitoring-amba-alz/azurerm",
+      "version": "0.5.0",
+      "revision": "fc67f2655318ab45b20b12df4790f2ce2892be5f",
+      "graph": {
+        ".": {
+          "resource_group": {"registry": "avm-res-resources-resourcegroup-azurerm-0.5.0"},
+          "user_assigned_managed_identity": {"registry": "avm-res-managedidentity-userassignedidentity-azurerm-0.6.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-monitoring-amba-alz/zip/fc67f2655318ab45b20b12df4790f2ce2892be5f",
+        "sha256": "715d4631376e3b964f9a18c48c6b935d5eb8c6aa3f47560c421a964a1f4707c4",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-network-private-link-private-dns-zones-azurerm-0.23.2",
+      "source": "registry.opentofu.org/azure/avm-ptn-network-private-link-private-dns-zones/azurerm",
+      "version": "0.23.2",
+      "revision": "4d2214f162806d48ea9a157de4b904f879fc61d4",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.5.0"},
+          "avm_res_network_privatednszone": {"registry": "avm-res-network-privatednszone-azurerm-0.4.3"},
+          "regions": {"registry": "avm-utl-regions-azurerm-0.12.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-network-private-link-private-dns-zones/zip/4d2214f162806d48ea9a157de4b904f879fc61d4",
+        "sha256": "18857a9c11f2707deac37b175cdc88bc347a34bd2dbcc3b23e884a6b85bd1f3c",
+        "provenance": "Registry 0.23.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-network-private-link-private-dns-zones-azurerm-0.23.3",
+      "source": "registry.opentofu.org/azure/avm-ptn-network-private-link-private-dns-zones/azurerm",
+      "version": "0.23.3",
+      "revision": "d250c038037e307ddaf9e5fd35d244bf8286977a",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"},
+          "avm_res_network_privatednszone": {"registry": "avm-res-network-privatednszone-azurerm-0.6.0"},
+          "regions": {"registry": "avm-utl-regions-azurerm-0.13.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-network-private-link-private-dns-zones/zip/d250c038037e307ddaf9e5fd35d244bf8286977a",
+        "sha256": "6a3936a98562fc178f394ab47747a92b7508c8b2c48aaa04c8629046c4844f42",
+        "provenance": "Registry 0.23.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-network-routeserver-azurerm-0.1.5",
+      "source": "registry.opentofu.org/azure/avm-ptn-network-routeserver/azurerm",
+      "version": "0.1.5",
+      "revision": "1776909e3d204cf81446223b2f0971a0f80adaab",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-network-routeserver/zip/1776909e3d204cf81446223b2f0971a0f80adaab",
+        "sha256": "de98148d81ba00d7876caab14c0077197e1caa75a5d0a762df86e6964c9fb515",
+        "provenance": "Registry 0.1.5 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-odaa-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-ptn-odaa/azurerm",
+      "version": "0.2.0",
+      "revision": "01e3be0e56173b066b12a94c17336b1127084858",
+      "graph": {
+        ".": {
+          "odaa_infrastructure": {"registry": "avm-res-oracledatabase-cloudexadatainfrastructure-azurerm-0.4.0"},
+          "odaa_vmcluster": {"registry": "avm-res-oracledatabase-cloudvmcluster-azurerm-0.4.0"},
+          "odaa_vnets": {"registry": "avm-res-network-virtualnetwork-azurerm-0.23.0"},
+          "vnet_peerings": {"local": "modules/vnet_peerings"}
+        },
+        "modules/vnet_peerings": {
+          "peering": {"registry": "avm-res-network-virtualnetwork-azurerm-0.23.0", "dir": "modules/peering"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-odaa/zip/01e3be0e56173b066b12a94c17336b1127084858",
+        "sha256": "568c2f1a232d9ffa2261224f56b1c55213ca0853b78d931e57894e8df3d1f3dd",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-policyassignment-azurerm-0.2.2",
+      "source": "registry.opentofu.org/azure/avm-ptn-policyassignment/azurerm",
+      "version": "0.2.2",
+      "revision": "8f8d9eecbcfdfc7da848fcdd793d15326b358b97",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-policyassignment/zip/8f8d9eecbcfdfc7da848fcdd793d15326b358b97",
+        "sha256": "c593d2909bb9a137dc833389485bf523a9556402517eec03f59b22839a13ee6d",
+        "provenance": "Registry 0.2.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-virtualwan-azurerm-0.14.1",
+      "source": "registry.opentofu.org/azure/avm-ptn-virtualwan/azurerm",
+      "version": "0.14.1",
+      "revision": "828e4f55ffc1ee81018a92e09193cc533e16816b",
+      "graph": {
+        ".": {
+          "er_connections": {"local": "modules/expressroute-gateway-conn"},
+          "express_route_gateways": {"local": "modules/expressroute-gateway"},
+          "firewalls": {"local": "modules/firewall"},
+          "virtual_hubs": {"local": "modules/virtualhub"},
+          "virtual_network_connections": {"local": "modules/vnet-conn"},
+          "vpn_gateway": {"local": "modules/site-to-site-gateway"},
+          "vpn_site": {"local": "modules/site-to-site-vpn-site"},
+          "vpn_site_connection": {"local": "modules/site-to-site-gateway-conn"}
+        },
+        "modules/expressroute-gateway": {},
+        "modules/expressroute-gateway-conn": {},
+        "modules/firewall": {},
+        "modules/site-to-site-gateway": {},
+        "modules/site-to-site-gateway-conn": {},
+        "modules/site-to-site-vpn-site": {},
+        "modules/virtualhub": {},
+        "modules/vnet-conn": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-virtualwan/zip/828e4f55ffc1ee81018a92e09193cc533e16816b",
+        "sha256": "f5612c7ba2cb867255d4f916da45e0ceb766c8b1bb3d228f35b979b65cdbb7f9",
+        "provenance": "Registry 0.14.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-ptn-vnetgateway-azurerm-0.10.3",
+      "source": "registry.opentofu.org/azure/avm-ptn-vnetgateway/azurerm",
+      "version": "0.10.3",
+      "revision": "fe1164b2066730f651281d080141d93bac5c3128",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-ptn-vnetgateway/zip/fe1164b2066730f651281d080141d93bac5c3128",
+        "sha256": "07be7128cee8f4c59ab1ec679f898c7e177f62ce40ee9640e1b51170e525a18e",
+        "provenance": "Registry 0.10.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-apimanagement-service-azurerm-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-res-apimanagement-service/azurerm",
+      "version": "0.10.0",
+      "revision": "5f0006a15355f38be2f18e1e4575989d9a29117d",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-apimanagement-service/zip/5f0006a15355f38be2f18e1e4575989d9a29117d",
+        "sha256": "acc8d63a5b2bbc6e857d1ece1b468439327801c8a965f00b4b78c428b88fce99",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-app-containerapp-azurerm-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-res-app-containerapp/azurerm",
+      "version": "0.10.0",
+      "revision": "b09ef58beefc8c8a0840dd35f915c34f7bc4ebea",
+      "graph": {
+        ".": {
+          "auth_config": {"local": "modules/auth-config"},
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        },
+        "modules/auth-config": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-app-containerapp/zip/b09ef58beefc8c8a0840dd35f915c34f7bc4ebea",
+        "sha256": "5c0ae875b18627626253a7cf38457ddd9b8ea9708e493ebea636256eb8c09d5e",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-app-managedenvironment-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-app-managedenvironment/azurerm",
+      "version": "0.6.0",
+      "revision": "c6709095a923c7c3d1fb54da0d43cb56d95b731e",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "certificates": {"local": "modules/certificates"},
+          "dapr_components": {"local": "modules/dapr_components"},
+          "dapr_subscriptions": {"local": "modules/dapr_subscriptions"},
+          "dot_net_components": {"local": "modules/dot_net_components"},
+          "http_route_configs": {"local": "modules/http_route_configs"},
+          "java_components": {"local": "modules/java_components"},
+          "maintenance_configurations": {"local": "modules/maintenance_configurations"},
+          "managed_certificates": {"local": "modules/managed_certificates"},
+          "storages": {"local": "modules/storages"}
+        },
+        "modules/certificates": {},
+        "modules/dapr_components": {},
+        "modules/dapr_subscriptions": {},
+        "modules/dot_net_components": {},
+        "modules/http_route_configs": {},
+        "modules/java_components": {},
+        "modules/maintenance_configurations": {},
+        "modules/managed_certificates": {},
+        "modules/storages": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-app-managedenvironment/zip/c6709095a923c7c3d1fb54da0d43cb56d95b731e",
+        "sha256": "ff1981cc6e4f0545ff5ed7c122e5e78743559e3e3c8a9c12a693af17cb35ad7f",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-appconfiguration-configurationstore-azure-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-appconfiguration-configurationstore/azure",
+      "version": "0.6.0",
+      "revision": "c06752d9f95f322d98fb348afaa8e95550941b53",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "avm_interfaces_private_endpoints": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "key_values": {"local": "modules/keyvalue"},
+          "replica": {"local": "modules/replicas"}
+        },
+        "modules/keyvalue": {},
+        "modules/replicas": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-res-appconfiguration-configurationstore/zip/c06752d9f95f322d98fb348afaa8e95550941b53",
+        "sha256": "f7bef16eee244420c0aa469fa3da128a2c8577626cbc78f985d58629b38b281c",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-authorization-roleassignment-azurerm-0.3.1",
+      "source": "registry.opentofu.org/azure/avm-res-authorization-roleassignment/azurerm",
+      "version": "0.3.1",
+      "revision": "8f90a2110e81def1c63f8f81f44e60554793e50e",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-authorization-roleassignment/zip/8f90a2110e81def1c63f8f81f44e60554793e50e",
+        "sha256": "0176e1f8d6b355b0cc4dd6902461d594e292591f3f989987a10e749613dbb12b",
+        "provenance": "Registry 0.3.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-avs-privatecloud-azurerm-0.12.0",
+      "source": "registry.opentofu.org/azure/avm-res-avs-privatecloud/azurerm",
+      "version": "0.12.0",
+      "revision": "acd7604c294ceb38a391f1d82a2608139aded06f",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-avs-privatecloud/zip/acd7604c294ceb38a391f1d82a2608139aded06f",
+        "sha256": "0cf25783842a2581638b52660689c6b61a78178e1a5be06ddef4466d52cacdbd",
+        "provenance": "Registry 0.12.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-azurestackhci-cluster-azurerm-2.0.2",
+      "source": "registry.opentofu.org/azure/avm-res-azurestackhci-cluster/azurerm",
+      "version": "2.0.2",
+      "revision": "4769de990abad53d5fb90ccb835192159a8b5561",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-azurestackhci-cluster/zip/4769de990abad53d5fb90ccb835192159a8b5561",
+        "sha256": "c77babff573d60f64eb1c7f56c9304e3efef623ebb3558f99c81d11a1aacbe6c",
+        "provenance": "Registry 2.0.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-azurestackhci-logicalnetwork-azurerm-2.0.0",
+      "source": "registry.opentofu.org/azure/avm-res-azurestackhci-logicalnetwork/azurerm",
+      "version": "2.0.0",
+      "revision": "e5cfcd51d0f4e609802f3068049d948ed58a9b5c",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-azurestackhci-logicalnetwork/zip/e5cfcd51d0f4e609802f3068049d948ed58a9b5c",
+        "sha256": "c7fbb0f8a9a3d1aee461a6d7d31f2805be1f51ddf1ba558da8f92a0f4b5f798d",
+        "provenance": "Registry 2.0.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-azurestackhci-virtualmachineinstance-azurerm-2.1.1",
+      "source": "registry.opentofu.org/azure/avm-res-azurestackhci-virtualmachineinstance/azurerm",
+      "version": "2.1.1",
+      "revision": "4b32eb1a500dda291ba1f37ae8d97118dc4fbe64",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-azurestackhci-virtualmachineinstance/zip/4b32eb1a500dda291ba1f37ae8d97118dc4fbe64",
+        "sha256": "ac655cd2b053b55ec587c3850d2fb06eea38966d513988bb1de9d66711255741",
+        "provenance": "Registry 2.1.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-cache-redis-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-cache-redis/azurerm",
+      "version": "0.5.0",
+      "revision": "7469021fb795f8ee3dce2ed2dba2f41b91c4785c",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-cache-redis/zip/7469021fb795f8ee3dce2ed2dba2f41b91c4785c",
+        "sha256": "f9b55ad576feea8a799ac7d66f3bb6d9bed6d5b674ef6eca6e74ff4c643eb8cc",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-cache-redisenterprise-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-cache-redisenterprise/azurerm",
+      "version": "0.3.0",
+      "revision": "ee201d29c3d81c2dfa30d4587909dafd9e34b4de",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-cache-redisenterprise/zip/ee201d29c3d81c2dfa30d4587909dafd9e34b4de",
+        "sha256": "3b812f3f8bd11d1d892bf097b82b07a11909db787f323eff7036e1f3e66de565",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-cdn-profile-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-cdn-profile/azurerm",
+      "version": "0.3.0",
+      "revision": "f492ba21f22441e0c5f86e962e7bd904532b6a38",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-cdn-profile/zip/f492ba21f22441e0c5f86e962e7bd904532b6a38",
+        "sha256": "fa05e7990c36b591c87c4cf687e1847ec0a4cd75d0ea35fbd7cd09fe19520592",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-cognitiveservices-account-azurerm-0.13.0",
+      "source": "registry.opentofu.org/azure/avm-res-cognitiveservices-account/azurerm",
+      "version": "0.13.0",
+      "revision": "6fb6e708bbccdd4a6348a8b93ad68a96e1b2cb41",
+      "graph": {
+        ".": {
+          "deployment": {"local": "modules/deployment"},
+          "private_endpoint_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "rai_policy": {"local": "modules/rai_policy"}
+        },
+        "modules/deployment": {},
+        "modules/rai_policy": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-cognitiveservices-account/zip/6fb6e708bbccdd4a6348a8b93ad68a96e1b2cb41",
+        "sha256": "f42b8e52b1fa4aac24e490089024f5d52249f449791a907a589a8c883e40b857",
+        "provenance": "Registry 0.13.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-disk-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-disk/azurerm",
+      "version": "0.5.0",
+      "revision": "85e69de9e3a572fe748f1981900f8c378f6275d2",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-disk/zip/85e69de9e3a572fe748f1981900f8c378f6275d2",
+        "sha256": "f988a052d09e212f6eb62db1b650cf44ddd009f855973fbb7bc69d00f21e6843",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-diskencryptionset-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-diskencryptionset/azurerm",
+      "version": "0.2.0",
+      "revision": "c3acf1c3626f2334c4059a3fd1c4a4fb0f5bc519",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-diskencryptionset/zip/c3acf1c3626f2334c4059a3fd1c4a4fb0f5bc519",
+        "sha256": "7921248b0e50b33cfd45472b39ec495c42ee85d331c943ed7684edc2424c930e",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-gallery-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-gallery/azurerm",
+      "version": "0.3.0",
+      "revision": "bbc4b4fddf5c3756765a7dcae7cf46f8d123dc7e",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-gallery/zip/bbc4b4fddf5c3756765a7dcae7cf46f8d123dc7e",
+        "sha256": "9f1896afacec827a2221cabf41f7e58ff036487f1981fea6ebe064cc254ad94f",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-hostgroup-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-hostgroup/azurerm",
+      "version": "0.3.0",
+      "revision": "b36e9c6223183e30117bcfa17e50a3a8705d99ca",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-hostgroup/zip/b36e9c6223183e30117bcfa17e50a3a8705d99ca",
+        "sha256": "9a0af079996f9adf7f828103562b4c6d65b61fbd6cd3ac0a6784e778fa61be78",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-proximityplacementgroup-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-proximityplacementgroup/azurerm",
+      "version": "0.2.0",
+      "revision": "c2c9d0b59611c4d37a84e2a9cd75aa3562044588",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-proximityplacementgroup/zip/c2c9d0b59611c4d37a84e2a9cd75aa3562044588",
+        "sha256": "0a40a5c44af98064bd8c96bd4bc4e78254167fea53873b600b89a30f714df656",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-sshpublickey-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-sshpublickey/azurerm",
+      "version": "0.3.0",
+      "revision": "1e19ab35735905d48f2f933e81f73aa3c1919466",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-sshpublickey/zip/1e19ab35735905d48f2f933e81f73aa3c1919466",
+        "sha256": "9d07351a32849d873b8c67d040c0f473d8da4beb4685fa6aa0bfdb78fce60db9",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-virtualmachine-azurerm-0.21.0",
+      "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachine/azurerm",
+      "version": "0.21.0",
+      "revision": "a6e951bdebcf50656a1fa29881fcc5a4c87e7a77",
+      "graph": {
+        ".": {
+          "extension": {"local": "modules/extension"},
+          "extension_1": {"local": "modules/extension"},
+          "extension_2": {"local": "modules/extension"},
+          "extension_3": {"local": "modules/extension"},
+          "extension_4": {"local": "modules/extension"},
+          "run_command": {"local": "modules/run-command"},
+          "run_command_1": {"local": "modules/run-command"},
+          "run_command_2": {"local": "modules/run-command"}
+        },
+        "modules/extension": {},
+        "modules/run-command": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-virtualmachine/zip/a6e951bdebcf50656a1fa29881fcc5a4c87e7a77",
+        "sha256": "0e270b2b90463abf60021d80a51d876e5a08c9bbce2ca3d3ee5f87b5e2d9f8b7",
+        "provenance": "Registry 0.21.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-compute-virtualmachinescaleset-azurerm-0.11.3",
+      "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachinescaleset/azurerm",
+      "version": "0.11.3",
+      "revision": "0124580b5d29b02e27ace6d7a4a457520c9744e1",
+      "graph": {
+        ".": {
+          "avm_utl_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"},
+          "managed_identities": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-compute-virtualmachinescaleset/zip/0124580b5d29b02e27ace6d7a4a457520c9744e1",
+        "sha256": "6d4af9f8f80fe46741f71ca71a05520f67fcf3dbe5a2f507428f83d19da25e8e",
+        "provenance": "Registry 0.11.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-containerinstance-containergroup-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-containerinstance-containergroup/azurerm",
+      "version": "0.3.0",
+      "revision": "c87bb374e582ae6eae3cbfc9fc43084f54ed10bf",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-containerinstance-containergroup/zip/c87bb374e582ae6eae3cbfc9fc43084f54ed10bf",
+        "sha256": "47922e4b8409e46dcba77e686d094dee2be13fa1f5f7e1cf69a9efabc4e86167",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-containerregistry-registry-azurerm-0.8.0",
+      "source": "registry.opentofu.org/azure/avm-res-containerregistry-registry/azurerm",
+      "version": "0.8.0",
+      "revision": "4a032f5cf4607536008c217efdc3f06dda45f33c",
+      "graph": {
+        ".": {
+          "cache_rule": {"local": "modules/cache-rule"},
+          "credential_set": {"local": "modules/credential-set"},
+          "scope_maps": {"local": "modules/scope-map"}
+        },
+        "modules/cache-rule": {},
+        "modules/credential-set": {},
+        "modules/scope-map": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-containerregistry-registry/zip/4a032f5cf4607536008c217efdc3f06dda45f33c",
+        "sha256": "d5540dfb6a901c45c11727c77466820d7f0df7618c2a0a9e520ca9d53a1f728f",
+        "provenance": "Registry 0.8.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-containerregistry-registry-azurerm-0.9.0",
+      "source": "registry.opentofu.org/azure/avm-res-containerregistry-registry/azurerm",
+      "version": "0.9.0",
+      "revision": "7f2dc78bb5dbfc6e05809963410be844006f9490",
+      "graph": {
+        ".": {
+          "cache_rule": {"local": "modules/cache-rule"},
+          "credential_set": {"local": "modules/credential-set"},
+          "scope_maps": {"local": "modules/scope-map"}
+        },
+        "modules/cache-rule": {},
+        "modules/credential-set": {},
+        "modules/scope-map": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-containerregistry-registry/zip/7f2dc78bb5dbfc6e05809963410be844006f9490",
+        "sha256": "d7641a4bf46dc0fcbd55679c79f29f3cf5a86e3521a1829883ebaece919041c5",
+        "provenance": "Registry 0.9.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-containerservice-managedcluster-azurerm-0.9.0",
+      "source": "registry.opentofu.org/azure/avm-res-containerservice-managedcluster/azurerm",
+      "version": "0.9.0",
+      "revision": "1925e0490783695919ab21e4c73ebf1f53d95e2d",
+      "graph": {
+        ".": {
+          "alerting": {"local": "modules/alerting"},
+          "default_agent_pool_data": {"local": "modules/agentpool"},
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "maintenanceconfiguration": {"local": "modules/maintenanceconfiguration"},
+          "monitoring": {"local": "modules/monitoring"},
+          "namespace": {"local": "modules/namespace"},
+          "nodepools": {"local": "modules/agentpool"}
+        },
+        "modules/agentpool": {},
+        "modules/alerting": {},
+        "modules/maintenanceconfiguration": {},
+        "modules/monitoring": {},
+        "modules/namespace": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-containerservice-managedcluster/zip/1925e0490783695919ab21e4c73ebf1f53d95e2d",
+        "sha256": "826251f9b9738689486fb8913a84007d314df164bf301721ff449f90126fde18",
+        "provenance": "Registry 0.9.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-databricks-workspace-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-databricks-workspace/azurerm",
+      "version": "0.6.0",
+      "revision": "db6af7b444cddde06744df1be9cab1fc0424f31a",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-databricks-workspace/zip/db6af7b444cddde06744df1be9cab1fc0424f31a",
+        "sha256": "bf44d0fd52d48ec50092f02983e282f275e5eef32539b944d4e1788e3d785f7f",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-dataprotection-backupvault-azurerm-2.1.0",
+      "source": "registry.opentofu.org/azure/avm-res-dataprotection-backupvault/azurerm",
+      "version": "2.1.0",
+      "revision": "f6dbb9cd0f917501d19a6e0d42d88c717597da08",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-dataprotection-backupvault/zip/f6dbb9cd0f917501d19a6e0d42d88c717597da08",
+        "sha256": "30569d5f91aef13d0d478b66a3960ca39668a84d124db403ad1eeb69a44750e7",
+        "provenance": "Registry 2.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-dbformysql-flexibleserver-azurerm-0.1.9",
+      "source": "registry.opentofu.org/azure/avm-res-dbformysql-flexibleserver/azurerm",
+      "version": "0.1.9",
+      "revision": "b5e4d2106c38a2fd41182755bc5f87e1f1f2d1b1",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-dbformysql-flexibleserver/zip/b5e4d2106c38a2fd41182755bc5f87e1f1f2d1b1",
+        "sha256": "66cd96b09aa14cd462863b3278f533abbf7aba9ca07e4ae28d4f815fada8b6cf",
+        "provenance": "Registry 0.1.9 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-dbforpostgresql-flexibleserver-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-dbforpostgresql-flexibleserver/azurerm",
+      "version": "0.3.0",
+      "revision": "5efe881fd526da76a2d262bde1c475a1b5826ca8",
+      "graph": {
+        ".": {
+          "databases": {"local": "modules/database"}
+        },
+        "modules/database": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-dbforpostgresql-flexibleserver/zip/5efe881fd526da76a2d262bde1c475a1b5826ca8",
+        "sha256": "2d7733bbe10594d7e054a92fbf91c6806513908cb11d1c3d7a1fee95b443dee1",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-desktopvirtualization-applicationgroup-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-desktopvirtualization-applicationgroup/azurerm",
+      "version": "0.4.0",
+      "revision": "fc41613873a6620c26a2a0d6cc38b0d894154c2b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-desktopvirtualization-applicationgroup/zip/fc41613873a6620c26a2a0d6cc38b0d894154c2b",
+        "sha256": "f77fff07e540f02e61d4c8ff9730512f55040c490ca626622d9b686beffd2bf1",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-desktopvirtualization-hostpool-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-desktopvirtualization-hostpool/azurerm",
+      "version": "0.6.0",
+      "revision": "2fdd5942c3c46ebb0fdc0b1fe363043d05b7c3ba",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-desktopvirtualization-hostpool/zip/2fdd5942c3c46ebb0fdc0b1fe363043d05b7c3ba",
+        "sha256": "52406512d34e362bd3d4cbd8984c5ba1a397cfd859370e00594f8a2fd9310e44",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-desktopvirtualization-scalingplan-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-desktopvirtualization-scalingplan/azurerm",
+      "version": "0.4.0",
+      "revision": "7b4a214331c2705bcfe95327d35711d9437f6db9",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-desktopvirtualization-scalingplan/zip/7b4a214331c2705bcfe95327d35711d9437f6db9",
+        "sha256": "5395876c5032bcc503b871625654357d2759e55a4c6a1a74e473c740d4da6eab",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-desktopvirtualization-workspace-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-desktopvirtualization-workspace/azurerm",
+      "version": "0.4.0",
+      "revision": "a83ce208132eff42e2f0f1fe7ae064efc18b8e22",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-desktopvirtualization-workspace/zip/a83ce208132eff42e2f0f1fe7ae064efc18b8e22",
+        "sha256": "d96017a7a5a0e0b95e526738934f1fc80bc634bab56303d145c01633cba89cb1",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-devcenter-devcenter-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-devcenter-devcenter/azurerm",
+      "version": "0.2.0",
+      "revision": "35be3ef352d05c8f96134818c943ef31de5622b7",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-devcenter-devcenter/zip/35be3ef352d05c8f96134818c943ef31de5622b7",
+        "sha256": "b3782b4df0aeabe14f10578a9fc7040b4602119bb3b09b27b3affa7551fd2f04",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-devopsinfrastructure-pool-azurerm-0.3.2",
+      "source": "registry.opentofu.org/azure/avm-res-devopsinfrastructure-pool/azurerm",
+      "version": "0.3.2",
+      "revision": "6d4e2d167ae4165d5739e873226ec11715435c7b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-devopsinfrastructure-pool/zip/6d4e2d167ae4165d5739e873226ec11715435c7b",
+        "sha256": "8130c5221e5352e165cd1714737ec274e4661f2d8d1357d4bb8f32c0f5d5521e",
+        "provenance": "Registry 0.3.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-documentdb-databaseaccount-azurerm-0.11.0",
+      "source": "registry.opentofu.org/azure/avm-res-documentdb-databaseaccount/azurerm",
+      "version": "0.11.0",
+      "revision": "c7c4ff3d2cb0879e5363faf61314c3f02d592fa5",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-documentdb-databaseaccount/zip/c7c4ff3d2cb0879e5363faf61314c3f02d592fa5",
+        "sha256": "43b1889a78b702ca70184cc138d1abda8f1f512ea97c6529227d9b857d358b03",
+        "provenance": "Registry 0.11.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-documentdb-databaseaccount-azurerm-0.13.0",
+      "source": "registry.opentofu.org/azure/avm-res-documentdb-databaseaccount/azurerm",
+      "version": "0.13.0",
+      "revision": "1e55e8d02a366370fa7bf1475a054ecb3119d98f",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-documentdb-databaseaccount/zip/1e55e8d02a366370fa7bf1475a054ecb3119d98f",
+        "sha256": "c05782597691ea325c528db885967003e53408ab408e7ccfbc2b0e25c7d825d3",
+        "provenance": "Registry 0.13.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-edge-site-azurerm-3.1.0",
+      "source": "registry.opentofu.org/azure/avm-res-edge-site/azurerm",
+      "version": "3.1.0",
+      "revision": "8e94623d0ee48580df8a824444aa7f73f098fddd",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-edge-site/zip/8e94623d0ee48580df8a824444aa7f73f098fddd",
+        "sha256": "1960c105f5a25d5a9cb5fe9274e99381321a840142dcda3504bc5df12000183b",
+        "provenance": "Registry 3.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-eventgrid-topic-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-eventgrid-topic/azurerm",
+      "version": "0.2.0",
+      "revision": "cc25b74324522f5270c70ffedf6287cad5b9cc29",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "event_subscriptions": {"local": "modules/event_subscription"}
+        },
+        "modules/event_subscription": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-eventgrid-topic/zip/cc25b74324522f5270c70ffedf6287cad5b9cc29",
+        "sha256": "cbf7c39f962ef84a7d4c6fbaa7b43a8f7c2f1358a8a5c629f02031e8d834f66a",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-eventhub-namespace-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-eventhub-namespace/azurerm",
+      "version": "0.2.0",
+      "revision": "38e7cae164a9dfad64a5864650675093cc9c4dfd",
+      "graph": {
+        ".": {
+          "private_endpoint_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-eventhub-namespace/zip/38e7cae164a9dfad64a5864650675093cc9c4dfd",
+        "sha256": "426cd3f1ecbf1aa773888ee5a70a95190ff4de2666a3f0f4ae513b547ff0a760",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-hybridcontainerservice-provisionedclusterinstance-azurerm-2.0.5",
+      "source": "registry.opentofu.org/azure/avm-res-hybridcontainerservice-provisionedclusterinstance/azurerm",
+      "version": "2.0.5",
+      "revision": "11a5113bc39b73a9fae4831d742f9fcf2f115e41",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-hybridcontainerservice-provisionedclusterinstance/zip/11a5113bc39b73a9fae4831d742f9fcf2f115e41",
+        "sha256": "f60ac982adbe912fe4c20fe509709ba9cbfc7d31fe347047ef9cf9054cfceaf5",
+        "provenance": "Registry 2.0.5 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-insights-autoscalesetting-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-insights-autoscalesetting/azurerm",
+      "version": "0.2.0",
+      "revision": "623f8f9cb8d0f10d9c7b17a6675946cf2cc8bce6",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-insights-autoscalesetting/zip/623f8f9cb8d0f10d9c7b17a6675946cf2cc8bce6",
+        "sha256": "ff422e095833576e16c1295c1d584e0f633dfa4eb3ea4c25518184bdf3bc2a2a",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-insights-component-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-insights-component/azurerm",
+      "version": "0.5.0",
+      "revision": "8c75ae7771d672228595c19cefa6c216a8955d49",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-insights-component/zip/8c75ae7771d672228595c19cefa6c216a8955d49",
+        "sha256": "aebf1b969cabab2a779bd43020b80e53a45216d5a36424e9391ccb5262a85e48",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-insights-datacollectionendpoint-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-insights-datacollectionendpoint/azurerm",
+      "version": "0.3.0",
+      "revision": "9c78c05a8916260ac12fb80e0023175afdc71ea5",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-insights-datacollectionendpoint/zip/9c78c05a8916260ac12fb80e0023175afdc71ea5",
+        "sha256": "818176d7abe6e94ee1aebfa0d481a22129f081ef19a87a4890c7c362ab0cb363",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-insights-datacollectionrule-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-insights-datacollectionrule/azurerm",
+      "version": "0.2.0",
+      "revision": "124cf5aaae2a620a88b72bfd7fef3e1bb39f1e7c",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-insights-datacollectionrule/zip/124cf5aaae2a620a88b72bfd7fef3e1bb39f1e7c",
+        "sha256": "0cc9150a87fd661f628e9b53d66b906b967040ad29199472774122fe81510f40",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-keyvault-vault-azurerm-0.10.2",
+      "source": "registry.opentofu.org/azure/avm-res-keyvault-vault/azurerm",
+      "version": "0.10.2",
+      "revision": "3735ca49887857467f3030ad72fd43705e1eb387",
+      "graph": {
+        ".": {
+          "keys": {"local": "modules/key"},
+          "secrets": {"local": "modules/secret"}
+        },
+        "modules/key": {},
+        "modules/secret": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-keyvault-vault/zip/3735ca49887857467f3030ad72fd43705e1eb387",
+        "sha256": "3094296c77c72c6e5a87a7b81a46bb14290f5882da92972c838fe4202f3fcc09",
+        "provenance": "Registry 0.10.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-keyvault-vault-azurerm-0.13.1",
+      "source": "registry.opentofu.org/azure/avm-res-keyvault-vault/azurerm",
+      "version": "0.13.1",
+      "revision": "eaad6bb43678dc74edf03c1dad5c60246760aa45",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "keys": {"local": "modules/key"},
+          "secrets": {"local": "modules/secret"}
+        },
+        "modules/key": {},
+        "modules/secret": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-keyvault-vault/zip/eaad6bb43678dc74edf03c1dad5c60246760aa45",
+        "sha256": "a92614f7a86cca912592b84577c53320cc46e0be271d2be0aba407c281f97912",
+        "provenance": "Registry 0.13.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-kusto-cluster-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-kusto-cluster/azurerm",
+      "version": "0.3.0",
+      "revision": "eaa3977f8e89cc4519214f4ba0bd2382774aa8d0",
+      "graph": {
+        ".": {
+          "kusto_cluster_principal_assignment": {"local": "modules/azurerm_kusto_cluster_principal_assignment"},
+          "kusto_database": {"local": "modules/azurerm_kusto_database"},
+          "kusto_database_principal_assignment": {"local": "modules/azurerm_kusto_database_principal_assignment"}
+        },
+        "modules/azurerm_kusto_cluster_principal_assignment": {},
+        "modules/azurerm_kusto_database": {},
+        "modules/azurerm_kusto_database_principal_assignment": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-kusto-cluster/zip/eaa3977f8e89cc4519214f4ba0bd2382774aa8d0",
+        "sha256": "4fa63cc42c747f9ac391b437e62d4a9de5dbd1d3642ff5d1095d6a21e1f7a233",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-logic-workflow-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-logic-workflow/azurerm",
+      "version": "0.2.0",
+      "revision": "56c2a949db359c36745510a94620a4c15f3b528d",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-logic-workflow/zip/56c2a949db359c36745510a94620a4c15f3b528d",
+        "sha256": "a0c48ad7d867a4bdef301bff9d6a5ea040ed6807fd56e71aa79768e95f717782",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-machinelearningservices-workspace-azurerm-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-res-machinelearningservices-workspace/azurerm",
+      "version": "0.10.0",
+      "revision": "19ae467404aa4881e459525d16d7c746f4eedb8b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-machinelearningservices-workspace/zip/19ae467404aa4881e459525d16d7c746f4eedb8b",
+        "sha256": "18586b30273f768a43861b147570f32efcd83972d3d9697ded2118c8d29fe009",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-maintenance-maintenanceconfiguration-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-maintenance-maintenanceconfiguration/azurerm",
+      "version": "0.3.0",
+      "revision": "9186351119abcfe7fb0b6dfc2f9d7a65b74bb3cf",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-maintenance-maintenanceconfiguration/zip/9186351119abcfe7fb0b6dfc2f9d7a65b74bb3cf",
+        "sha256": "8608f11546acb57bea73767279c8ec8969102b556f74e4ea595ebc49a0c89eb6",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-managedidentity-userassignedidentity-azurerm-0.3.3",
+      "source": "registry.opentofu.org/azure/avm-res-managedidentity-userassignedidentity/azurerm",
+      "version": "0.3.3",
+      "revision": "f02bc55d4e02a70048fd93e271e64a6c1934747d",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-managedidentity-userassignedidentity/zip/f02bc55d4e02a70048fd93e271e64a6c1934747d",
+        "sha256": "0ab00221b5719d7e416dcaf133504582466617b85be725aa11646655aa5d3977",
+        "provenance": "Registry 0.3.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-managedidentity-userassignedidentity-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-managedidentity-userassignedidentity/azurerm",
+      "version": "0.6.0",
+      "revision": "7a0c461789f0177a0b666378924cd5d33196ef8a",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-managedidentity-userassignedidentity/zip/7a0c461789f0177a0b666378924cd5d33196ef8a",
+        "sha256": "461ab9af39041bb5a88154388b2976f35aae887e734d2e501fc01977fbf5f878",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-netapp-netappaccount-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-netapp-netappaccount/azurerm",
+      "version": "0.4.0",
+      "revision": "e3f0a7503189f174701ea85184b3e8b16e9697b1",
+      "graph": {
+        ".": {
+          "backup_policies": {"local": "modules/backup-policy"},
+          "backup_vaults": {"local": "modules/backup-vault"},
+          "capacity_pools": {"local": "modules/capacity-pool"},
+          "snapshot_policies": {"local": "modules/snapshot-policy"},
+          "volumes": {"local": "modules/volume"}
+        },
+        "modules/backup-policy": {},
+        "modules/backup-vault": {},
+        "modules/capacity-pool": {},
+        "modules/snapshot-policy": {},
+        "modules/volume": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-netapp-netappaccount/zip/e3f0a7503189f174701ea85184b3e8b16e9697b1",
+        "sha256": "e608dd75d13cef5cead508d8de50e205ae551dc8d1e0f96778a3f04712a5d059",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-applicationgateway-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-applicationgateway/azurerm",
+      "version": "0.6.0",
+      "revision": "f5961205a9046adc86ea1c85cc490c19e462ecbd",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-applicationgateway/zip/f5961205a9046adc86ea1c85cc490c19e462ecbd",
+        "sha256": "b3e9a97c070733e4b0368527e970e317aea0565f7e344bc2d7adb870858b5dd8",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-applicationgatewaywebapplicationfirewallpolicy-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-applicationgatewaywebapplicationfirewallpolicy/azurerm",
+      "version": "0.3.0",
+      "revision": "c024ed489e700bacf924fedf323644f485548536",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-applicationgatewaywebapplicationfirewallpolicy/zip/c024ed489e700bacf924fedf323644f485548536",
+        "sha256": "0a98f44021391bc85f4d1c1d607b7abcdc4645483266ce595495eda626553b57",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-applicationsecuritygroup-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-applicationsecuritygroup/azurerm",
+      "version": "0.3.0",
+      "revision": "0d28dd6f83ed00ac201275b64b38753616ab50aa",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-applicationsecuritygroup/zip/0d28dd6f83ed00ac201275b64b38753616ab50aa",
+        "sha256": "872345543c4c25c4c792074c3b47842ccfa5458a549f9f82eebafd9465e63623",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-azurefirewall-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-azurefirewall/azurerm",
+      "version": "0.4.0",
+      "revision": "afb64c30508354ec414b0b6194f4380be58a8b09",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-azurefirewall/zip/afb64c30508354ec414b0b6194f4380be58a8b09",
+        "sha256": "cf68f0cf798d29d3d57f0c63ae8d70ab9158b70c03f0d4c1bb5c25b9b52a031d",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-azurefirewall-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-azurefirewall/azurerm",
+      "version": "0.5.0",
+      "revision": "e88c8db23982193eb3511c0d69fea71d0dcfbb2c",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-azurefirewall/zip/e88c8db23982193eb3511c0d69fea71d0dcfbb2c",
+        "sha256": "db5fa61cc047b8d09f88329c6d12add1fff31599133ae4d7c2da6d01362aa73a",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-bastionhost-azurerm-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-bastionhost/azurerm",
+      "version": "0.10.0",
+      "revision": "2c6e3298e7cd7f250aee7f73513bbf2aa42cb4f6",
+      "graph": {
+        ".": {
+          "public_ip_address": {"registry": "avm-res-network-publicipaddress-azurerm-0.3.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-bastionhost/zip/2c6e3298e7cd7f250aee7f73513bbf2aa42cb4f6",
+        "sha256": "3c72a3fed18859513c38ef955e34ce481fb39998cafcd8d91b1402a0120e5c98",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-bastionhost-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-bastionhost/azurerm",
+      "version": "0.6.0",
+      "revision": "06a777cee1894861ccc07bb3c21d9ddf9229803d",
+      "graph": {
+        ".": {
+          "public_ip_address": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-bastionhost/zip/06a777cee1894861ccc07bb3c21d9ddf9229803d",
+        "sha256": "db5d59b9912161309bcc6b0b2889abb0278e65548e01ade1c69cfbe842d40203",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-bastionhost-azurerm-0.9.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-bastionhost/azurerm",
+      "version": "0.9.0",
+      "revision": "7c7d294caf81377671b99687aa75726e1072002e",
+      "graph": {
+        ".": {
+          "public_ip_address": {"registry": "avm-res-network-publicipaddress-azurerm-0.2.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-bastionhost/zip/7c7d294caf81377671b99687aa75726e1072002e",
+        "sha256": "6fa58572df9ff77428abf2465b92a1dd5bbeee04d4973ac82aac61c0bf102ed7",
+        "provenance": "Registry 0.9.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-connection-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-connection/azurerm",
+      "version": "0.3.0",
+      "revision": "618a5991b429e1f3949bf85ed0f716dd8944f59b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-connection/zip/618a5991b429e1f3949bf85ed0f716dd8944f59b",
+        "sha256": "ec6fd5aee7673e81cdfd13c08a033dd43a3d506a2c5b24216ca407142db1c5b6",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-ddosprotectionplan-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-ddosprotectionplan/azurerm",
+      "version": "0.3.0",
+      "revision": "2d455cb9c6c61e9061730ba8373b103ae6886cbb",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-ddosprotectionplan/zip/2d455cb9c6c61e9061730ba8373b103ae6886cbb",
+        "sha256": "e10fc5a139c4ad27fe7d8d8e7d73c7d66aed13fd5596f9f50308b8732fb7c2da",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-ddosprotectionplan-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-ddosprotectionplan/azurerm",
+      "version": "0.4.0",
+      "revision": "69db21783701d23b127a9bce0f05aec051325f5c",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-ddosprotectionplan/zip/69db21783701d23b127a9bce0f05aec051325f5c",
+        "sha256": "3b0cb24e849e3e8a8b0764287e006ec7319dcc327aa99083689d54d13a64808e",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-dnsresolver-azurerm-0.7.3",
+      "source": "registry.opentofu.org/azure/avm-res-network-dnsresolver/azurerm",
+      "version": "0.7.3",
+      "revision": "4c833ad110e16788668b6a8656a8981f5ef552cb",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-dnsresolver/zip/4c833ad110e16788668b6a8656a8981f5ef552cb",
+        "sha256": "fdd65af42ffdf4ade8ab8058c3c6ce53f5592330ea286662c680d22d615e345e",
+        "provenance": "Registry 0.7.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-dnsresolver-azurerm-0.9.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-dnsresolver/azurerm",
+      "version": "0.9.0",
+      "revision": "e0a9493c7f94168290c57bfcf07a044c39194e97",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-dnsresolver/zip/e0a9493c7f94168290c57bfcf07a044c39194e97",
+        "sha256": "eea50a6679e6dbcfdb1b93a00e36f0f841c38368864be448c62d1897eb298305",
+        "provenance": "Registry 0.9.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-dnszone-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-dnszone/azurerm",
+      "version": "0.3.0",
+      "revision": "58f89294af0bbd7e37f83f6efe33f17cddad6026",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-dnszone/zip/58f89294af0bbd7e37f83f6efe33f17cddad6026",
+        "sha256": "beb25bd958b37c7f9aabf9530d99a75cb3706e9e257d950c4ec2ab79f6a8df18",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-expressroutecircuit-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-expressroutecircuit/azurerm",
+      "version": "0.4.0",
+      "revision": "503e3c4054aaff53a864716e85108c8f8ccb12f3",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-expressroutecircuit/zip/503e3c4054aaff53a864716e85108c8f8ccb12f3",
+        "sha256": "c7deea19205db56dd3857920b4da400e72151267014184eb46fa269f8598b04f",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-firewallpolicy-azurerm-0.3.3",
+      "source": "registry.opentofu.org/azure/avm-res-network-firewallpolicy/azurerm",
+      "version": "0.3.3",
+      "revision": "7af4cb848bb743f4fb4874769ad6f9f73dbec23c",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-firewallpolicy/zip/7af4cb848bb743f4fb4874769ad6f9f73dbec23c",
+        "sha256": "e88ed12c26368dd583138021708bd82fbe41cfe03cfc8629ef39f8e6c0b7e29a",
+        "provenance": "Registry 0.3.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-firewallpolicy-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-firewallpolicy/azurerm",
+      "version": "0.4.0",
+      "revision": "94d43e3976e87d0c7314fa6b1f1fc1c91a7784ae",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.10.1"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-firewallpolicy/zip/94d43e3976e87d0c7314fa6b1f1fc1c91a7784ae",
+        "sha256": "021300c4a4a2d3a41060bd14dbdda3e0ead1971526cd67b8c77f45822ae59812",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-frontdoorwebapplicationfirewallpolicy-azurerm-0.1.1",
+      "source": "registry.opentofu.org/azure/avm-res-network-frontdoorwebapplicationfirewallpolicy/azurerm",
+      "version": "0.1.1",
+      "revision": "a3cf2896df739e4f8b54e3782b0f2f838cccc16a",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-frontdoorwebapplicationfirewallpolicy/zip/a3cf2896df739e4f8b54e3782b0f2f838cccc16a",
+        "sha256": "f0b7f490e9e2937c4f88e3b8abfde3a75b088f12f9e6a532721d791b4ab3e752",
+        "provenance": "Registry 0.1.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-ipgroup-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-ipgroup/azurerm",
+      "version": "0.3.0",
+      "revision": "2bfbdf0e2e868a6de17f0058cb0fb18ce79beb38",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-ipgroup/zip/2bfbdf0e2e868a6de17f0058cb0fb18ce79beb38",
+        "sha256": "3426a53b0674794d61ea2247591de5d08d78e0377fd0c8d6bf3b359803c77603",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-loadbalancer-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-loadbalancer/azurerm",
+      "version": "0.5.0",
+      "revision": "e83d34778efeb54a1779b968106067cc4b2bad63",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-loadbalancer/zip/e83d34778efeb54a1779b968106067cc4b2bad63",
+        "sha256": "7cf0a48ae316c41743550bfd72868f27720d1dd69afa14f3fc3af49960df254a",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-localnetworkgateway-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-localnetworkgateway/azurerm",
+      "version": "0.3.0",
+      "revision": "de5974a9bd9ffb942485ad4359a9a4627f785b48",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-localnetworkgateway/zip/de5974a9bd9ffb942485ad4359a9a4627f785b48",
+        "sha256": "09efac1c58eb2d9d2ea61012bdd2c14e22ecdbcebceb09a930261fc26608fc72",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-natgateway-azurerm-0.3.2",
+      "source": "registry.opentofu.org/azure/avm-res-network-natgateway/azurerm",
+      "version": "0.3.2",
+      "revision": "597df2389d997c93da6a559f64fe7096ef30e24e",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.5.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-natgateway/zip/597df2389d997c93da6a559f64fe7096ef30e24e",
+        "sha256": "88e3f98cb637957ab19dfb009b4b5e31514e1d7f6d90ba1e25fcf6c44ec0e790",
+        "provenance": "Registry 0.3.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-natgateway-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-natgateway/azurerm",
+      "version": "0.4.0",
+      "revision": "5d2a12566842dc400813d2c4dd77084925ec67b4",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-natgateway/zip/5d2a12566842dc400813d2c4dd77084925ec67b4",
+        "sha256": "681cd7a19df6a537a2e76f28203a19053be506c197fc804a07c077eb9735ac46",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-networkinterface-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-networkinterface/azurerm",
+      "version": "0.2.0",
+      "revision": "aa5dd86b853ef1a95490b282b2b011d04119b1dd",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-networkinterface/zip/aa5dd86b853ef1a95490b282b2b011d04119b1dd",
+        "sha256": "1ba2f9ad108867ffeaf0159a1bf4d40a1042a31424cd5599a7c55677e28436b8",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-networkmanager-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-networkmanager/azurerm",
+      "version": "0.4.0",
+      "revision": "7e6570d7a69a4ccf4ff2495c48be7ce32d07a420",
+      "graph": {
+        ".": {
+          "connectivity_configuration": {"local": "modules/connectivity-configuration"},
+          "network_groups": {"local": "modules/network-group"},
+          "routing_configuration": {"local": "modules/routing-configuration"},
+          "scope_connection": {"local": "modules/scope-connection"},
+          "security_admin_configuration": {"local": "modules/security-admin-configuration"}
+        },
+        "modules/connectivity-configuration": {},
+        "modules/network-group": {},
+        "modules/routing-configuration": {},
+        "modules/scope-connection": {},
+        "modules/security-admin-configuration": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-networkmanager/zip/7e6570d7a69a4ccf4ff2495c48be7ce32d07a420",
+        "sha256": "44bbd897a1ff74dd53b0d267b7cc51ef8ab2ca405d429d6228cc9eb4eea9fb04",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-networksecuritygroup-azurerm-0.7.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-networksecuritygroup/azurerm",
+      "version": "0.7.0",
+      "revision": "716c5c3f3cb6ee0867a94cce247e03587bb8120f",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-networksecuritygroup/zip/716c5c3f3cb6ee0867a94cce247e03587bb8120f",
+        "sha256": "015c3e3b1d6b87dddb49e098437121ef1341ed89229b8774b940df06a372c52a",
+        "provenance": "Registry 0.7.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-networkwatcher-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-networkwatcher/azurerm",
+      "version": "0.4.0",
+      "revision": "4cd852fdff642562d7c2375a4e205c912479878b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-networkwatcher/zip/4cd852fdff642562d7c2375a4e205c912479878b",
+        "sha256": "c9829ce2206ceb38462e73da34049e690bb6cf670c863074445bf8f98d30b80a",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-privatednszone-azurerm-0.4.3",
+      "source": "registry.opentofu.org/azure/avm-res-network-privatednszone/azurerm",
+      "version": "0.4.3",
+      "revision": "81ea0082145cc53c5a5fb54c6140e63f5b477b46",
+      "graph": {
+        ".": {
+          "a_record": {"local": "modules/private_dns_a_record"},
+          "aaaa_record": {"local": "modules/private_dns_aaaa_record"},
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.2.0"},
+          "cname_record": {"local": "modules/private_dns_cname_record"},
+          "mx_record": {"local": "modules/private_dns_mx_record"},
+          "ptr_record": {"local": "modules/private_dns_ptr_record"},
+          "srv_record": {"local": "modules/private_dns_srv_record"},
+          "txt_record": {"local": "modules/private_dns_txt_record"},
+          "virtual_network_links": {"local": "modules/private_dns_virtual_network_link"}
+        },
+        "modules/private_dns_a_record": {},
+        "modules/private_dns_aaaa_record": {},
+        "modules/private_dns_cname_record": {},
+        "modules/private_dns_mx_record": {},
+        "modules/private_dns_ptr_record": {},
+        "modules/private_dns_srv_record": {},
+        "modules/private_dns_txt_record": {},
+        "modules/private_dns_virtual_network_link": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-privatednszone/zip/81ea0082145cc53c5a5fb54c6140e63f5b477b46",
+        "sha256": "7db0871c473e948d492701bf83384f66a83c7156d34abcbd6203321e1a45610e",
+        "provenance": "Registry 0.4.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-privatednszone-azurerm-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-privatednszone/azurerm",
+      "version": "0.6.0",
+      "revision": "97ed94c12535fac61c3bad293754ba408b8a8d56",
+      "graph": {
+        ".": {
+          "a_record": {"local": "modules/private_dns_a_record"},
+          "aaaa_record": {"local": "modules/private_dns_aaaa_record"},
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"},
+          "cname_record": {"local": "modules/private_dns_cname_record"},
+          "mx_record": {"local": "modules/private_dns_mx_record"},
+          "ptr_record": {"local": "modules/private_dns_ptr_record"},
+          "srv_record": {"local": "modules/private_dns_srv_record"},
+          "txt_record": {"local": "modules/private_dns_txt_record"},
+          "virtual_network_links": {"local": "modules/private_dns_virtual_network_link"}
+        },
+        "modules/private_dns_a_record": {},
+        "modules/private_dns_aaaa_record": {},
+        "modules/private_dns_cname_record": {},
+        "modules/private_dns_mx_record": {},
+        "modules/private_dns_ptr_record": {},
+        "modules/private_dns_srv_record": {},
+        "modules/private_dns_txt_record": {},
+        "modules/private_dns_virtual_network_link": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-privatednszone/zip/97ed94c12535fac61c3bad293754ba408b8a8d56",
+        "sha256": "e0ebc6ed2eee098a3bc6b34573f63cf9cb4fc4d7a15e0696b6c1c9f8a014a87f",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-privateendpoint-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-privateendpoint/azurerm",
+      "version": "0.2.0",
+      "revision": "da330babc0448609533b9e935546d573edd6cf3f",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-privateendpoint/zip/da330babc0448609533b9e935546d573edd6cf3f",
+        "sha256": "2766148451c011a97b10b51ec67b03f3376cba7e1db8b49e6e02bd31e71ac136",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-publicipaddress-azurerm-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-publicipaddress/azurerm",
+      "version": "0.2.0",
+      "revision": "034e787b18976176937ae9d0d5af4cff3d85b2db",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-publicipaddress/zip/034e787b18976176937ae9d0d5af4cff3d85b2db",
+        "sha256": "c7931af1355e74898b25e3f6f87637f611cf3215dce50f16ba99aa86b1a121d9",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-publicipaddress-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-publicipaddress/azurerm",
+      "version": "0.3.0",
+      "revision": "71c443589145866bb2937a9ceb089738530088ac",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-publicipaddress/zip/71c443589145866bb2937a9ceb089738530088ac",
+        "sha256": "ab27699d2de9078b604f8b1c057725f9b18cb30f03cee8f24d2ee1ab52e96bd8",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-routetable-azurerm-0.3.1",
+      "source": "registry.opentofu.org/azure/avm-res-network-routetable/azurerm",
+      "version": "0.3.1",
+      "revision": "3857858ab28099fc6805ea1165014f3578013a13",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-routetable/zip/3857858ab28099fc6805ea1165014f3578013a13",
+        "sha256": "a006989255761dd4f256b520e994f6f1762d02c480348a88faa5313ed765f1ea",
+        "provenance": "Registry 0.3.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-routetable-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-routetable/azurerm",
+      "version": "0.5.0",
+      "revision": "c15f36b59aece69fc592e4e661dcd1cfc61bca3a",
+      "graph": {
+        ".": {
+          "routes": {"local": "modules/route"}
+        },
+        "modules/route": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-routetable/zip/c15f36b59aece69fc592e4e661dcd1cfc61bca3a",
+        "sha256": "cc942d3e7aaf534249dedc960d00d5a427b361ef2dbf644169173fb632e0cd81",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-routetable-azurerm-0.7.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-routetable/azurerm",
+      "version": "0.7.0",
+      "revision": "12703dabbf59a43ce4636a90e15ab5f1e23a2ed9",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "routes": {"local": "modules/route"}
+        },
+        "modules/route": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-routetable/zip/12703dabbf59a43ce4636a90e15ab5f1e23a2ed9",
+        "sha256": "91e6f15f48b6f24e51e2929d5fd2a4c9a3df2fed1edc688d89d286b84f1ac85b",
+        "provenance": "Registry 0.7.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.12.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.12.0",
+      "revision": "a36da1ca09a97c6abecdd33184b598b4d62a86fa",
+      "graph": {
+        ".": {
+          "peering": {"local": "modules/peering"},
+          "subnet": {"local": "modules/subnet"}
+        },
+        "modules/peering": {},
+        "modules/subnet": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/a36da1ca09a97c6abecdd33184b598b4d62a86fa",
+        "sha256": "023471d57f9ec99b80d82b0fd05191f24a1069617a66e4f1b20e846d8bbf611d",
+        "provenance": "Registry 0.12.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.14.1",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.14.1",
+      "revision": "73472429e6cfbe9e5a1967e4a8ce889cbd85c523",
+      "graph": {"modules/peering": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/73472429e6cfbe9e5a1967e4a8ce889cbd85c523",
+        "sha256": "3aee9fc6a5d887437a79c46d6eeed0561e869352acd30ec4b0ad1df76d3ea8d6",
+        "provenance": "Registry 0.14.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.20.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.20.0",
+      "revision": "a3bd0e50ca015898650c8af3e730d2ecea232a20",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.6.0"},
+          "peering": {"local": "modules/peering"},
+          "subnet": {"local": "modules/subnet"}
+        },
+        "modules/peering": {},
+        "modules/subnet": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.6.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/a3bd0e50ca015898650c8af3e730d2ecea232a20",
+        "sha256": "2bd6fbb52044b633eeed6ba8c129f79b521969aead9266947191c82f5ed05d2b",
+        "provenance": "Registry 0.20.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.22.2",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.22.2",
+      "revision": "c08763d616fc9f1932075a70d53fa826dfbdc72f",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.6.0"},
+          "peering": {"local": "modules/peering"},
+          "subnet": {"local": "modules/subnet"}
+        },
+        "modules/peering": {},
+        "modules/subnet": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.6.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/c08763d616fc9f1932075a70d53fa826dfbdc72f",
+        "sha256": "77c9d29b6eadb23f3c2508311e7a720fa438e825a1fc733e94d8638037c37b38",
+        "provenance": "Registry 0.22.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.23.0",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.23.0",
+      "revision": "874b2d1ce38cd59ca0759d416cb3e174c2543ffb",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"},
+          "peering": {"local": "modules/peering"},
+          "subnet": {"local": "modules/subnet"}
+        },
+        "modules/peering": {},
+        "modules/subnet": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/874b2d1ce38cd59ca0759d416cb3e174c2543ffb",
+        "sha256": "d948ff2abcc6a19005a2d4c9f4a60fb68316e7e21650d8163eb39455553bc55a",
+        "provenance": "Registry 0.23.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-network-virtualnetwork-azurerm-0.8.1",
+      "source": "registry.opentofu.org/azure/avm-res-network-virtualnetwork/azurerm",
+      "version": "0.8.1",
+      "revision": "f72c7f0d88132c41659a00cc124d9236b124ed79",
+      "graph": {
+        ".": {
+          "peering": {"local": "modules/peering"},
+          "subnet": {"local": "modules/subnet"}
+        },
+        "modules/peering": {},
+        "modules/subnet": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/f72c7f0d88132c41659a00cc124d9236b124ed79",
+        "sha256": "42e92ca32d20abf16e4f45ae302d5452de646a76a8551d1f76c6dcd06a117bd9",
+        "provenance": "Registry 0.8.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-operationalinsights-workspace-azurerm-0.5.1",
+      "source": "registry.opentofu.org/azure/avm-res-operationalinsights-workspace/azurerm",
+      "version": "0.5.1",
+      "revision": "b4ffa3ff87ac09ff6de3b7014c44b4d213aa302b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-operationalinsights-workspace/zip/b4ffa3ff87ac09ff6de3b7014c44b4d213aa302b",
+        "sha256": "5e336efd1bd4638a01c90451782b9d44d4d278839be2dea5e8ce363993a45481",
+        "provenance": "Registry 0.5.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-oracledatabase-cloudexadatainfrastructure-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-oracledatabase-cloudexadatainfrastructure/azurerm",
+      "version": "0.4.0",
+      "revision": "cc6a5ab641efc7a13b5697bb3ab643110ceafc4f",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-oracledatabase-cloudexadatainfrastructure/zip/cc6a5ab641efc7a13b5697bb3ab643110ceafc4f",
+        "sha256": "d4d6dccedf1a55759dfa90a77d32a8a4a155d840b0856abfa0eb6789e6e8938c",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-oracledatabase-cloudvmcluster-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-oracledatabase-cloudvmcluster/azurerm",
+      "version": "0.4.0",
+      "revision": "c309191694ce25c77e087800bd240960ad401fd8",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-oracledatabase-cloudvmcluster/zip/c309191694ce25c77e087800bd240960ad401fd8",
+        "sha256": "df28ae29fbd000dde4e3365c85b2e1e2ac4c29ca0fcb18294481c8e07cf034b3",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-portal-dashboard-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-portal-dashboard/azurerm",
+      "version": "0.3.0",
+      "revision": "f5ab4df43ce1e3561d74e9715cd181cbeabdb822",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-portal-dashboard/zip/f5ab4df43ce1e3561d74e9715cd181cbeabdb822",
+        "sha256": "337445e6ebcb3cbe812a5fe160d0f775836a6c5ea0c29b2cdc4f0f885f3cedc1",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-recoveryservices-vault-azurerm-1.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-recoveryservices-vault/azurerm",
+      "version": "1.4.0",
+      "revision": "de642d42d704c3dcc3abec7c51922eea30a8c2ba",
+      "graph": {
+        ".": {
+          "backup_protected_file_share": {"local": "modules/backup_protected_file_share"},
+          "backup_protected_vm": {"local": "modules/backup_protected_vm"},
+          "backup_protected_workload": {"local": "modules/backup_protected_workload"},
+          "recovery_services_vault_file_share_policy": {"local": "modules/file_share_policy"},
+          "recovery_services_vault_vm_policy": {"local": "modules/virtual_machine_policy"},
+          "recovery_workload_policy": {"local": "modules/workload_policy"},
+          "site_recovery_replicated_vm": {"local": "modules/site_recovery_replicated_vm"}
+        },
+        "modules/backup_protected_file_share": {},
+        "modules/backup_protected_vm": {},
+        "modules/backup_protected_workload": {},
+        "modules/file_share_policy": {},
+        "modules/site_recovery_replicated_vm": {},
+        "modules/virtual_machine_policy": {},
+        "modules/workload_policy": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-recoveryservices-vault/zip/de642d42d704c3dcc3abec7c51922eea30a8c2ba",
+        "sha256": "7652d37fb42227b5e45794da7ec28fcaaec4076c717734876c178e1fc3273819",
+        "provenance": "Registry 1.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-resources-resourcegroup-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-resources-resourcegroup/azurerm",
+      "version": "0.5.0",
+      "revision": "4c7e926d9aa11000d7c31a6b4c26100371b2ac62",
+      "graph": {
+        ".": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-resources-resourcegroup/zip/4c7e926d9aa11000d7c31a6b4c26100371b2ac62",
+        "sha256": "7bc1d32185466d490aeb92684b7e125b33baac79c836d634cb9b33057ba962fa",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-search-searchservice-azurerm-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-res-search-searchservice/azurerm",
+      "version": "0.4.0",
+      "revision": "15c70823005d2c239019ed522aaa5de3eaae08aa",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-search-searchservice/zip/15c70823005d2c239019ed522aaa5de3eaae08aa",
+        "sha256": "e70eb7ec37ea1d9ef166bb146302300bbe8e36699471ccb102ebe22f9f92da1e",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-servicebus-namespace-azurerm-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-res-servicebus-namespace/azurerm",
+      "version": "0.5.0",
+      "revision": "e218057b780125f922b631e6687e6486282a8314",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-servicebus-namespace/zip/e218057b780125f922b631e6687e6486282a8314",
+        "sha256": "40d07388d80e0361cc5ed72196e9ba89bc06ffec8480e1dbcf8879677a7064b4",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-sql-managedinstance-azurerm-0.3.3",
+      "source": "registry.opentofu.org/azure/avm-res-sql-managedinstance/azurerm",
+      "version": "0.3.3",
+      "revision": "6b4e668f04c026cf8d7081e69c2493bf68a65bc7",
+      "graph": {
+        ".": {
+          "private_endpoint_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-sql-managedinstance/zip/6b4e668f04c026cf8d7081e69c2493bf68a65bc7",
+        "sha256": "6139b5e84465c69fe743c193ccd51057e1f3e885bd87864d5b9e39605237f59d",
+        "provenance": "Registry 0.3.3 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-sql-server-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-res-sql-server/azurerm",
+      "version": "0.3.0",
+      "revision": "4f6c09d9d7538d09ebc621fe22a7a57b262f2b5b",
+      "graph": {
+        ".": {
+          "database": {"local": "modules/database"},
+          "elasticpool": {"local": "modules/elasticpool"}
+        },
+        "modules/database": {},
+        "modules/elasticpool": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-sql-server/zip/4f6c09d9d7538d09ebc621fe22a7a57b262f2b5b",
+        "sha256": "7bdcc3ac2cf1d05948491b9c7c9b5b0c400c91ec16daf1f6199a32678deb37e8",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-storage-storageaccount-azurerm-0.11.0",
+      "source": "registry.opentofu.org/azure/avm-res-storage-storageaccount/azurerm",
+      "version": "0.11.0",
+      "revision": "226f9bbefcc9299ad46f6263fc9005edb39a38e5",
+      "graph": {
+        ".": {
+          "blob_service": {"local": "modules/blob_service"},
+          "containers": {"local": "modules/container"},
+          "data_lake_filesystems": {"local": "modules/data_lake_filesystem"},
+          "diagnostic_setting_blob": {"local": "modules/diagnostic_setting"},
+          "diagnostic_setting_file": {"local": "modules/diagnostic_setting"},
+          "diagnostic_setting_queue": {"local": "modules/diagnostic_setting"},
+          "diagnostic_setting_storage_account": {"local": "modules/diagnostic_setting"},
+          "diagnostic_setting_table": {"local": "modules/diagnostic_setting"},
+          "file_service": {"local": "modules/file_service"},
+          "local_users": {"local": "modules/local_user"},
+          "management_policy": {"local": "modules/management_policy"},
+          "private_endpoints": {"local": "modules/private_endpoint"},
+          "queue_service": {"local": "modules/queue_service"},
+          "queues": {"local": "modules/queue"},
+          "role_assignments": {"local": "modules/role_assignments"},
+          "shares": {"local": "modules/share"},
+          "static_website": {"local": "modules/static_website"},
+          "table_service": {"local": "modules/table_service"},
+          "tables": {"local": "modules/table"}
+        },
+        "modules/blob_service": {},
+        "modules/container": {
+          "role_assignments": {"local": "modules/role_assignments"}
+        },
+        "modules/data_lake_filesystem": {},
+        "modules/diagnostic_setting": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        },
+        "modules/file_service": {},
+        "modules/local_user": {},
+        "modules/management_policy": {},
+        "modules/private_endpoint": {
+          "role_assignments": {"local": "modules/role_assignments"}
+        },
+        "modules/queue": {
+          "role_assignments": {"local": "modules/role_assignments"}
+        },
+        "modules/queue_service": {},
+        "modules/role_assignments": {
+          "interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"}
+        },
+        "modules/share": {
+          "role_assignments": {"local": "modules/role_assignments"}
+        },
+        "modules/static_website": {},
+        "modules/table": {
+          "role_assignments": {"local": "modules/role_assignments"}
+        },
+        "modules/table_service": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-storage-storageaccount/zip/226f9bbefcc9299ad46f6263fc9005edb39a38e5",
+        "sha256": "9ea3c7efa6f5cacd43ffa647f67c76d6c3df0e4a60706efd28d00b757f0e7b07",
+        "provenance": "Registry 0.11.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-storage-storageaccount-azurerm-0.6.9",
+      "source": "registry.opentofu.org/azure/avm-res-storage-storageaccount/azurerm",
+      "version": "0.6.9",
+      "revision": "83ceb978776db0da45a0166a92996d13654b8bd2",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-storage-storageaccount/zip/83ceb978776db0da45a0166a92996d13654b8bd2",
+        "sha256": "cb242a14573ea4b961c5a5ff55776363f2c19e383cfe95a69b4ba83dcd08b4b7",
+        "provenance": "Registry 0.6.9 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-web-hostingenvironment-azurerm-2.1.0",
+      "source": "registry.opentofu.org/azure/avm-res-web-hostingenvironment/azurerm",
+      "version": "2.1.0",
+      "revision": "114dc0053264739b993da8ab28ec97e03204be5f",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"},
+          "custom_dns_suffix_configuration": {"local": "modules/custom_dns_suffix_configuration"},
+          "networking_configuration": {"local": "modules/networking_configuration"}
+        },
+        "modules/custom_dns_suffix_configuration": {},
+        "modules/networking_configuration": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-web-hostingenvironment/zip/114dc0053264739b993da8ab28ec97e03204be5f",
+        "sha256": "3502cfb20a67ac5992e128adb859326914b8190cda420551d8af5f15b2c48c7f",
+        "provenance": "Registry 2.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-web-serverfarm-azurerm-2.1.0",
+      "source": "registry.opentofu.org/azure/avm-res-web-serverfarm/azurerm",
+      "version": "2.1.0",
+      "revision": "10e1eeb8182f0dfc0d65131de56a226388eab727",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.10.0"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-web-serverfarm/zip/10e1eeb8182f0dfc0d65131de56a226388eab727",
+        "sha256": "545fd1127c24fddcbec6e7c0f966c9e5e7929d790d266c6585058acd53196766",
+        "provenance": "Registry 2.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-web-site-azurerm-0.25.0",
+      "source": "registry.opentofu.org/azure/avm-res-web-site/azurerm",
+      "version": "0.25.0",
+      "revision": "6365a9585a39fd12a6c3b0b02f09b010fe033300",
+      "graph": {
+        ".": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "certificate": {"local": "modules/certificate"},
+          "config_appsettings": {"local": "modules/config_appsettings"},
+          "config_authsettings": {"local": "modules/config_authsettings"},
+          "config_authsettingsv2": {"local": "modules/config_authsettingsv2"},
+          "config_azurestorageaccounts": {"local": "modules/config_azurestorageaccounts"},
+          "config_backup": {"local": "modules/config_backup"},
+          "config_connectionstrings": {"local": "modules/config_connectionstrings"},
+          "config_logs": {"local": "modules/config_logs"},
+          "config_metadata": {"local": "modules/config_metadata"},
+          "config_slotconfignames": {"local": "modules/config_slotconfignames"},
+          "extensions_zipdeploy": {"local": "modules/extensions_zipdeploy"},
+          "ftp_publishing_credential_policy": {"local": "modules/publishing_credential_policy"},
+          "hostname_binding": {"local": "modules/hostname_binding"},
+          "scm_publishing_credential_policy": {"local": "modules/publishing_credential_policy"},
+          "site_config_helpers": {"local": "modules/site_config_helpers"},
+          "slot": {"local": "modules/slot"},
+          "slot_hostname_binding": {"local": "modules/hostname_binding"}
+        },
+        "modules/certificate": {},
+        "modules/config_appsettings": {},
+        "modules/config_authsettings": {},
+        "modules/config_authsettingsv2": {},
+        "modules/config_azurestorageaccounts": {},
+        "modules/config_backup": {},
+        "modules/config_connectionstrings": {},
+        "modules/config_logs": {},
+        "modules/config_metadata": {},
+        "modules/config_slotconfignames": {},
+        "modules/extensions_zipdeploy": {},
+        "modules/hostname_binding": {},
+        "modules/publishing_credential_policy": {},
+        "modules/site_config_helpers": {},
+        "modules/slot": {
+          "avm_interfaces": {"registry": "avm-utl-interfaces-azure-0.9.0"},
+          "config_appsettings": {"local": "modules/config_appsettings"},
+          "config_azurestorageaccounts": {"local": "modules/config_azurestorageaccounts"},
+          "config_connectionstrings": {"local": "modules/config_connectionstrings"},
+          "config_metadata": {"local": "modules/config_metadata"},
+          "extensions_zipdeploy": {"local": "modules/extensions_zipdeploy"},
+          "ftp_publishing_credential_policy": {"local": "modules/publishing_credential_policy"},
+          "scm_publishing_credential_policy": {"local": "modules/publishing_credential_policy"},
+          "site_config_helpers": {"local": "modules/site_config_helpers"}
+        }
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-web-site/zip/6365a9585a39fd12a6c3b0b02f09b010fe033300",
+        "sha256": "9cf427582ac96ef508efca3db585a2095633fd92d885e86f5db1ac44d0a89a0b",
+        "provenance": "Registry 0.25.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-res-web-staticsite-azurerm-0.7.0",
+      "source": "registry.opentofu.org/azure/avm-res-web-staticsite/azurerm",
+      "version": "0.7.0",
+      "revision": "11bf5de31f50b47da94c7a69ec6117e2df0b8dc7",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-res-web-staticsite/zip/11bf5de31f50b47da94c7a69ec6117e2df0b8dc7",
+        "sha256": "738addae4f45e8dbfc44ee76becd1f15c39d31d32f490f1a99dc010d357ced92",
+        "provenance": "Registry 0.7.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.10.0",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.10.0",
+      "revision": "f567a2c9e6ad9188151d05f19307cb804caf4c45",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/f567a2c9e6ad9188151d05f19307cb804caf4c45",
+        "sha256": "4d8cf8cd07c6124d230589aceaa767a65c514dc929cb28264ec20adadfe4699f",
+        "provenance": "Registry 0.10.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.10.1",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.10.1",
+      "revision": "a685410a970cae65d75853b7c411f00411641aa7",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/a685410a970cae65d75853b7c411f00411641aa7",
+        "sha256": "6e643ae8f6aac998094556baf5be49830b3706d5b26145eb424a1297ea16c95d",
+        "provenance": "Registry 0.10.1 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.2.0",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.2.0",
+      "revision": "df8202b34d36c49ca3575a86306b961c3fa8bc3b",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/df8202b34d36c49ca3575a86306b961c3fa8bc3b",
+        "sha256": "62d903844d39481b3a34aef4cb7971a523aa631ac6b6c8dde7396fc0de6d8151",
+        "provenance": "Registry 0.2.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.5.0",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.5.0",
+      "revision": "45df143e3b03a99cef2f1698c2801c52289f628c",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/45df143e3b03a99cef2f1698c2801c52289f628c",
+        "sha256": "595b282ced3f9584773464c3ffd9fc1ba06f0a6d87237f77ef0ecda05ff24417",
+        "provenance": "Registry 0.5.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.6.0",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.6.0",
+      "revision": "74b7aebabcee9d1d5454f55b3c00516767d14838",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/74b7aebabcee9d1d5454f55b3c00516767d14838",
+        "sha256": "afbfa671664bb48b2de29e6762a8abd12b627644cd2e71ff9ae956ef71dfe814",
+        "provenance": "Registry 0.6.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-interfaces-azure-0.9.0",
+      "source": "registry.opentofu.org/azure/avm-utl-interfaces/azure",
+      "version": "0.9.0",
+      "revision": "7ef66f795bd44f23f3ca83994705e950ae034f68",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-interfaces/zip/7ef66f795bd44f23f3ca83994705e950ae034f68",
+        "sha256": "0de64e92438e5fef4b68d9d8b0ae7b9525ed6e006249ebf07c6cd511b45b2189",
+        "provenance": "Registry 0.9.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-naming-azure-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-utl-naming/azure",
+      "version": "0.3.0",
+      "revision": "7053cb53b29a04e779c1e1e208e51fbbf10edf57",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-naming/zip/7053cb53b29a04e779c1e1e208e51fbbf10edf57",
+        "sha256": "04ba83bac89ff2b22f91a5c2fcccc91ab296ca30986e132438069a896321b5f3",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-network-ip-addresses-azurerm-0.1.0",
+      "source": "registry.opentofu.org/azure/avm-utl-network-ip-addresses/azurerm",
+      "version": "0.1.0",
+      "revision": "20b6be958f108031bc32db73b570d047193e1906",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-network-ip-addresses/zip/20b6be958f108031bc32db73b570d047193e1906",
+        "sha256": "7479afa02d76a5eb685c37a4285b21414d0de7290b6effbeb4d098f6da9c212b",
+        "provenance": "Registry 0.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-network-ip-addresses-azurerm-0.3.0",
+      "source": "registry.opentofu.org/azure/avm-utl-network-ip-addresses/azurerm",
+      "version": "0.3.0",
+      "revision": "3cb796e6490628716d0bcf6141dd31dcb8f5f98c",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-network-ip-addresses/zip/3cb796e6490628716d0bcf6141dd31dcb8f5f98c",
+        "sha256": "5963cbed1db31e0aa1b15fcc4c1a6d15a3b0495e26e3cd76ae90bb10ddda1217",
+        "provenance": "Registry 0.3.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-regions-azurerm-0.12.0",
+      "source": "registry.opentofu.org/azure/avm-utl-regions/azurerm",
+      "version": "0.12.0",
+      "revision": "e9d62409c6fcc5554b60dd79cd60f55b344ad2f0",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-regions/zip/e9d62409c6fcc5554b60dd79cd60f55b344ad2f0",
+        "sha256": "653ff1078bfbe6577c83d02d80a044548c4a098cbd98d3c926658b7affefe591",
+        "provenance": "Registry 0.12.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-regions-azurerm-0.13.0",
+      "source": "registry.opentofu.org/azure/avm-utl-regions/azurerm",
+      "version": "0.13.0",
+      "revision": "a7ea2dd493cac3ca364e57cc4167be392f6e4e29",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-regions/zip/a7ea2dd493cac3ca364e57cc4167be392f6e4e29",
+        "sha256": "3d9e475ffc5299e58cd9c43bc18c721d56d123b90dc0717e51d04bbeb6d08f38",
+        "provenance": "Registry 0.13.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-regions-azurerm-0.13.2",
+      "source": "registry.opentofu.org/azure/avm-utl-regions/azurerm",
+      "version": "0.13.2",
+      "revision": "a4de4de14175d66146dad5d9e3e40602f6dcbaa2",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-regions/zip/a4de4de14175d66146dad5d9e3e40602f6dcbaa2",
+        "sha256": "47814d44fdea9fa4b3b7f4dee9f1cf83fa4f814b610a2a36ad236d6303d019b0",
+        "provenance": "Registry 0.13.2 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-regions-azurerm-0.15.0",
+      "source": "registry.opentofu.org/azure/avm-utl-regions/azurerm",
+      "version": "0.15.0",
+      "revision": "d58be44312c44f0d035f36ec8c5c2dd3980d1651",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azurerm-avm-utl-regions/zip/d58be44312c44f0d035f36ec8c5c2dd3980d1651",
+        "sha256": "1ddf5b510a54096e86f6deeeb17aa0da7edbfa4c7b8ebf14873fcd3fb5575330",
+        "provenance": "Registry 0.15.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-roledefinitions-azure-0.1.0",
+      "source": "registry.opentofu.org/azure/avm-utl-roledefinitions/azure",
+      "version": "0.1.0",
+      "revision": "3851d9d012715ed77519f206b5d5ae4292c476a3",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-roledefinitions/zip/3851d9d012715ed77519f206b5d5ae4292c476a3",
+        "sha256": "da906cab6b9b10f9da1371c603107476a5f99346b33cf2db152006ff50bb26c5",
+        "provenance": "Registry 0.1.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-roledefinitions-azure-0.4.0",
+      "source": "registry.opentofu.org/azure/avm-utl-roledefinitions/azure",
+      "version": "0.4.0",
+      "revision": "b47a2a91475f12cc660f8bfb058152c0c96c4c94",
+      "graph": {
+        ".": {
+          "cached_data": {"local": "modules/cached-data"}
+        },
+        "modules/cached-data": {}
+      },
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azure-avm-utl-roledefinitions/zip/b47a2a91475f12cc660f8bfb058152c0c96c4c94",
+        "sha256": "619000843522b3b774fa8c68263d2a4c553249e59ccbd58623e658fe0ef5f0ed",
+        "provenance": "Registry 0.4.0 download resolves to this commit"
+      }
+    },
+    {
+      "name": "avm-utl-sku-finder-azapi-0.4.2",
+      "source": "registry.opentofu.org/azure/avm-utl-sku-finder/azapi",
+      "version": "0.4.2",
+      "revision": "e6b90d83340d3a0413b876bbc4a87f87b095803a",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/azure/terraform-azapi-avm-utl-sku-finder/zip/e6b90d83340d3a0413b876bbc4a87f87b095803a",
+        "sha256": "ca4b375b62cc0f8ff1f4b13fdb2f84d3fdc8de99120c73be8769a148b2f45976",
+        "provenance": "Registry 0.4.2 download resolves to this commit"
+      }
+    }
+  ],
+  "excluded": [
+    {
+      "source": "registry.opentofu.org/azure/avm-ptn-bcdr-vm-replication/azurerm",
+      "version": "0.1.0",
+      "reason": "HTTP Error 404: Not Found"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-automation-automationaccount/azurerm",
+      "version": "0.3.0",
+      "reason": "preparation refuses avm-res-automation-automationaccount-azurerm-0.3.0: archive-expansion"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-avs-privatecloud/azurerm",
+      "version": "0.13.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.15.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachine/azurerm",
+      "version": "0.22.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachine/azurerm",
+      "version": "0.22.1",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-network-loadbalancer/azurerm",
+      "version": "0.6.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-network-privateendpoint/azurerm",
+      "version": "0.3.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-network-privateendpoint/azurerm",
+      "version": "0.3.1",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-operationalinsights-workspace/azurerm",
+      "version": "0.6.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    },
+    {
+      "source": "registry.opentofu.org/azure/avm-res-operationalinsights-workspace/azurerm",
+      "version": "0.7.0",
+      "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+    }
+  ]
+}
