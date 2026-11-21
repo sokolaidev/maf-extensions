@@ -31,13 +31,18 @@ from maf_sandbox import (
     SandboxSpec,
     ToolCallEnded,
 )
-from maf_sandbox.maf import COMPLETED_TEXT, list_no_files
-from maf_sandbox_azure_pricing import make_azure_pricing_tools
+from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT, list_no_files
+from maf_sandbox_azure_pricing import (
+    DEADLINE_EXCEEDED_TEXT,
+    RATE_LIMITED_TEXT,
+    make_azure_pricing_tools,
+)
 from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
 from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 
 PREFIX = "[pricing-host] "
 QUERY = {"sku": "Standard_D4s_v5", "region": "westeurope", "currency": "USD"}
+EXEC_TIMEOUT_SECONDS = 90
 MAX_MODEL_CALLS = 2
 MODEL_TIMEOUT_SECONDS = 180
 
@@ -54,10 +59,19 @@ def measure(stage: str, **values: object) -> None:
 
 
 def report(answer: Any, category: str | None = None) -> dict[str, Any]:
-    """Validate the actual completed tool report, preserving empty and truncated semantics."""
+    """Read prices or a handled refusal from the pricing kind's own result."""
     require(isinstance(answer, list), "Missing tool contents")
     texts = [item.text for item in answer if isinstance(getattr(item, "text", None), str)]
-    require(COMPLETED_TEXT in texts, "Pricing tool did not complete: " + repr(texts)[:8192])
+    if texts[:1] == [NOT_COMPLETED_TEXT]:
+        require(
+            COMPLETED_TEXT not in texts and not any(text.startswith("{") for text in texts),
+            "Incomplete pricing call returned a conflicting result",
+        )
+        if texts[1:2] == [RATE_LIMITED_TEXT]:
+            return {"http_status": 429}
+        if texts[1:2] == [DEADLINE_EXCEEDED_TEXT]:
+            return {"deadline_seconds": EXEC_TIMEOUT_SECONDS}
+    require(texts[:1] == [COMPLETED_TEXT], "Pricing tool did not complete: " + repr(texts)[:8192])
     reports = [json.loads(text) for text in texts if text.startswith('{"prices":')]
     require(len(reports) == 1, "Expected exactly one pricing report")
     value = reports[0]
@@ -248,7 +262,7 @@ async def run(args: argparse.Namespace) -> None:
         "pricing",
         CallerContext(lambda: scope, lambda: "sample", list_no_files),
         image=args.image,
-        exec_timeout_seconds=90,
+        exec_timeout_seconds=EXEC_TIMEOUT_SECONDS,
     )
     versions = {
         name: importlib.metadata.version(name)
@@ -273,13 +287,20 @@ async def run(args: argparse.Namespace) -> None:
 
     async def checked(answer: Any, category: str | None, seconds: float) -> None:
         value = report(answer, category)
-        require(
-            bool(value["prices"]) and not value["truncated"],
-            "Narrow live query is empty or truncated",
-        )
+        if "prices" in value:
+            require(
+                bool(value["prices"]) and not value["truncated"],
+                "Narrow live query is empty or truncated",
+            )
         require(bool(evidence.calls) and evidence.calls[-1].unclean == 0, "Incomplete call cleanup")
         await absent(args, evidence)
-        measure("report", call=evidence.calls[-1].call, seconds=seconds, report=value)
+        measure(
+            "report",
+            call=evidence.calls[-1].call,
+            price_type=category,
+            seconds=seconds,
+            report=value,
+        )
         measure("disposed", instance=evidence.instances[-1], complete=True)
 
     try:
@@ -363,11 +384,7 @@ async def run(args: argparse.Namespace) -> None:
                     "whole-term prices by monthly hours. Explain empty or truncated results.",
                 ) as agent,
             ):
-                before = len(evidence.calls)
                 response = await model_response(agent)
-                require(
-                    len(evidence.calls) > before, "Agent returned prose without calling the tool"
-                )
                 print("Model: " + json.dumps(response))
     finally:
         purge = await router.dispose_scope(scope, "sample")

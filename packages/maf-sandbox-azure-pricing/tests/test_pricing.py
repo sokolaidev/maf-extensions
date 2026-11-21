@@ -35,6 +35,8 @@ from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT, list_no_files
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_azure_pricing import (
+    DEADLINE_EXCEEDED_TEXT,
+    RATE_LIMITED_TEXT,
     PriceType,
     azure_pricing_sandbox_spec,
     make_azure_pricing_tools,
@@ -256,7 +258,47 @@ def test_upstream_bad_request_returns_fixed_filter_guidance_and_disposes(result)
 @pytest.mark.parametrize(
     "result",
     [
-        ExecResult(exit_code=1, stderr="HTTP 429: retry later"),
+        ExecResult(stdout='{"status":429,"message":"secret diagnostic"}'),
+        ExecResult(exit_code=1, stderr="HTTP 429: secret diagnostic"),
+        ExecResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "status": 500,
+                    "message": "Service request failed.\nStatus: 429 (Too Many Requests)\n",
+                    "results": {"type": "ClientResultException", "message": "secret diagnostic"},
+                }
+            ),
+        ),
+        ExecResult(
+            exit_code=1,
+            stdout='{"status":500,"message":"Response status code does not indicate success: 429 (Too Many Requests)."}',
+        ),
+    ],
+)
+def test_rate_limit_returns_only_fixed_guidance_and_disposes(result):
+    class Limited(InProcessSandbox):
+        async def exec(self, *args, **kwargs):
+            return result
+
+    tool, backend, _ = attach(Limited())
+    items = asyncio.run(tool.func(sku="x"))
+    assert [item.text for item in items[:2]] == [NOT_COMPLETED_TEXT, RATE_LIMITED_TEXT]
+    assert all(item.text in tool.additional_properties["fixed_sentences"] for item in items)
+    assert "secret diagnostic" not in str(items)
+    assert len(backend.disposed) == 1
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ExecResult(exit_code=1, stdout='{"status":"429"}'),
+        ExecResult(exit_code=1, stdout='{"status":503,"status":429}'),
+        ExecResult(exit_code=1, stdout='{"status":429,"results":{"prices":[]}}'),
+        ExecResult(exit_code=1, stdout='{"status":200,"message":"HTTP 429"}'),
+        ExecResult(exit_code=1, stderr="HTTP 4290"),
+        ExecResult(exit_code=1, stderr="HTTP 429", producer_owns_stderr=True),
+        ExecResult(exit_code=1, stdout=envelope(), stderr="HTTP 429"),
         ExecResult(exit_code=1, stderr="HTTP 500: internal error"),
         ExecResult(exit_code=1, stderr="Status: 4000; 400 rows received"),
         ExecResult(exit_code=1, stdout="HTTP 400: not a JSON envelope"),
@@ -265,7 +307,7 @@ def test_upstream_bad_request_returns_fixed_filter_guidance_and_disposes(result)
         ExecResult(exit_code=1, stdout=envelope([row() | {"productName": "HTTP 400"}])),
     ],
 )
-def test_other_cli_failures_do_not_claim_filter_rejection(result):
+def test_other_cli_failures_do_not_claim_a_known_refusal(result):
     class Failed(InProcessSandbox):
         async def exec(self, *args, **kwargs):
             return result
@@ -274,6 +316,7 @@ def test_other_cli_failures_do_not_claim_filter_rejection(result):
     items = asyncio.run(tool.func(sku="x"))
     assert items[0].text == NOT_COMPLETED_TEXT
     assert "rejected the filter" not in str(items)
+    assert RATE_LIMITED_TEXT not in [item.text for item in items]
     assert backend.disposed
 
 
@@ -641,7 +684,20 @@ def test_timeout_disposes_and_never_returns_partial_prices():
 
     tool, backend, _ = attach(Slow(), exec_timeout_seconds=0.01)
     items = asyncio.run(tool.func(sku="x"))
-    assert items[0].text == NOT_COMPLETED_TEXT and backend.disposed
+    assert [item.text for item in items[:2]] == [NOT_COMPLETED_TEXT, DEADLINE_EXCEEDED_TEXT]
+    assert len(backend.disposed) == 1
+
+
+def test_backend_timeout_before_deadline_is_not_a_handled_deadline():
+    class Failed(InProcessSandbox):
+        async def exec_bounded(self, *args, **kwargs):
+            raise TimeoutError("unrelated backend timeout")
+
+    tool, backend, _ = attach(Failed())
+    items = asyncio.run(tool.func(sku="x"))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert DEADLINE_EXCEEDED_TEXT not in [item.text for item in items]
+    assert len(backend.disposed) == 1
 
 
 def test_no_bounded_surface_refuses_before_exec():

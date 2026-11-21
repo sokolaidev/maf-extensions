@@ -1,18 +1,17 @@
 """Typed pricing queries through the sandbox protocol and core's provenance checks."""
 
 import asyncio
-import json
 import math
 import re
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 from maf_sandbox import CallerContext, ExecResult, SandboxRouter, SourceIntegrity
 from maf_sandbox.bounded_exec import BoundedExec
 from maf_sandbox.maf import SandboxResult, SandboxToolSession, sandboxed_tool
 
 from ._regions import expanded_region, names_field, region_predicate
-from ._report import parse_report
+from ._report import cli_envelope, parse_report
 from ._spec import AZURE_PRICING_TOOL_NAME, PriceType, azure_pricing_sandbox_spec
 
 _DATA_GUIDANCE = (
@@ -33,15 +32,32 @@ _GUIDANCE = (
 )
 #: The price type a lookup applies when the caller names none and its filter selects none.
 DEFAULT_PRICE_TYPE = PriceType.CONSUMPTION
+RATE_LIMITED_TEXT = (
+    "Pricing lookup incomplete: the Retail Prices API rate limited the request (HTTP 429). "
+    "Retry later."
+)
+DEADLINE_EXCEEDED_TEXT = "Pricing lookup incomplete: the bounded execution deadline expired."
 _PRICE_TYPE_FIELD = "priceType"
 _BAD_REQUEST = re.compile(
     rb"\b(?:HTTP(?:/[0-9.]+)?[ \t]+|Status(?:[ \t]+code)?[ \t]*:[ \t]*)400\b"
     rb"|\b400[ \t]*\(Bad Request\)|\bInvalid OData parameters supplied\b",
     re.IGNORECASE,
 )
+_RATE_LIMITED = re.compile(
+    rb"^(?:HTTP(?:/[0-9.]+)?[ \t]+|Status(?:[ \t]+code)?[ \t]*:[ \t]*)429\b"
+    rb"|\bResponse status code does not indicate success: 429[ \t]*\(Too Many Requests\)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FILTER_REJECTED_TEXT = (
+    "Pricing query refused: the Retail Prices API rejected the filter (HTTP 400). Check "
+    "the documented filter fields and predicate syntax; there is no osType field. Correct "
+    "the query before retrying."
+)
 
 
 _FIXED_SENTENCES = (
+    RATE_LIMITED_TEXT,
+    DEADLINE_EXCEEDED_TEXT,
     "Pricing lookup incomplete: bounded execution is required.",
     "Pricing lookup incomplete: caller context is unavailable.",
     (
@@ -60,11 +76,7 @@ _FIXED_SENTENCES = (
         "SKU, omit service and sku and use filter on serviceName, productName or meterName "
         "instead. Do not invent a SKU."
     ),
-    (
-        "Pricing query refused: the Retail Prices API rejected the filter (HTTP 400). Check "
-        "the documented filter fields and predicate syntax; there is no osType field. Correct "
-        "the query before retrying."
-    ),
+    _FILTER_REJECTED_TEXT,
     "Pricing results may be incomplete; narrow the filters.",
     "Unknown region: billing zones were not selected; use an explicit armRegionName filter.",
     "ExpressRoute zone rows omitted: select the circuit peering location explicitly.",
@@ -81,24 +93,36 @@ _FIXED_SENTENCES = (
 )
 
 
-def _filter_rejected(result: ExecResult) -> bool:
+def _cli_refusal(result: ExecResult) -> str | None:
     if _BAD_REQUEST.search(result.stderr_bytes):
-        return True
+        return _FILTER_REJECTED_TEXT
+    if not result.stdout_bytes:
+        if (
+            result.exit_code != 0
+            and not result.producer_owns_stderr
+            and _RATE_LIMITED.search(result.stderr_bytes)
+        ):
+            return RATE_LIMITED_TEXT
+        return None
     try:
-        raw = json.loads(result.stdout_bytes)
-    except (ValueError, UnicodeError):
-        return False
-    if not isinstance(raw, dict):
-        return False
-    envelope = cast("dict[str, Any]", raw)
-    if type(envelope.get("status")) is not int:
-        return False
-    if envelope["status"] == 400:
-        return True
-    if envelope["status"] < 400:
-        return False
+        envelope = cli_envelope(result.stdout_bytes)
+    except ValueError:
+        return None
+    status = envelope.get("status")
+    if type(status) is not int or status < 400:
+        return None
     message = envelope.get("message")
-    return isinstance(message, str) and bool(_BAD_REQUEST.search(message.encode("utf-8")))
+    diagnostic = message.encode("utf-8") if isinstance(message, str) else b""
+    if status == 400 or _BAD_REQUEST.search(diagnostic):
+        return _FILTER_REJECTED_TEXT
+    if result.producer_owns_stderr or result.stderr_bytes:
+        return None
+    details = envelope.get("results")
+    if details is not None and (not isinstance(details, dict) or "prices" in details):
+        return None
+    if status == 429 or (status == 500 and _RATE_LIMITED.search(diagnostic)):
+        return RATE_LIMITED_TEXT
+    return None
 
 
 def _text(value: str | None, limit: int = 1024) -> str | None:
@@ -283,24 +307,21 @@ def _build_tool(
             return _incomplete("Pricing lookup incomplete: the sandbox could not be acquired.")
         if not isinstance(sandbox, BoundedExec):
             return _incomplete("Pricing lookup incomplete: bounded execution is required.")
+        deadline = asyncio.timeout(timeout)
         try:
-            async with asyncio.timeout(timeout):
+            async with deadline:
                 result = await sandbox.exec_bounded(
                     args,
                     working_directory=".",
                     timeout=timeout,
                     max_output_bytes=max_output_bytes,
                 )
-            if len(result.stdout_bytes) > max_output_bytes:
+            if len(result.stdout_bytes) + len(result.stderr_bytes) > max_output_bytes:
                 return _incomplete(
                     "Pricing lookup incomplete: the response exceeds the byte limit."
                 )
-            if _filter_rejected(result):
-                return _incomplete(
-                    "Pricing query refused: the Retail Prices API rejected the filter "
-                    "(HTTP 400). Check the documented filter fields and predicate syntax; "
-                    "there is no osType field. Correct the query before retrying."
-                )
+            if refusal := _cli_refusal(result):
+                return _incomplete(refusal)
             if result.exit_code != 0 or result.producer_owns_stderr or result.stderr_bytes:
                 return _incomplete(
                     "Pricing lookup incomplete: the CLI did not return a clean result."
@@ -308,7 +329,9 @@ def _build_tool(
             report, checked, truncated = parse_report(
                 result.stdout_bytes, max_rows, region=expanded_region(region, filter)
             )
-        except Exception:
+        except Exception as error:
+            if isinstance(error, TimeoutError) and deadline.expired():
+                return _incomplete(DEADLINE_EXCEEDED_TEXT)
             return _incomplete(
                 "Pricing lookup incomplete: execution timed out, exceeded its byte limit, "
                 "or returned an invalid response."
