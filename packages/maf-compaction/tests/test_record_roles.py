@@ -10,7 +10,7 @@ from agent_framework import Message
 from test_background_record_merges import prepared, running, tool_reply
 from test_record_budget import _history, _record_pair, _record_size, _sent, _strategy, _Summarizer
 
-from maf_compaction import RecordRoleVerdict, make_decision_role_judge
+from maf_compaction import RecordRoleResponse, RecordRoleVerdict, make_decision_role_judge
 from maf_compaction._record_roles import RecordRolePass
 
 pytestmark = pytest.mark.anyio
@@ -316,6 +316,29 @@ async def test_unsent_text_and_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await measurement.finish(True, cancel)
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ((-3, False), (None, None)),
+        ((True, 0), (None, 0)),
+        ((7, -1), (7, None)),
+        ((1.5, "2"), (None, None)),
+        ((0, 4), (0, 4)),
+    ],
+)
+async def test_host_judge_token_counts_are_validated_independently(counts, expected):
+    measurement = RecordRolePass(_TASK, None, 1, 1, 1000)
+    measurement.observe("merge", "accepted", ["original"], "prose")
+
+    async def judge(_):
+        return RecordRoleResponse({0: RecordRoleVerdict("faithful", 0.9)}, *counts)
+
+    report = await measurement.finish(True, judge)
+    [request] = report.request_details
+    assert (request.input_tokens, request.output_tokens) == expected
+    assert report.observations[0].decision == "accept"
 
 
 @pytest.mark.parametrize(

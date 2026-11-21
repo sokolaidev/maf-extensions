@@ -18,10 +18,6 @@ def _json_object(value: object) -> TypeGuard[dict[str, Any]]:
     return isinstance(value, dict)
 
 
-def _tokens(value: object) -> int | None:
-    return value if type(value) is int and value >= 0 else None
-
-
 def _verdicts(result: dict[str, Any], ids: dict[str, int]) -> dict[int, RecordRoleVerdict]:
     model = result.get("model")
     answers = result.get("answers")
@@ -89,8 +85,6 @@ def make_decision_role_judge(
         usage = result.get("usage")
         if not _json_object(usage):
             return RecordRoleResponse(verdicts)
-        return RecordRoleResponse(
-            verdicts, _tokens(usage.get("input_tokens")), _tokens(usage.get("output_tokens"))
-        )
+        return RecordRoleResponse(verdicts, usage.get("input_tokens"), usage.get("output_tokens"))
 
     return judge
