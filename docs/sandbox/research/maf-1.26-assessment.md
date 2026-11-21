@@ -1,5 +1,7 @@
 # MAF 1.26 adoption
 
+> Release assessment and adoption record. Current implementation and qualification evidence is recorded in [release compatibility](../../release-compatibility.md#maf-126-adoption).
+
 Implementation tracks [#2641](https://github.com/sokolaidev/maf-extensions/issues/2641), following the merged 1.25 implementation in [#2643](https://github.com/sokolaidev/maf-extensions/pull/2643). The [current qualification and release sequence](../../release-compatibility.md#maf-126-adoption) separates current evidence from the retained assessment below.
 
 ## Current implementation
