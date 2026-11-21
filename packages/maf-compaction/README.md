@@ -57,7 +57,7 @@ The anchored strategy needs nothing else:
 ```python
 from agent_framework import create_harness_agent
 from agent_framework_openai import OpenAIChatClient
-from maf_compaction import AnchoredCompactionStrategy
+from maf_compaction import AnchoredCompactionStrategy, CompactionMiddlewareProvider
 
 strategy = AnchoredCompactionStrategy(
     max_input_tokens=BUDGET,
@@ -75,6 +75,7 @@ agent = create_harness_agent(
     tools=[lookup_deployment],
     max_context_window_tokens=CONTEXT_WINDOW,
     max_output_tokens=MAX_OUTPUT,
+    context_providers=[CompactionMiddlewareProvider([])],
     before_compaction_strategy=strategy,
     after_compaction_strategy=strategy,
     tokenizer=tokenizer,
@@ -86,6 +87,7 @@ The record strategy needs the recall tool registered and its middleware installe
 ```python
 from maf_compaction import (
     AnchoredCompactionStrategy,
+    CompactionMiddlewareProvider,
     RecallGate,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
@@ -120,7 +122,7 @@ agent = create_harness_agent(
     name="assistant",
     agent_instructions="Answer from the lookups you make. Quote values exactly.",
     tools=[lookup_deployment, recall_tool],
-    middleware=[recall],
+    context_providers=[CompactionMiddlewareProvider([recall])],
     max_context_window_tokens=CONTEXT_WINDOW,
     max_output_tokens=MAX_OUTPUT,
     before_compaction_strategy=strategy,
@@ -208,6 +210,7 @@ The longer version 2 system prompts count against `max_summary_input_tokens` and
 
 ```python
 from maf_compaction import (
+    CompactionMiddlewareProvider,
     CompactionStack,
     RecallGate,
     SessionCompactionProvider,
@@ -254,9 +257,13 @@ agent = create_harness_agent(
     client,
     name="shared-assistant",
     tools=[lookup_deployment, make_session_recall_tool(registry)],
-    middleware=[SessionToolResultRecallMiddleware(registry, compact_before=True)],
     disable_compaction=True,
-    context_providers=[compaction],
+    context_providers=[
+        compaction,
+        CompactionMiddlewareProvider([
+            SessionToolResultRecallMiddleware(registry, compact_before=True),
+        ]),
+    ],
     max_output_tokens=MAX_OUTPUT,
     tokenizer=tokenizer,
 )
@@ -267,7 +274,9 @@ agent.context_providers.insert(1, compaction)
 
 To enable the pinned instruction for every fresh session stack, import `DEFAULT_RECORD_INSTRUCTION` and construct the registry with `lambda: build_compaction(record_instruction=DEFAULT_RECORD_INSTRUCTION)`. Apply the record target and cap together in the builder and `make_session_recall_tool(target_tokens=...)` as described above. The instruction belongs to builder configuration, so every replica must supply it again after a restore; it is never serialized into session state.
 
-The harness in framework 1.20 loads and persists history per model call. Its provider `before_run` hook therefore has no history to compact. `compact_before=True` supplies the session's strategy to the chat client after history loads, including when a stream is consumed later. `before=False` avoids a second provider pass. The provider's `after_run` compacts stored history. Additional providers are appended by `create_harness_agent`, so the final two lines put compaction where the harness puts its own: after history, before the remaining providers; after hooks run in reverse order. A plain `Agent` using per-service-call history persistence uses the same middleware and provider. For a host that supplies loaded context to provider hooks itself, leave `compact_before=False` and enable the provider's `before` phase.
+MAF 1.26 prepares local history before the first model call and reloads it for later calls. Use `CompactionMiddlewareProvider` for recall middleware and request observers: its middleware runs after history loading, so internal recall retries reuse one loaded request and only the accepted response is persisted. It also attributes generated summaries and removal notes as context instead of new user input. Put per-attempt usage observers after recall in that provider's list. Attribution identifies context ownership; it does not grant a trusted security label. Hosts that explicitly enable `store_context_messages` must filter transient recall prompts themselves.
+
+`compact_before=True` supplies the session's strategy to the chat client on every model call, including deferred streaming execution. `before=False` avoids a duplicate first-call compaction pass. The provider's `after_run` compacts stored history. Additional providers are appended by `create_harness_agent`, so the final two lines place compaction after history; after hooks run in reverse order. A plain `Agent` with per-service-call history persistence uses the same provider wiring.
 
 The list a model call is handed is rarely the list the previous call's pass left. The harness hands fresh copies of the stored messages, and a chat client with middleware compacts a copy of the tool loop's list, so the records, notes and exclusions of one call are gone on the next. The composed strategy therefore keeps the list each `compact_before` pass leaves. When the next call is handed the same stored messages, in the same order and state, with new ones after them, the pass starts from the kept list instead of putting every decision back, and the model is sent what a host that keeps its list would send it. A message the host removed, moved or changed, another conversation's messages, or another process gets a pass that puts its decisions back, as before. The kept list is local to the process and never part of the session snapshot. A registry keeps one for its `max_carried_views` most recently used sessions, 16 by default and none at zero, and lets it go when the provider's `after_run` or the record-merge middleware ends the turn.
 
@@ -281,18 +290,12 @@ Serialize requests for the same session in the host, including across replicas. 
 
 ### Merging records during tools
 
-Add `make_session_record_merge_middleware(registry)` to the agent's middleware list before `SessionToolResultRecallMiddleware(registry, compact_before=True)` to prepare record merges while a reply's tool calls execute. The bundle supplies both agent-run lifetime management and chat-response observation. It requires a composed stack and an explicit `AgentSession`; installing it on a chat client alone is unsupported. Keep the provider and recall-tool wiring above.
+Add `make_session_record_merge_middleware(registry)` to the agent's `middleware` list to prepare record merges while a reply's tool calls execute. Keep recall in `CompactionMiddlewareProvider` as above. The bundle supplies agent-run lifetime management and chat-response observation, requires a composed stack and an explicit `AgentSession`, and must not be installed on a chat client alone.
 
 ```python
-from maf_compaction import (
-    SessionToolResultRecallMiddleware,
-    make_session_record_merge_middleware,
-)
+from maf_compaction import make_session_record_merge_middleware
 
-middleware = [
-    make_session_record_merge_middleware(registry),
-    SessionToolResultRecallMiddleware(registry, compact_before=True),
-]
+middleware = [make_session_record_merge_middleware(registry)]
 ```
 
 A reply containing tool calls starts bounded record-batch search and merge requests on a private history and strategy snapshot. Work runs while records exceed their configured share or the snapshot exceeds the chain target, using the same request cap, split depth and `chain_seconds` admission deadline. User summaries, harder rewrites and overflow enforcement remain foreground work. The first model call of a run still uses the normal foreground chain; subsequent passes consume completed background answers without waiting for unfinished merges or repeating their merge search.
