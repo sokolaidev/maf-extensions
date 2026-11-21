@@ -3,12 +3,14 @@
 import warnings as _warnings
 
 from ._spec import AZURE_PRICING_TOOL_NAME, PriceType, azure_pricing_sandbox_spec
-from ._tool import make_azure_pricing_tools
+from ._tool import DEADLINE_EXCEEDED_TEXT, RATE_LIMITED_TEXT, make_azure_pricing_tools
 
 __all__ = [
     "AZURE_PRICING_TOOL_NAME",
+    "DEADLINE_EXCEEDED_TEXT",
     "MafSandboxAzurePricingExperimentalWarning",
     "PriceType",
+    "RATE_LIMITED_TEXT",
     "azure_pricing_sandbox_spec",
     "make_azure_pricing_tools",
 ]

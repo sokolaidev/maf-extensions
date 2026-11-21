@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.workflow
 
 
+def test_pricing_qualification_uses_direct_calls_and_requires_probe_evidence():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/sbx-live.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["pricing-e2e"]["steps"]
+    step = next(step for step in steps if "check_live_backend_pricing.py" in step.get("run", ""))
+    sample, checker = step["run"].split("uv run python scripts/check_live_backend_pricing.py")
+    assert "samples/experimental/azure_pricing/agent.py" in sample
+    assert "--no-model" in sample and "--qualify" in sample
+    assert "--no-model" in checker and "--require-probes" in checker
+
+
 def test_workflow_loads_and_retains_the_selected_shell_image():
     workflow = yaml.safe_load((ROOT / ".github/workflows/sbx-live.yml").read_text(encoding="utf-8"))
     job = workflow["jobs"]["sbx-e2e"]
