@@ -10,7 +10,13 @@ import re
 from typing import Any
 
 import pytest
-from agent_framework import ChatResponse, Content, Message, UsageDetails
+from agent_framework import (
+    CharacterEstimatorTokenizer,
+    ChatResponse,
+    Content,
+    Message,
+    UsageDetails,
+)
 from test_record_budget import (
     _VALUE,
     _body,
@@ -299,6 +305,38 @@ async def test_sweeps_restored_between_them_reach_a_batch_across_same_tool_runs(
     (merged,) = summarizer.merges
     smalls = [2 * front + 1, 2 * front + 2]
     assert sorted(int(index) for index in re.findall(r"lookup_(\d+) ", merged)) == smalls
+
+
+class _TripleFitsTokenizer(CharacterEstimatorTokenizer):
+    """Count a record request by its records alone: one 100, two 1,200, three 900."""
+
+    def count_tokens(self, text: str) -> int:
+        payload = json.loads(text) if text.startswith("{") else None
+        if payload is None:
+            return super().count_tokens(text)
+        if payload.get("role") == "system":
+            return 0
+        body = (payload.get("contents") or [{}])[0].get("text") or ""
+        if payload.get("role") == "user" and body.startswith("1. "):
+            records = len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            return {1: 100, 2: 1_200, 3: 900}.get(records, 100_000)
+        return super().count_tokens(text)
+
+
+async def test_a_batch_cut_back_to_its_run_is_checked_against_the_request_limit() -> None:
+    """The search takes a triple that fits; cut back to its same-tool pair it would not, so the
+    pair is not sent, and the triple is merged as the batch across runs."""
+    messages = _tooled_history(["docs_search", "docs_search", "file_write"])
+    tokenizer = _TripleFitsTokenizer()
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None, tokenizer=tokenizer)
+    strategy.run_past_limit_factor = 2.0
+    strategy.record_request_input_tokens = 1_000
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    (merged,) = summarizer.merges
+    assert _batch_size(merged) == 3, "the triple, not the pair over the limit"
 
 
 async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:

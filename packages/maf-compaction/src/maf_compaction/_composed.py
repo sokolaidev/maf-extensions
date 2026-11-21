@@ -3383,8 +3383,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     if len(batch) > run:
                         found = batch
                         batch = batch[:run] if run >= 2 else []
-                        # Without the bound, a shorter run need not fit where a longer one did.
-                        if batch and factor is None and await off_loop(size, batch) > limit:
+                        # A shorter run need not fit where a longer one did.
+                        if batch and await off_loop(size, batch) > limit:
                             batch = []
                         if not batch and across is None:
                             across = found
