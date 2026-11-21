@@ -32,6 +32,8 @@ from maf_compaction._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _numbered_records,
 )
+from maf_compaction._summary_input import summary_input_tokens
+from maf_compaction._toolsummary import RECORD_TOOLS_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -102,7 +104,7 @@ async def test_records_over_the_output_cap_merge_within_the_request_input_limit(
         assert bool(summarizer.merges) is merged
 
 
-def _tool_then_record(index: int, tool: str) -> list[Message]:
+def _tool_then_record(index: int, tool: str, body: str | None = None) -> list[Message]:
     """A call of ``tool`` and its result, then the record the model wrote of it."""
     return [
         Message(
@@ -115,7 +117,7 @@ def _tool_then_record(index: int, tool: str) -> list[Message]:
             contents=[Content.from_function_result(call_id=f"t{index}", result=f"{tool} output")],
             message_id=f"t{index}_res",
         ),
-        *_record_pair(index),
+        *_record_pair(index, body=body),
     ]
 
 
@@ -168,6 +170,59 @@ async def test_a_record_no_merge_may_take_still_ends_what_the_record_before_it_c
         for body in summarizer.merges
     ]
     assert merged == [[2, 3, 4]]
+
+
+async def test_a_sweep_merges_across_same_tool_runs_when_none_of_them_can_merge() -> None:
+    """Two search records too large to share a request, then a write: the second search and the
+    write fit, so they merge rather than nothing."""
+    large = _body(0) + " and its full listing" * 200
+    messages = _history(0)
+    closing = messages.pop()
+    for index, tool in enumerate(["docs_search", "docs_search", "file_write"]):
+        messages += _tool_then_record(
+            index,
+            tool,
+            None if tool == "file_write" else large.replace("lookup_0", f"lookup_{index}"),
+        )
+    messages.append(closing)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None)
+    fits = summary_input_tokens(
+        strategy.merge_prompt,
+        _numbered_records([large.replace("lookup_0", "lookup_1"), _body(2)]),
+        tokenizer=strategy.tokenizer,
+    )
+    strategy.record_request_input_tokens = fits
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == [[1, 2]]
+
+
+async def test_a_record_merged_across_a_held_one_keeps_what_both_sources_covered() -> None:
+    """Read and search merge past a held write; the merged record still covers the read, so it
+    does not join the search records written after it."""
+    messages = _tooled_history(["file_read", "file_write", "docs_search"])
+    (held,) = (message for message in messages if message.message_id == "rec1_res")
+    held.contents[0].additional_properties = {"note": "kept as written"}
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+    (written,) = (m for m in messages if RECORD_TOOLS_KEY in m.additional_properties)
+    assert written.additional_properties[RECORD_TOOLS_KEY] == ["docs_search", "file_read"]
+
+    closing = messages.pop()
+    for index in (3, 4):
+        messages += _tool_then_record(index, "docs_search")
+    messages.append(closing)
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    assert _batch_size(summarizer.merges[-1]) == 2, "only the two search records"
 
 
 async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:

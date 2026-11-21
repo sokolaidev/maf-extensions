@@ -118,6 +118,7 @@ from ._toolsummary import (
     active_record_groups,
     build_record_message,
     consolidatable_record_groups,
+    covered_tools,
     find_record_index,
     record_anchor_position,
     record_bodies,
@@ -669,35 +670,6 @@ def _transcript(
     return _numbered_records(record_bodies(messages, groups) if bodies is None else bodies)
 
 
-def _covered_tools(
-    messages: list[Message], groups: list[dict[str, Any]], active: list[dict[str, Any]]
-) -> list[frozenset[str]]:
-    """Return, per record in ``groups``, the tools called since the active record before it.
-
-    ``active`` holds every active record, so one a merge may not take still ends what the record
-    before it covered. Excluded messages count: a merged record's sources stay in the history,
-    excluded and no longer active, with the calls they covered, so a merged record covers what
-    its sources covered.
-    """
-    ends = sorted(int(record["end_index"]) for record in active)
-    covered: list[frozenset[str]] = []
-    for group in groups:
-        start = int(group["start_index"])
-        before = bisect_left(ends, start)
-        after = ends[before - 1] + 1 if before else 0
-        covered.append(
-            frozenset(
-                content.name
-                for message in messages[after : int(group["start_index"])]
-                for content in message.contents
-                if content.type == "function_call"
-                and content.name
-                and content.name != RECALL_TOOL_NAME
-            )
-        )
-    return covered
-
-
 def _same_tool_segment_ends(tools: list[frozenset[str]]) -> list[int]:
     """Return, per record, where the run a merge batch from it may take ends.
 
@@ -1066,6 +1038,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.run_past_limit_factor = run_past_limit_factor
         self.record_request_input_tokens = record_request_input_tokens
         self.merge_same_tool_first = merge_same_tool_first
+        self._same_tool_runs_off = False
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -3117,6 +3090,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         powers: list[int] = [1]
         # Per record, where the run a batch from it may take ends (``merge_same_tool_first``).
         ends: list[int] = []
+        segmented = [False]
         probes = 0
         changed = False
 
@@ -3150,10 +3124,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             while len(powers) <= len(groups):
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
             ends[:] = (
-                _same_tool_segment_ends(_covered_tools(messages, groups, active))
-                if self.merge_same_tool_first
+                _same_tool_segment_ends(covered_tools(messages, groups, active))
+                if self.merge_same_tool_first and not self._same_tool_runs_off
                 else [len(groups)] * len(groups)
             )
+            segmented[0] = any(end < len(groups) for end in ends)
             inputs = {(prompt_digest, digests[last(group)], limit) for group in groups}
             self._record_input_fits = {
                 key: fits for key, fits in self._record_input_fits.items() if key in inputs
@@ -3460,6 +3435,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         starts = {(digests[last(group)], limit) for group in groups}
         self._searched = {key: found for key, found in self._searched.items() if key in starts}
         self._merge_sweep_complete = exhausted and not interrupted and not changed
+        if over and segmented[0] and not changed and not interrupted:
+            # Same-tool runs are a preference: when none of them can merge, the sweep goes on
+            # without them, so a batch across runs that fits is taken rather than none.
+            self._same_tool_runs_off = True
+            try:
+                return await self._merge_batches(messages, start, share)
+            finally:
+                self._same_tool_runs_off = False
         return changed
 
     def _summary_parallelism(self) -> int:
