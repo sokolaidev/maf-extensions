@@ -73,6 +73,12 @@ def test_missing_fix_is_not_reported_as_proof_no_upstream_fix_exists():
     assert "does not prove no upstream fix exists" in row["reason"]
 
 
+def test_vendor_fixed_version_is_visible_when_scanner_has_none():
+    row = finding("rebuild-required", fix={"versions": []}, vendorFix={"fixedVersion": "2.13.9-r3"})
+    pending = report.pending({"plan.json": {"findings": [row]}}, "platform")
+    assert pending[0]["fix"] == {"versions": ["2.13.9-r3"], "state": "fixed"}
+
+
 @pytest.mark.parametrize("status", sorted(report.REBUILD))
 def test_rebuild_is_a_release_action_even_after_a_partial_pr(status):
     values = {

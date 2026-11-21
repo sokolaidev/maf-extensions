@@ -155,6 +155,13 @@ def pending(values: dict, kind: str) -> list[dict]:
     qualified = values.get("qualified.json", {}).get("status", "not-qualified")
     rows = []
     for finding in values.get("plan.json", {}).get("findings", []):
+        fix = finding.get("fix", {})
+        if vendor_fixed := finding.get("vendorFix", {}).get("fixedVersion"):
+            fix = {
+                **fix,
+                "state": "fixed",
+                "versions": sorted({*(fix.get("versions") or []), vendor_fixed}),
+            }
         decisions = finding.get("decisions", [{"status": finding.get("status", "unknown")}])
         statuses = {d["status"] for d in decisions} or {"unknown"}
         if delivered and qualified == "ready":
@@ -180,7 +187,7 @@ def pending(values: dict, kind: str) -> list[dict]:
                 "id": finding["id"],
                 "component": finding.get("component", finding.get("module", "unknown")),
                 "installed": finding["installed"],
-                "fix": finding.get("fix", {}),
+                "fix": fix,
                 "reason": " ".join(reasons),
             }
         )
