@@ -111,14 +111,19 @@ def test_changed_image_source_requires_matching_consumer_evidence(
         (directory / "pyproject.toml").write_text(
             f'[project]\nname = "{package}"\nversion = "0.1.0"\n'
         )
+    for path in consumer.HARNESS_INPUTS.get(published.profile, ()):
+        file = root / path
+        file.parent.mkdir(parents=True)
+        file.write_text("Test harness input\n")
     source = legacy.commit(root) if package != legacy.PACKAGE else guard.revision(root, "HEAD")
     published.record["sourceCommit"] = source
-    recipe = (
-        root
-        / "images"
-        / ("shell-sandbox" if published.profile == "shell" else "terraform-sandbox")
-        / "Dockerfile"
-    )
+    image_directory = {
+        "drawio-export": "drawio-export",
+        "shell": "shell-sandbox",
+        "terraform-random": "terraform-sandbox",
+        "opentofu-random": "terraform-sandbox",
+    }[published.profile]
+    recipe = root / "images" / image_directory / "Dockerfile"
     recipe.parent.mkdir(parents=True)
     recipe.write_text("FROM changed\n")
     head = legacy.commit(root)
@@ -253,6 +258,7 @@ def test_cli_exports_only_verified_pulled_digest(published, monkeypatch, tmp_pat
         ("sample-21", "shell"),
         ("sample-20-docker-terraform", "terraform-random"),
         ("sample-20-docker-opentofu", "opentofu-random"),
+        ("sample-25", "drawio-export"),
     ],
 )
 def test_workflow_pulls_published_and_builds_only_branch(job, profile):

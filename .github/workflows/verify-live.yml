@@ -3612,3 +3612,69 @@ jobs:
             ${{ runner.temp }}/word-estimate
           if-no-files-found: ignore
           retention-days: 7
+
+  sample-25:
+    name: samples/25_docker_drawio_png against a live container
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker", "maf-sandbox-drawio"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      DRAWIO_EXPORT_IMAGE: maf-drawio-export:live
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: |
+            scripts
+            images
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Pull the qualified published image
+        if: env.SOURCE == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$HARNESS"/scripts/pull_live_image.py --profile drawio-export --root "$GITHUB_WORKSPACE"
+      - name: Build the draw.io export image
+        if: env.SOURCE == 'branch'
+        run: uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t "$DRAWIO_EXPORT_IMAGE" images/drawio-export
+      - name: Render the draw.io sample and verify the exported files
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/25_docker_drawio_png --source "$SOURCE")"
+          uv run --no-project $source_args samples/25_docker_drawio_png/agent.py \
+            --image "$DRAWIO_EXPORT_IMAGE" --output "$RUNNER_TEMP/drawio-png" 2>&1 | tee "$RUNNER_TEMP/sample-25-live.log"
+          python3 "$HARNESS"/scripts/check_live_drawio_png_sample.py "$RUNNER_TEMP/sample-25-live.log" "$RUNNER_TEMP/drawio-png"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/sample-25-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain the exported diagram, PNG and call timing
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sample-25-drawio-export
+          path: |
+            ${{ runner.temp }}/sample-25-live.log
+            ${{ runner.temp }}/drawio-png
+          if-no-files-found: ignore
+          retention-days: 7

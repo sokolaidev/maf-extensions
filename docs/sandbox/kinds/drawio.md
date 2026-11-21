@@ -2,7 +2,7 @@
 
 `create_drawio(xml: str)` validates native draw.io XML, applies the host's layout settings and produces an editable `diagram.drawio`. The host can also enable native PNG, JPG and SVG exports with `DrawioExport`. A separate `export_drawio(file: str)` tool exports an authorized stored diagram with complete geometry. The host's `OutputSink` receives the artifacts; the model receives completion, verdict and output items.
 
-See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wiring and an input example.
+See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wiring and the [Docker PNG sample](../../../samples/25_docker_drawio_png/) for a runnable example.
 
 ## Contract
 
