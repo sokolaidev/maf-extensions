@@ -3,7 +3,7 @@
 # /// script
 # requires-python = ">=3.12,<3.15"
 # dependencies = [
-#     "maf-sandbox>=0.54",
+#     "maf-sandbox>=0.55",
 #     "maf-sandbox-docker>=0.26",
 #     "maf-sandbox-drawio>=0.4",
 #     "pillow>=13,<14",
