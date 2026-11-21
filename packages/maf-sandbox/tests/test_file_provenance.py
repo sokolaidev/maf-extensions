@@ -334,17 +334,18 @@ class TestTheStoreKeyMatchesTheProvider:
 
 
 class TestBothMiddlewareOrders:
-    """The ordering claim, against the real `LabelTrackingFunctionMiddleware`.
+    """Committed writes retain provenance through either pipeline order."""
 
-    The unit test above simulates expansion by rewriting the argument itself, which pins what
-    this middleware does with an already-expanded name and *not* the documented claim that it
-    works on either side of the framework's own. Only driving the real chain can catch an
-    upstream change that moves when expansion happens — the sibling argument-provenance suite
-    drives both compositions for the same reason.
-    """
-
-    def _drive(self, *, ours_outside: bool) -> FileStoreProvenance:
-        from agent_framework import FunctionInvocationContext, FunctionTool
+    @pytest.mark.parametrize("ours_outside", [True, False])
+    @pytest.mark.parametrize("raises_after_write", [False, True])
+    def test_the_written_path_is_untrusted_in_either_order(self, ours_outside, raises_after_write):
+        from agent_framework import (
+            AgentSession,
+            FunctionInvocationContext,
+            FunctionTool,
+            InMemoryAgentFileStore,
+        )
+        from agent_framework._middleware import FunctionMiddlewarePipeline
         from agent_framework.security import (
             ContentLabel,
             IntegrityLabel,
@@ -352,48 +353,49 @@ class TestBothMiddlewareOrders:
         )
 
         tracker = LabelTrackingFunctionMiddleware()
+        session = AgentSession()
+        store = InMemoryAgentFileStore()
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         ours = file_store_provenance_middleware(record)
-        variable_id = tracker.get_variable_store().store(
-            "notes.bicep", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        variable_id = tracker.get_variable_store(session).store(
+            "  dir\\notes.bicep  ", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
         )
+        received = []
 
         async def body(file_name: str, content: str) -> str:
+            received.append(file_name)
+            await store.write(file_name, content)
+            if raises_after_write:
+                raise RuntimeError("failed after committed write")
             return f"File '{file_name}' written."
 
-        tool = FunctionTool(name="file_access_write", func=body)
+        tool = FunctionTool(
+            name="file_access_write", func=body, additional_properties={"accepts_untrusted": True}
+        )
         context = FunctionInvocationContext(
-            function=tool, arguments={"file_name": f"[{variable_id}]", "content": "x"}
+            function=tool,
+            session=session,
+            arguments={"file_name": f"[{variable_id}]", "content": _PAYLOAD},
         )
 
-        async def innermost() -> None:
-            await tool.invoke(arguments=context.arguments)
+        async def invoke(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
         async def drive() -> None:
-            if ours_outside:
-
-                async def inner() -> None:
-                    await tracker.process(context, innermost)
-
-                await ours.process(context, inner)
+            middleware = [ours, tracker] if ours_outside else [tracker, ours]
+            pipeline = FunctionMiddlewarePipeline(*middleware)
+            if raises_after_write:
+                with pytest.raises(RuntimeError, match="failed after committed write"):
+                    await pipeline.execute(context, invoke)
             else:
-
-                async def inner() -> None:
-                    await ours.process(context, innermost)
-
-                await tracker.process(context, inner)
+                await pipeline.execute(context, invoke)
+            assert received == ["  dir\\notes.bicep  "]
+            assert await store.read("dir/notes.bicep") == _PAYLOAD
+            assert record.integrity_of("dir/notes.bicep") is SourceIntegrity.UNTRUSTED
+            assert record.integrity_of(f"[{variable_id}]") is SourceIntegrity.TRUSTED
+            assert len(record) == 1
 
         asyncio.run(drive())
-        return record
-
-    @pytest.mark.parametrize("ours_outside", [True, False])
-    def test_the_expanded_name_is_recorded_whichever_side_this_sits_on(self, ours_outside: bool):
-        record = self._drive(ours_outside=ours_outside)
-        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED, (
-            "the record filed the placeholder rather than the name it expanded to, so a read of "
-            "the real path falls to the host's floor"
-        )
-        assert len(record) == 1
 
 
 class TestATrustedFloorNeedsAnObserver:

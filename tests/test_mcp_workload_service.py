@@ -1585,6 +1585,48 @@ def test_maf_owned_reset_retires_only_its_previous_session():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("dynamic_headers", [False, True])
+def test_maf_same_identity_concurrency_preserves_workload_busy_admission(dynamic_headers):
+    async def scenario():
+        from agent_framework.exceptions import ToolExecutionException
+
+        harness = Harness()
+        async with running(harness.service()) as (app, client, _server):
+            headers = {"Authorization": f"Bearer {TOKEN}"}
+            options = (
+                {"header_provider": lambda _kwargs: dict(headers)}
+                if dynamic_headers
+                else {"static_headers": headers}
+            )
+            async with MCPStreamableHTTPTool(
+                name="parallel",
+                url=str(client.base_url) + "/mcp",
+                load_prompts=False,
+                request_timeout=10,
+                **options,
+            ) as tool:
+                first = asyncio.create_task(tool.call_tool("echo", hold=True))
+                try:
+                    async with asyncio.timeout(5):
+                        await harness.entered.wait()
+                        with pytest.raises(ToolExecutionException, match="Service is busy"):
+                            await tool.call_tool("increment", number=1)
+                    assert len(app.sessions) == 1
+                    assert len(harness.calls) == 1
+                finally:
+                    harness.hold.set()
+                    response = await first
+                assert isinstance(response, list) and response[0].text is not None
+                assert json.loads(response[0].text) == {"answer": "done"}
+                after = await tool.call_tool("increment", number=1)
+                assert isinstance(after, list) and after[0].text is not None
+                assert json.loads(after[0].text) == {"total": 2}
+            await until(lambda: not app.sessions)
+        assert harness.closes == 1 and harness.cleans == 4
+
+    asyncio.run(scenario())
+
+
 def test_maf_wrapper_preserves_caller_owned_client_after_reset_and_close():
     async def scenario():
         h = Harness()
