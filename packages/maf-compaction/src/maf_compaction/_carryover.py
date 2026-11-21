@@ -35,6 +35,7 @@ from agent_framework._compaction import (
     GROUP_TOKEN_COUNT_KEY,
 )
 
+from ._media import MESSAGE_COUNTED
 from ._preserve import _ATTRIBUTION_KEY  # pyright: ignore[reportPrivateUsage]
 from ._request import RECALL_PROMPT_KEY
 from ._shed import durable_message_id
@@ -42,7 +43,9 @@ from ._shed import durable_message_id
 logger = logging.getLogger(__name__)
 
 #: Written anew on every list a call is handed, so no evidence that a stored message changed.
-_PER_CALL_PROPERTIES: Final[frozenset[str]] = frozenset({GROUP_ANNOTATION_KEY, _ATTRIBUTION_KEY})
+_PER_CALL_PROPERTIES: Final[frozenset[str]] = frozenset(
+    {GROUP_ANNOTATION_KEY, _ATTRIBUTION_KEY, MESSAGE_COUNTED}
+)
 _PER_CALL_ANNOTATIONS: Final[frozenset[str]] = frozenset(
     {
         GROUP_ID_KEY,

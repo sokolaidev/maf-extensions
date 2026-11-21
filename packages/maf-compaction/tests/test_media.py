@@ -29,7 +29,8 @@ from maf_compaction import (
     is_preserved,
     set_preserved,
 )
-from maf_compaction._media import annotate_token_counts
+from maf_compaction._background_records import BackgroundRecords, counted_history
+from maf_compaction._media import TokenCounts, annotate_token_counts
 from maf_compaction._summary_input import fits_summary_input
 
 pytestmark = pytest.mark.anyio
@@ -440,6 +441,80 @@ def test_plain_text_counts_match_framework_and_custom_media_cost_is_used_once():
     assert 123 < included_token_count(messages) < 300
     items = messages[0].contents[0].items
     assert items is not None and items[-1].type == "uri"
+
+
+class MessageTokenizer:
+    def __init__(self):
+        self.messages = []
+
+    def count_message_tokens(self, message):
+        self.messages.append(message)
+        return 7 + len(message.author_name or "")
+
+    def count_tokens(self, text):
+        pytest.fail("Message accounting reached the raw-text counter")
+
+
+def test_message_counter_replaces_framework_counts_and_reads_metadata_during_replay():
+    tokenizer = MessageTokenizer()
+    messages = history(["example"])
+    framework_counts(messages, tokenizer=BASE)
+    annotate_token_counts(messages, tokenizer=tokenizer, from_index=1)
+    assert tokenizer.messages == messages
+    assert included_token_count(messages) == 21
+
+    cache = TokenCounts()
+    for name in ["Ada", "Alexandra"]:
+        messages[1].author_name = name
+        tokenizer.messages.clear()
+        annotate_token_counts(messages, tokenizer=tokenizer, from_index=1, counts=cache)
+        assert tokenizer.messages == messages[1:]
+        assert included_token_count(messages) == 21 + len(name)
+
+    framework_counts(messages, tokenizer=BASE, force_retokenize=True)
+    tokenizer.messages.clear()
+    annotate_token_counts(messages, tokenizer=tokenizer, from_index=2)
+    assert tokenizer.messages == messages
+    assert included_token_count(messages) == 21 + len("Alexandra")
+
+    expected = deepcopy(messages)
+    framework_counts(expected, tokenizer=BASE, force_retokenize=True)
+    annotate_token_counts(messages, tokenizer=BASE)
+    assert included_token_count(messages) == included_token_count(expected)
+
+
+def test_message_counter_owns_media_unless_wrapped_in_media_estimator():
+    tokenizer = MessageTokenizer()
+    message = Message("tool", [Content.from_function_result("call", result=[image()])])
+    annotate_token_counts([message], tokenizer=tokenizer)
+    assert tokenizer.messages[-1] is message
+    assert included_token_count([message]) == 7
+
+    estimator = MediaTokenEstimator(tokenizer, image_tokens=101)
+    assert estimator.count_message_tokens(message) == 108
+    for options in [{}, {"force_retokenize": True}, {"from_index": 0, "counts": TokenCounts()}]:
+        annotate_token_counts([message], tokenizer=estimator, **options)
+        assert included_token_count([message]) == 108
+        assert tokenizer.messages[-1].contents[0].items[0].text == "[media]"
+    items = message.contents[0].items
+    assert items is not None and items[0].type == "uri"
+
+
+def test_background_merge_keeps_source_weights_and_counts_new_records():
+    tokenizer = MessageTokenizer()
+    messages = history(["example"])
+    framework_counts(messages, tokenizer=BASE)
+    before = deepcopy([m.additional_properties for m in messages])
+    counted = counted_history(messages[:2], messages[2:], tokenizer)
+    assert included_token_count(counted) == 21
+    assert [m.additional_properties for m in messages] == before
+
+    records = BackgroundRecords.capture(counted)
+    records.messages.append(Message("assistant", ["New record"]))
+    tokenizer.messages.clear()
+    records.annotate(tokenizer)
+    assert tokenizer.messages == records.messages[-1:]
+    assert included_token_count(records.messages) == 28
 
 
 @pytest.mark.parametrize("cost", [0, -1, True, 1.5])

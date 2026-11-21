@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from agent_framework import CharacterEstimatorTokenizer, Content, Message
 from agent_framework._compaction import (
+    _serialize_message,
     annotate_message_groups,
     annotate_token_counts,
     group_messages,
@@ -235,6 +236,32 @@ async def test_shortening_alone_is_preferred_to_removing_anything() -> None:
     assert "[compacted: an earlier assistant reply]" not in rendered
     # Every reply is still there, so nothing the model said about a result was lost.
     assert all(f"I looked up {index}." in rendered for index in range(8))
+
+
+async def test_tool_result_text_uses_the_raw_counter_even_when_it_contains_message_json():
+    payload = _serialize_message(Message("user", ["A sample transcript. " * 100]))
+    raw = []
+    measured = []
+
+    class Tokenizer:
+        def count_tokens(self, text):
+            raw.append(text)
+            return len(text)
+
+        def count_message_tokens(self, message):
+            measured.append(message)
+            return 10
+
+    messages = _conversation(tool_turns=4, payload_chars=5)
+    result = next(m for m in messages if m.message_id == "t_res_1")
+    result.contents = [Content.from_function_result("call_1", result=payload)]
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=1000, keep_tokens=80, tokenizer=Tokenizer()
+    )
+    assert await strategy(messages)
+    assert result in measured
+    assert payload in raw
+    assert REMOVAL_MARKER in _text_of(result)
 
 
 async def test_assistant_narration_is_the_last_thing_dropped() -> None:
