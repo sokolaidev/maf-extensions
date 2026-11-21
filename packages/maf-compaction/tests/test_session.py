@@ -345,6 +345,41 @@ def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
         registry.current_stack()
 
 
+@pytest.mark.parametrize("composed", [False, True])
+def test_release_drops_one_stack_and_restores_its_saved_state(composed):
+    registry = SessionCompactionRegistry(lambda: build_stack(composed=composed))
+    session, other = AgentSession(), AgentSession()
+    with registry.activate(session) as stack:
+        stack.gate.arm()
+        released = weakref.ref(stack)
+    del stack
+    saved = round_trip(session.state)
+    with registry.activate(other) as other_stack:
+        pass
+
+    registry.release(session.session_id)
+    registry.release(session.session_id)
+    gc.collect()
+    assert released() is None
+    assert session.state == saved
+    with registry.activate(other) as cached:
+        assert cached is other_stack
+    with registry.activate(session) as rebuilt:
+        assert rebuilt.gate.take()
+
+
+def test_release_refuses_a_session_active_in_another_context():
+    registry = SessionCompactionRegistry(build_stack)
+    session = AgentSession()
+    outside = copy_context()
+    with registry.activate(session) as stack:
+        with pytest.raises(RuntimeError, match="active compaction phase"):
+            outside.run(registry.release, session.session_id)
+        assert registry.current_stack() is stack
+    with registry.activate(session) as cached:
+        assert cached is stack
+
+
 @pytest.mark.parametrize("cached", [0, 1])
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel", "snapshot", "merge_state"])
 async def test_cancelled_timeout_releases_phase_references(monkeypatch, cached, outcome):

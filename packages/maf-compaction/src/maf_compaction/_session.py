@@ -206,6 +206,17 @@ class SessionCompactionRegistry:
                 if carried > self.max_carried_views:
                     strategy.forget_carried_view()
 
+    def release(self, session_id: str) -> None:
+        """Drop a session's cached stack and carried view, preserving its saved state.
+
+        An uncached session needs no cleanup. An active phase raises RuntimeError.
+        """
+        if session_id in self._active:
+            raise RuntimeError("Cannot release a session during an active compaction phase.")
+        stack = self._cache.pop(session_id, None)
+        if stack is not None:
+            self._forget(stack)
+
     def release_carried_view(self, session_id: str) -> None:
         """Release a session's kept list once its run is over and no call will resume from it."""
         stack = self._cache.get(session_id)
