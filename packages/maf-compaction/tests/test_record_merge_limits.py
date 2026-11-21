@@ -15,6 +15,7 @@ from test_record_budget import (
     _VALUE,
     _body,
     _history,
+    _record_pair,
     _record_size,
     _sent,
     _sent_values,
@@ -99,6 +100,89 @@ async def test_records_over_the_output_cap_merge_within_the_request_input_limit(
             strategy.record_request_input_tokens = 4 * pair
         assert await strategy._merge_batches(copy.deepcopy(messages), None, 0.001) is merged
         assert bool(summarizer.merges) is merged
+
+
+def _tool_then_record(index: int, tool: str) -> list[Message]:
+    """A call of ``tool`` and its result, then the record the model wrote of it."""
+    return [
+        Message(
+            role="assistant",
+            contents=[Content.from_function_call(call_id=f"t{index}", name=tool, arguments={})],
+            message_id=f"t{index}_call",
+        ),
+        Message(
+            role="tool",
+            contents=[Content.from_function_result(call_id=f"t{index}", result=f"{tool} output")],
+            message_id=f"t{index}_res",
+        ),
+        *_record_pair(index),
+    ]
+
+
+def _tooled_history(tools: list[str]) -> list[Message]:
+    messages = _history(0)
+    closing = messages.pop()
+    for index, tool in enumerate(tools):
+        messages += _tool_then_record(index, tool)
+    return [*messages, closing]
+
+
+@pytest.mark.parametrize(
+    ("same_tool_first", "expected"),
+    [(True, [[0, 1], [2, 3, 4]]), (False, [[0, 1, 2, 3, 4]])],
+)
+async def test_records_of_the_same_tool_merge_apart_from_their_neighbours(
+    same_tool_first: bool, expected: list[list[int]]
+) -> None:
+    """Three Learn records merge into one, and the two records before them into another."""
+    messages = _tooled_history(
+        ["file_write", "file_read", "docs_search", "docs_search", "docs_search"]
+    )
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+    strategy.merge_same_tool_first = same_tool_first
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == expected
+
+
+async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:
+    """Once a same-tool run is one record, it has no same-tool neighbour left to wait for."""
+    messages = _tooled_history(["file_write", "docs_search", "docs_search"])
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert [sorted(re.findall(r"lookup_(\d+) ", body)) for body in summarizer.merges] == [
+        ["1", "2"]
+    ]
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert len(summarizer.merges) == 2
+    assert "lookup_0 " in summarizer.merges[1], "the write's record merged with the Learn one"
+
+
+def test_same_tool_runs_split_the_records_into_segments() -> None:
+    learn, write, read = frozenset({"docs_search"}), frozenset({"file_write"}), frozenset({"read"})
+    assert composed_module._same_tool_segment_ends([write, read, learn, learn, learn]) == [
+        2,
+        2,
+        5,
+        5,
+        5,
+    ]
+    assert composed_module._same_tool_segment_ends([learn, learn, write, learn, learn]) == [
+        2,
+        2,
+        3,
+        5,
+        5,
+    ]
+    assert composed_module._same_tool_segment_ends([frozenset()] * 3) == [3, 3, 3]
 
 
 async def test_lossy_parent_retries_halves_and_replays_both_accepted_children() -> None:

@@ -669,6 +669,51 @@ def _transcript(
     return _numbered_records(record_bodies(messages, groups) if bodies is None else bodies)
 
 
+def _covered_tools(messages: list[Message], groups: list[dict[str, Any]]) -> list[frozenset[str]]:
+    """Return, per record, the names of the tools called since the record before it.
+
+    Excluded messages count: a merged record's sources stay in the history, excluded, with the
+    calls they covered, so a merged record covers what its sources covered.
+    """
+    covered: list[frozenset[str]] = []
+    after = 0
+    for group in groups:
+        covered.append(
+            frozenset(
+                content.name
+                for message in messages[after : int(group["start_index"])]
+                for content in message.contents
+                if content.type == "function_call"
+                and content.name
+                and content.name != RECALL_TOOL_NAME
+            )
+        )
+        after = int(group["end_index"]) + 1
+    return covered
+
+
+def _same_tool_segment_ends(tools: list[frozenset[str]]) -> list[int]:
+    """Return, per record, where the run a merge batch from it may take ends.
+
+    Two or more adjacent records covering the same tools form a run of their own; the records
+    between such runs form one together. A batch never crosses from one run into another.
+    """
+    ends = [0] * len(tools)
+    start = 0
+    while start < len(tools):
+        end = start + 1
+        while end < len(tools) and tools[end] == tools[start]:
+            end += 1
+        if end - start < 2:
+            end = start + 1
+            while end < len(tools) and not (end + 1 < len(tools) and tools[end] == tools[end + 1]):
+                end += 1
+        for index in range(start, end):
+            ends[index] = end
+        start = end
+    return ends
+
+
 def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
 
@@ -899,6 +944,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             search from a start at its first run over the cap and goes on to the next record.
             ``None`` searches every longer run, for a tokenizer whose count can fall as records
             are appended.
+        merge_same_tool_first: Merge adjacent records that cover the same tools apart from
+            their neighbours, so two or three records of one tool's results merge into one
+            before records of different tools are merged together. Default on.
         record_request_input_tokens: The tokens one record merge or rewrite request may hold,
             in place of ``summary_options["max_tokens"]``, which otherwise bounds both the
             answer and the request. Set it for a summarizer whose merges compress, for example
@@ -945,6 +993,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_merge_split_depth: int = 2,
         run_past_limit_factor: float | None = DEFAULT_RUN_PAST_LIMIT_FACTOR,
         record_request_input_tokens: int | None = None,
+        merge_same_tool_first: bool = True,
         rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
         merge_coverage_share: float | None = None,
         merge_coverage_floor: float | None = None,
@@ -1010,6 +1059,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.record_merge_split_depth = record_merge_split_depth
         self.run_past_limit_factor = run_past_limit_factor
         self.record_request_input_tokens = record_request_input_tokens
+        self.merge_same_tool_first = merge_same_tool_first
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -3052,6 +3102,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         digests: dict[int, str] = {}
         runs: list[int] = [0]
         powers: list[int] = [1]
+        # Per record, where the run a batch from it may take ends (``merge_same_tool_first``).
+        ends: list[int] = []
         probes = 0
         changed = False
 
@@ -3084,6 +3136,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 runs.append((runs[-1] * _RUN_BASE + value) % _RUN_MODULUS)
             while len(powers) <= len(groups):
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
+            ends[:] = (
+                _same_tool_segment_ends(_covered_tools(messages, groups))
+                if self.merge_same_tool_first
+                else [len(groups)] * len(groups)
+            )
             inputs = {(prompt_digest, digests[last(group)], limit) for group in groups}
             self._record_input_fits = {
                 key: fits for key, fits in self._record_input_fits.items() if key in inputs
@@ -3137,7 +3194,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         async def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
-            remaining = len(groups) - first
+            remaining = ends[first] - first
+            if remaining < 2:
+                return []
             checked = 1
             known = self._searched.get((digests[last(groups[first])], limit))
             if (
@@ -3156,7 +3215,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if pair <= limit:
                     remember(first, 2, 2)
                     batch, extent = await async_bounded_prefix_extent(
-                        groups[first:],
+                        groups[first : ends[first]],
                         render=render,
                         prompt=self.merge_prompt,
                         tokenizer=self.tokenizer,
