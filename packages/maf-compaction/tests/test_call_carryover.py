@@ -988,6 +988,21 @@ async def test_only_the_sessions_used_last_keep_a_list() -> None:
     assert SessionCompactionRegistry(lambda: None).max_carried_views == DEFAULT_MAX_CARRIED_VIEWS  # type: ignore[arg-type, return-value]
 
 
+async def test_releasing_a_cached_stack_forgets_its_carried_view() -> None:
+    registry = _registry(_budget(_transcript(14, 10, 6), 0.6), [])
+    session = AgentSession()
+    strategy = await _pass(registry, session)
+    assert strategy.carries_view
+    saved = copy.deepcopy(session.state[registry.state_key])
+
+    registry.release(session.session_id)
+
+    assert not strategy.carries_view
+    with registry.activate(session) as rebuilt:
+        assert rebuilt.strategy is not strategy
+        assert rebuilt.to_dict() == saved
+
+
 async def test_a_registry_can_keep_no_list() -> None:
     registry = _registry(_budget(_transcript(14, 10, 6), 0.6), [], max_carried_views=0)
 
