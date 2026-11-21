@@ -231,16 +231,16 @@ def build(root: Path, work: Path) -> dict[str, Any]:
 
 
 def declared_requirement(reason: str | None, justification: str) -> dict[str, str] | None:
-    """Keep manual assertions separate from scheduled, evidence-derived requirements."""
+    """Derive security requirements from evidence and retain manual package assertions."""
     event = os.environ.get("GITHUB_EVENT_NAME")
     if event == "schedule" and reason in (None, "none") and not justification.strip():
         return None
-    if (
-        event != "workflow_dispatch"
-        or reason not in {"security", "package"}
-        or not justification.strip()
-    ):
-        raise ValueError("Chrome delivery requires a manual security or package requirement")
+    if event == "workflow_dispatch" and reason == "security":
+        return None
+    if event != "workflow_dispatch" or reason != "package" or not justification.strip():
+        raise ValueError(
+            "Chrome delivery requires security mode or a justified package requirement"
+        )
     return {"kind": reason, "reason": justification.strip()}
 
 
@@ -298,9 +298,7 @@ def main() -> None:
                 if requirement is None or requirement != read(
                     args.work / "delivery-requirement.json"
                 ):
-                    raise ValueError(
-                        "Scheduled Chrome delivery lacks a verified security requirement"
-                    )
+                    raise ValueError("Chrome delivery lacks a verified security requirement")
                 report["securityEvidence"] = expected
             report["requirement"] = requirement
             write(args.work / "delivery-requirement.json", report["requirement"])
