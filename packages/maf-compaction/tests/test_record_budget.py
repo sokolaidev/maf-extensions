@@ -1219,6 +1219,36 @@ async def test_an_appended_record_reopens_a_start_whose_pair_did_not_fit() -> No
     assert all(f"lookup_{index} " in merged for index in range(3)), "all three, as one batch"
 
 
+@pytest.mark.parametrize("factor", [None, 200_000.0])
+async def test_a_stop_made_under_a_lower_factor_does_not_hold_under_a_higher_one(
+    factor: float | None,
+) -> None:
+    """A start stopped past the default bound is searched on once a session allows further."""
+    tokenizer = _PairsDoNotFitTokenizer()
+    summarizer = _Summarizer()
+    messages = _history(3)
+    first = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    assert not await first._merge_batches(messages, None, 0.001), "the default stops at the pair"
+
+    restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.run_past_limit_factor = factor
+    restored.restore_session_state(json.loads(json.dumps(first.session_state())))
+
+    assert await restored._merge_batches(messages, None, 0.001), "the triple that fits"
+
+
+def test_a_stop_saved_without_its_factor_is_not_reused() -> None:
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    state = strategy.session_state()
+    state["searched_records"] = [["start", 900, 2, "run", 0, False, True]]
+
+    strategy.restore_session_state(json.loads(json.dumps(state)))
+
+    assert strategy.session_state()["searched_records"] == [
+        ["start", 900, 2, "run", 0, False, None]
+    ]
+
+
 async def test_a_changed_record_reopens_the_search_of_the_records_it_covered() -> None:
     """A search is resumed only past records that stand unchanged; a changed one restarts it."""
     tokenizer = _PairsDoNotFitTokenizer()
@@ -1505,5 +1535,5 @@ def test_a_search_memory_from_an_earlier_snapshot_shape_restores() -> None:
     strategy.restore_session_state(json.loads(json.dumps(state)))
 
     assert strategy.session_state()["searched_records"] == [
-        ["start", 900, 3, "run", 0, False, False]
+        ["start", 900, 3, "run", 0, False, None]
     ]

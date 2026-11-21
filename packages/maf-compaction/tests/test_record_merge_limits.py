@@ -151,6 +151,25 @@ async def test_records_of_the_same_tool_merge_apart_from_their_neighbours(
     assert merged == expected
 
 
+async def test_a_record_no_merge_may_take_still_ends_what_the_record_before_it_covered() -> None:
+    """A held write record keeps its call off the first search record, so the searches merge."""
+    messages = _tooled_history(
+        ["file_read", "file_write", "docs_search", "docs_search", "docs_search"]
+    )
+    (held,) = (message for message in messages if message.message_id == "rec1_res")
+    held.contents[0].additional_properties = {"note": "kept as written"}
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == [[2, 3, 4]]
+
+
 async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:
     """Once a same-tool run is one record, it has no same-tool neighbour left to wait for."""
     messages = _tooled_history(["file_write", "docs_search", "docs_search"])

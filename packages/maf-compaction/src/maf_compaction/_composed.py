@@ -669,15 +669,22 @@ def _transcript(
     return _numbered_records(record_bodies(messages, groups) if bodies is None else bodies)
 
 
-def _covered_tools(messages: list[Message], groups: list[dict[str, Any]]) -> list[frozenset[str]]:
-    """Return, per record, the names of the tools called since the record before it.
+def _covered_tools(
+    messages: list[Message], groups: list[dict[str, Any]], active: list[dict[str, Any]]
+) -> list[frozenset[str]]:
+    """Return, per record in ``groups``, the tools called since the active record before it.
 
-    Excluded messages count: a merged record's sources stay in the history, excluded, with the
-    calls they covered, so a merged record covers what its sources covered.
+    ``active`` holds every active record, so one a merge may not take still ends what the record
+    before it covered. Excluded messages count: a merged record's sources stay in the history,
+    excluded and no longer active, with the calls they covered, so a merged record covers what
+    its sources covered.
     """
+    ends = sorted(int(record["end_index"]) for record in active)
     covered: list[frozenset[str]] = []
-    after = 0
     for group in groups:
+        start = int(group["start_index"])
+        before = bisect_left(ends, start)
+        after = ends[before - 1] + 1 if before else 0
         covered.append(
             frozenset(
                 content.name
@@ -688,7 +695,6 @@ def _covered_tools(messages: list[Message], groups: list[dict[str, Any]]) -> lis
                 and content.name != RECALL_TOOL_NAME
             )
         )
-        after = int(group["end_index"]) + 1
     return covered
 
 
@@ -767,9 +773,9 @@ class _Searched:
     batch: int = 0
     #: Whether where the records ended decided the answer too, so a record appended reopens it.
     ended: bool = False
-    #: Whether the run of ``covered`` records counted past ``run_past_limit_factor`` times the
-    #: cap, so no longer run from this start is searched while they stand.
-    past_limit: bool = False
+    #: The ``run_past_limit_factor`` the run of ``covered`` records counted past, so no longer
+    #: run from this start is searched while they stand and the factor is no larger; None if not.
+    past_limit: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1534,11 +1540,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_order = [RecordEdit(**edit) for edit in data.get("record_order", [])]
         # Earlier snapshots of this schema kept only searches that found nothing.
         searched = data.get("searched_records", data.get("unpaired_records", []))
-        self._searched = {
-            (entry[0], entry[1]): _Searched(*entry[2:])
-            for entry in searched
-            if len(entry) in (4, 6, 7)
-        }
+        self._searched = {}
+        for entry in searched:
+            if len(entry) not in (4, 6, 7):
+                continue
+            fields = list(entry[2:])
+            if len(fields) == 5 and not (
+                fields[4] is None
+                or (isinstance(fields[4], (int, float)) and not isinstance(fields[4], bool))
+            ):
+                # A stop saved without the factor that made it cannot say when it still holds.
+                fields[4] = None
+            self._searched[(entry[0], entry[1])] = _Searched(*fields)
         self._search_prompt = data.get("search_prompt")
         self._record_input_fits = {
             (entry[0], entry[1], entry[2]): entry[3] for entry in data.get("record_input_fits", [])
@@ -3122,7 +3135,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             exclusions: dict[str, int] | None = (
                 {} if record_merge_observer.get() is not None else None
             )
-            groups, _, _ = _consolidatable_record_groups(messages, exclusions=exclusions)
+            groups, _, active = _consolidatable_record_groups(messages, exclusions=exclusions)
             if exclusions is not None and self._background_records is not None:
                 exclusions.update(self._background_records.exclusions)
             missing = [group for group in groups if last(group) not in bodies]
@@ -3137,7 +3150,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             while len(powers) <= len(groups):
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
             ends[:] = (
-                _same_tool_segment_ends(_covered_tools(messages, groups))
+                _same_tool_segment_ends(_covered_tools(messages, groups, active))
                 if self.merge_same_tool_first
                 else [len(groups)] * len(groups)
             )
@@ -3185,7 +3198,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             batch: int = 0,
             *,
             ended: bool = False,
-            past_limit: bool = False,
+            past_limit: float | None = None,
         ) -> None:
             key = (digests[last(groups[first])], limit)
             self._searched[key] = _Searched(
@@ -3207,7 +3220,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ):
                 if known.batch:
                     return groups[first : first + known.batch]
-                if known.past_limit:
+                if (
+                    known.past_limit is not None
+                    and factor is not None
+                    and factor <= known.past_limit
+                ):
                     return []
                 checked = known.covered
             if checked < 2:
@@ -3230,7 +3247,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     return batch
                 checked = 2
                 if past_limit(pair):
-                    remember(first, checked, past_limit=True)
+                    remember(first, checked, past_limit=factor)
                     return []
             # Token counts need not grow with text, so a longer run may fit where two do not.
             for count in range(checked + 1, remaining + 1):
@@ -3246,7 +3263,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     return groups[first : first + count]
                 checked = count
                 if past_limit(tokens):
-                    remember(first, checked, past_limit=True)
+                    remember(first, checked, past_limit=factor)
                     return []
             remember(first, checked)
             return []
