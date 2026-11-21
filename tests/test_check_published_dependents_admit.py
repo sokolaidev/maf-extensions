@@ -17,11 +17,13 @@ import importlib.util
 import io
 import json
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))  # the script imports its sibling for one shared comparison
@@ -199,7 +201,19 @@ class TestTheDependentsItLooksUp:
         assert "maf-sandbox" not in found
         assert "maf-sandbox-mcp" not in found
         assert "maf-sandbox-acas" in found
+        assert "maf-sandbox-mxc" in found
         assert len(found) >= 5
+
+    def test_family_members_admit_the_same_latest_core_minor(self):
+        root = Path(__file__).resolve().parent.parent
+        ceilings = {}
+        for name in check.dependent_distributions(root):
+            path = root / "packages" / name / "pyproject.toml"
+            dependencies = tomllib.loads(path.read_text("utf-8"))["project"]["dependencies"]
+            ceiling = check.ceiling_of(dependencies)
+            assert ceiling is not None, f"{name} needs an upper bound on maf-sandbox"
+            ceilings[name] = Version(".".join(map(str, ceiling)))
+        assert len(set(ceilings.values())) == 1, ceilings
 
 
 class TestRequirementNames:
