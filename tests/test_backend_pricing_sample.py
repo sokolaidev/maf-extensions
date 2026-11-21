@@ -81,9 +81,18 @@ def log(rows):
 
 
 def test_complete_tool_only_evidence_is_explicitly_not_model_qualification():
-    assert check(log(records()), "bubblewrap", model=False)["calls"] == 2
+    assert check(log(records()), "bubblewrap")["calls"] == 2
     with pytest.raises(ValueError):
-        check(log(records()), "bubblewrap")
+        check(log(records()), "bubblewrap", model=True)
+
+
+def test_default_qualification_accepts_direct_calls_when_agent_returns_only_prose():
+    rows = records()
+    rows[-1]["model"] = True
+    text = log(rows) + '\nModel: "No tool call."'
+    assert check(text, "bubblewrap")["calls"] == 2
+    with pytest.raises(ValueError):
+        check(text, "bubblewrap", model=True)
 
 
 def test_quoted_model_records_cannot_supply_host_evidence():
@@ -354,17 +363,96 @@ def test_unfiltered_report_accepts_mixed_prices_but_explicit_filter_is_enforced(
         sample.report(answer, "Consumption")
 
 
-def test_evidence_accepts_dev_test_prices_without_losing_required_coverage():
+def test_model_call_accepts_mixed_prices_after_the_two_direct_queries():
     rows = records()
-    prices = rows[3]["report"]["prices"]
+    model_call = copy.deepcopy(rows[1:5])
+    for part in model_call:
+        if "call" in part:
+            part["call"] = "agent-call"
+        if "instance" in part:
+            part["instance"] = "agent-instance"
+    prices = model_call[2]["report"]["prices"]
     prices.append(dict(prices[0], priceType="DevTestConsumption"))
-    check(log(rows), "bubblewrap", model=False)
-    prices[0]["priceType"] = "DevTestConsumption"
-    with pytest.raises(ValueError, match="coverage"):
-        check(log(rows), "bubblewrap", model=False)
+    rows[-1:-1] = model_call
+    rows[-1].update(model=True, calls=3)
+    check(log(rows), "bubblewrap", model=True)
     prices[0]["priceType"] = "unknown"
     with pytest.raises(ValueError, match="price type"):
-        check(log(rows), "bubblewrap", model=False)
+        check(log(rows), "bubblewrap", model=True)
+
+
+@pytest.mark.parametrize("second_limited", [False, True])
+def test_rate_limit_qualifies_per_query_with_disposal_and_probes(second_limited):
+    from agent_framework import Content
+    from maf_sandbox.maf import NOT_COMPLETED_TEXT
+    from maf_sandbox_azure_pricing import RATE_LIMITED_TEXT
+
+    sample = load_sample()
+    rows = records()
+    answer = [Content.from_text(text) for text in (NOT_COMPLETED_TEXT, RATE_LIMITED_TEXT)]
+    rows[3].update(price_type="Consumption", report=sample.report(answer))
+    if second_limited:
+        rows[7].update(price_type="Reservation", report=sample.report(answer))
+    rows.insert(-1, {"stage": "probes", "results": probe_records()})
+    result = check(log(rows), "bubblewrap", require_probes=True)
+    assert result["outcomes"] == [
+        {"price_type": "Consumption", "outcome": "rate_limited"},
+        {"price_type": "Reservation", "outcome": "rate_limited" if second_limited else "priced"},
+    ]
+    rows[4]["complete"] = False
+    with pytest.raises(ValueError, match="disposal"):
+        check(log(rows), "bubblewrap")
+
+
+def test_deadline_requires_observed_kind_result_and_host_timing():
+    from agent_framework import Content
+    from maf_sandbox.maf import NOT_COMPLETED_TEXT
+    from maf_sandbox_azure_pricing import DEADLINE_EXCEEDED_TEXT
+
+    sample = load_sample()
+    rows = records()
+    answer = [Content.from_text(text) for text in (NOT_COMPLETED_TEXT, DEADLINE_EXCEEDED_TEXT)]
+    rows[3].update(price_type="Consumption", report=sample.report(answer), seconds=94)
+    with pytest.raises(ValueError, match="deadline"):
+        check(log(rows), "bubblewrap")
+    rows[2]["seconds"] = 93
+    assert check(log(rows), "bubblewrap")["outcomes"][0]["outcome"] == "deadline_exceeded"
+
+
+@pytest.mark.parametrize(
+    "price_type, value",
+    [
+        ("Reservation", {"http_status": 429}),
+        (None, {"http_status": 429}),
+        ("Consumption", {"http_status": 403}),
+        ("Consumption", {"http_status": 429.0}),
+        ("Consumption", {"http_status": 429, "prices": []}),
+        ("Consumption", {"outcome": "rate_limited"}),
+    ],
+)
+def test_checker_rejects_unsubstantiated_or_misattributed_refusals(price_type, value):
+    rows = records()
+    rows[3].update(price_type=price_type, report=value)
+    with pytest.raises(ValueError):
+        check(log(rows), "bubblewrap")
+
+
+def test_generic_incomplete_result_and_model_prose_cannot_supply_a_429():
+    from agent_framework import Content
+    from maf_sandbox.maf import NOT_COMPLETED_TEXT
+    from maf_sandbox_azure_pricing import RATE_LIMITED_TEXT
+
+    sample = load_sample()
+    for reason in ("The model says HTTP 429", "The request timed out", "Invalid response"):
+        with pytest.raises(ValueError, match="did not complete"):
+            sample.report([Content.from_text(text) for text in (NOT_COMPLETED_TEXT, reason)])
+    with pytest.raises(ValueError, match="conflicting result"):
+        sample.report(
+            [
+                Content.from_text(text)
+                for text in (NOT_COMPLETED_TEXT, RATE_LIMITED_TEXT, '{"prices":[]}')
+            ]
+        )
 
 
 def test_model_calls_require_explicit_opt_in():

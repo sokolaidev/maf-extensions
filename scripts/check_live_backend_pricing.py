@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 PREFIX = "[pricing-host] "
+DIRECT_PRICE_TYPES = ("Consumption", "Reservation")
 
 
 def require(condition: bool, message: str) -> None:
@@ -18,10 +19,49 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def pricing_outcome(value: dict[str, Any], requested: str | None, seconds: float) -> str:
+    """Classify the kind result for one host-attributed query."""
+    if "http_status" in value:
+        require(
+            type(value["http_status"]) is int and value == {"http_status": 429},
+            "Invalid rate limit evidence",
+        )
+        return "rate_limited"
+    if "deadline_seconds" in value:
+        require(
+            value == {"deadline_seconds": 90} and seconds >= 90,
+            "Missing bounded execution deadline evidence",
+        )
+        return "deadline_exceeded"
+    require(value.get("truncated") is False and bool(value.get("prices")), "Empty/truncated prices")
+    for price in value["prices"]:
+        amount = price.get("retailPrice")
+        require(
+            type(amount) in (int, float) and math.isfinite(amount) and amount >= 0,
+            "Invalid retail amount",
+        )
+        require(
+            price.get("currencyCode") == "USD" and bool(price.get("unitOfMeasure")),
+            "Missing units or currency",
+        )
+        require(
+            price.get("armSkuName") == "Standard_D4s_v5" and price.get("region") == "westeurope",
+            "Wrong retail price identity",
+        )
+        category = price.get("priceType")
+        require(
+            category in ("Consumption", "Reservation", "DevTestConsumption"), "Wrong price type"
+        )
+        require(requested is None or requested == category, "Wrong price type for query")
+        if category == "Reservation":
+            require(bool(price.get("reservationTerm")), "Missing reservation term")
+    return "priced"
+
+
 def check(
-    text: str, backend: str, *, model: bool = True, require_probes: bool = False
+    text: str, backend: str, *, model: bool | None = None, require_probes: bool = False
 ) -> dict[str, Any]:
-    """Require two complete real price reports joined to fresh, disposed call identities."""
+    """Check the direct pricing outcomes and the lifecycle of every acquired sandbox."""
     records = [
         json.loads(line[len(PREFIX) :]) for line in text.splitlines() if line.startswith(PREFIX)
     ]
@@ -66,14 +106,29 @@ def check(
     calls = [row for row in records if row.get("stage") == "call"]
     reports = [row for row in records if row.get("stage") == "report"]
     disposed = [row for row in records if row.get("stage") == "disposed"]
+    cleanups = [row for row in records if row.get("stage") == "cleanup"]
+    require(len(cleanups) == 1 and records[-1] == cleanups[0], "Missing terminal cleanup")
+    recorded_model = cleanups[0].get("model")
+    require(
+        type(recorded_model) is bool and (model is None or recorded_model is model),
+        "Model mode differs from requested qualification",
+    )
+    require(
+        cleanups[0].get("complete") is True and cleanups[0].get("calls") == len(calls),
+        "Incomplete scope cleanup",
+    )
     require(
         len(acquired) == len(calls) == len(reports) == len(disposed) >= (3 if model else 2),
         "Missing acquisition, report, timing or disposal",
     )
     require(len({row.get("instance") for row in acquired}) == len(acquired), "Instance reused")
     require(len({row.get("call") for row in calls}) == len(calls), "Call identity reused")
-    categories: set[str] = set()
-    for acquire, call, report, dispose in zip(acquired, calls, reports, disposed, strict=True):
+    if not recorded_model:
+        require(len(calls) == len(DIRECT_PRICE_TYPES), "Expected exactly two direct pricing calls")
+    outcomes = []
+    for index, (acquire, call, report, dispose) in enumerate(
+        zip(acquired, calls, reports, disposed, strict=True)
+    ):
         require(
             bool(call.get("call")) and acquire.get("call") == call["call"] == report.get("call"),
             "Mismatched call attribution",
@@ -93,42 +148,16 @@ def check(
                 type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0,
                 "Invalid host timing",
             )
-        value = report.get("report", {})
-        require(
-            value.get("truncated") is False and bool(value.get("prices")), "Empty/truncated prices"
-        )
-        for price in value["prices"]:
-            amount = price.get("retailPrice")
-            require(
-                type(amount) in (int, float) and math.isfinite(amount) and amount >= 0,
-                "Invalid retail amount",
-            )
-            require(
-                price.get("currencyCode") == "USD" and bool(price.get("unitOfMeasure")),
-                "Missing units or currency",
-            )
-            require(
-                price.get("armSkuName") == "Standard_D4s_v5"
-                and price.get("region") == "westeurope",
-                "Wrong retail price identity",
-            )
-            category = price.get("priceType")
-            require(
-                category in ("Consumption", "Reservation", "DevTestConsumption"), "Wrong price type"
-            )
-            categories.add(category)
-            if category == "Reservation":
-                require(bool(price.get("reservationTerm")), "Missing reservation term")
-    require(
-        {"Consumption", "Reservation"} <= categories, "Missing consumption/reservation coverage"
-    )
-    cleanups = [row for row in records if row.get("stage") == "cleanup"]
-    require(len(cleanups) == 1 and records[-1] == cleanups[0], "Missing terminal cleanup")
-    require(
-        cleanups[0].get("complete") is True and cleanups[0].get("calls") == len(calls),
-        "Incomplete scope cleanup",
-    )
-    require(cleanups[0].get("model") is model, "Model mode differs from requested qualification")
+        requested = report.get("price_type")
+        value = report.get("report")
+        require(isinstance(value, dict), "Missing pricing outcome")
+        if index < len(DIRECT_PRICE_TYPES):
+            # Older price reports predate the explicit query field.
+            if "price_type" not in report and "prices" in value:
+                requested = DIRECT_PRICE_TYPES[index]
+            require(requested == DIRECT_PRICE_TYPES[index], "Wrong direct price type")
+        outcome = pricing_outcome(value, requested, min(call["seconds"], report["seconds"]))
+        outcomes.append({"price_type": requested, "outcome": outcome})
     if require_probes:
         probes = [row for row in records if row.get("stage") == "probes"]
         require(len(probes) == 1, "Missing enforcement probes")
@@ -199,7 +228,7 @@ def check(
                     and execution.get("timeout_seconds") == 0.001,
                     "Missing observed execution deadline",
                 )
-    return {"backend": backend, "calls": len(calls), "model": model}
+    return {"backend": backend, "calls": len(calls), "model": recorded_model, "outcomes": outcomes}
 
 
 def main() -> None:
@@ -207,7 +236,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
     parser.add_argument("--backend", choices=("bubblewrap", "docker-sbx"), required=True)
-    parser.add_argument("--no-model", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--model", action="store_true", help="Also require an agent tool call")
+    mode.add_argument("--no-model", action="store_false", dest="model")
+    parser.set_defaults(model=None)
     parser.add_argument("--require-probes", action="store_true")
     args = parser.parse_args()
     print(
@@ -215,7 +247,7 @@ def main() -> None:
             check(
                 args.log.read_text("utf-8"),
                 args.backend,
-                model=not args.no_model,
+                model=args.model,
                 require_probes=args.require_probes,
             )
         )

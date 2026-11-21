@@ -229,6 +229,13 @@ def _dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
 
+def cli_envelope(raw: bytes) -> dict[str, Any]:
+    """Apply the same JSON checks to CLI errors and price reports."""
+    return _object(
+        json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
+    )
+
+
 def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tuple[str, str, bool]:
     """Return the report, its checked prices, and whether more rows may exist.
 
@@ -237,9 +244,7 @@ def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tup
     selection. A requested region the kind does not know is echoed in neither, so neither repeats
     the caller's text.
     """
-    envelope = _object(
-        json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
-    )
+    envelope = cli_envelope(raw)
     if type(envelope.get("status")) is not int:
         raise ValueError("Invalid CLI envelope")
     results = _object(envelope.get("results"))
