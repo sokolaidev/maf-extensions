@@ -8,7 +8,7 @@
 #     "azure-identity",
 #     "maf-sandbox-docker",
 #     "maf-sandbox-shell>=0.1.0",
-#     "maf-sandbox>=0.54",
+#     "maf-sandbox>=0.55",
 #     "mcp>=2.2.0,<3",
 #     "tenacity>=9.1.4,<9.2.0",
 # ]
