@@ -53,6 +53,13 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     if isinstance(sources, str):
         sources = [sources]
     reporters = {"report-failure"}
+    if name in {
+        "chrome-image-update.yml",
+        "image-remediation.yml",
+        "image-security.yml",
+        "platform-image-remediation.yml",
+    }:
+        reporters.add("report-attention")
     if name == "image-security.yml":
         reporters.add("report-recovery")
     assert set(workflow["jobs"]) == {*sources, *reporters}
