@@ -532,22 +532,21 @@ _MAX_FALLBACK_ROUNDS: Final[int] = 3
 #:
 #: Finding a batch of ``k`` records takes about ``2 * log2(k)`` of them, so this is some sixteen
 #: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
-#: a run of records that each fit the cap alone and never two together: token counts need not
-#: grow with text, so one failed prefix proves nothing, and a start is searched over longer runs
-#: until one counts past ``run_past_limit_factor`` times the cap. A sweep that spends them stops,
-#: and the next one resumes each start where this one left it, so it goes on from where the last
-#: left off. A record that does not fit alone is passed over without a search and costs none of
-#: them.
+#: a search over longer runs from a start whose pair does not fit, which runs only with
+#: ``run_past_limit_factor`` above one or ``None``: token counts need not grow with text, so
+#: there one failed prefix proves nothing. A sweep that spends them stops, and the next one
+#: resumes each start where this one left it, so it goes on from where the last left off. A
+#: record that does not fit alone is passed over without a search and costs none of them.
 _MAX_BATCH_PROBES: Final[int] = 128
 
 #: How far past the request cap a run may count and still be searched over longer runs.
 #:
-#: Appending a record adds its text, so with an ordinary tokenizer a longer run counts less only
-#: where tokens merge across the join: a few tokens a record, never half a request. Past twice the
-#: cap, no longer run from the same start can fit, and searching on would cost one probe per
-#: remaining record, so a front of records too large to merge in pairs would spend every sweep
-#: before the search reached the records behind it.
-DEFAULT_RUN_PAST_LIMIT_FACTOR: Final[float] = 2.0
+#: **One: a run over the cap ends the search from its start**, which goes on to the runs starting
+#: at the next record. Appending a record adds its text, so with an ordinary tokenizer no longer
+#: run from the same start fits once one does not, and searching on would cost one probe per
+#: remaining record: a front of records too large to merge in pairs then spent every sweep before
+#: the search reached the records behind it.
+DEFAULT_RUN_PAST_LIMIT_FACTOR: Final[float] = 1.0
 
 #: Share of the sending budget the active records may hold once the chain has started.
 #:
@@ -896,9 +895,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             batch, default two. Zero disables smaller retries. Every child holds at least
             two records and shares the chain deadline.
         run_past_limit_factor: How many times the request cap a run of records may count and
-            still be searched over longer runs from the same start, default two. ``None``
-            searches every longer run, for a tokenizer whose count can fall by more than that
-            as records are appended.
+            still be searched over longer runs from the same start. The default, one, ends the
+            search from a start at its first run over the cap and goes on to the next record.
+            ``None`` searches every longer run, for a tokenizer whose count can fall as records
+            are appended.
+        record_request_input_tokens: The tokens one record merge or rewrite request may hold,
+            in place of ``summary_options["max_tokens"]``, which otherwise bounds both the
+            answer and the request. Set it for a summarizer whose merges compress, for example
+            twice the output cap. Never more than ``max_summary_input_tokens``.
         merge_coverage_share: Starting value coverage for merges and rewrites, defaulting to
             ``tool_results.coverage_share`` without changing tool-group grounding.
         merge_coverage_floor: Lowest merge coverage, defaulting to the starting bar (no
@@ -940,6 +944,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         chain_seconds: float | None = DEFAULT_CHAIN_SECONDS,
         record_merge_split_depth: int = 2,
         run_past_limit_factor: float | None = DEFAULT_RUN_PAST_LIMIT_FACTOR,
+        record_request_input_tokens: int | None = None,
         rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
         merge_coverage_share: float | None = None,
         merge_coverage_floor: float | None = None,
@@ -997,9 +1002,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             or run_past_limit_factor < 1
         ):
             raise ValueError("run_past_limit_factor must be finite and at least 1, or None.")
+        if record_request_input_tokens is not None and (
+            type(record_request_input_tokens) is not int or record_request_input_tokens <= 0
+        ):
+            raise ValueError("record_request_input_tokens must be a positive integer or None.")
         self.chain_seconds = chain_seconds
         self.record_merge_split_depth = record_merge_split_depth
         self.run_past_limit_factor = run_past_limit_factor
+        self.record_request_input_tokens = record_request_input_tokens
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -3611,11 +3621,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _record_request_limit(self) -> int:
         """Return the tokens one record merge or rewrite request may hold.
 
-        With a record share, use the lesser of ``max_summary_input_tokens`` and an active
+        ``record_request_input_tokens`` when set, never more than ``max_summary_input_tokens``.
+        Otherwise, with a record share, the lesser of ``max_summary_input_tokens`` and an active
         ``summary_options.max_tokens`` cap. Reasoning also consumes the output allowance,
         so this limits batch size without promising an untruncated answer.
         """
         limit = self.user_turns.max_summary_input_tokens
+        if self.record_request_input_tokens is not None:
+            return min(limit, self.record_request_input_tokens)
         if self.record_budget_share is None:
             return limit
         options = (

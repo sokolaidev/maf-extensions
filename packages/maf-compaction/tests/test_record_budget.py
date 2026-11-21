@@ -1016,6 +1016,8 @@ async def test_deadline_limited_sweeps_eventually_reach_later_mergeable_records(
     budget = _record_size(copy.deepcopy(messages)) - 200
     summarizer = _Summarizer()
     strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+    # The exhaustive search, slow enough that each sweep ends at its deadline before it gets far.
+    strategy.run_past_limit_factor = None
     expirations = 0
 
     for _ in range(120):
@@ -1030,6 +1032,7 @@ async def test_deadline_limited_sweeps_eventually_reach_later_mergeable_records(
             break
         if restore:
             restored = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+            restored.run_past_limit_factor = None
             restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
             strategy = restored
 

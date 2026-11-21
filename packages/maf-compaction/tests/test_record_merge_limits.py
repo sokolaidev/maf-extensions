@@ -63,6 +63,44 @@ def test_invalid_split_depth_is_refused(depth: Any) -> None:
         )
 
 
+@pytest.mark.parametrize("tokens", [0, -1, True, 1.5])
+def test_invalid_record_request_input_tokens_are_refused(tokens: Any) -> None:
+    original = _strategy(_Summarizer(), budget=1000)
+    with pytest.raises(ValueError, match="record_request_input_tokens"):
+        ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+            tokenizer=original.tokenizer,
+            tool_results=original.tool_results,
+            user_turns=original.user_turns,
+            record_request_input_tokens=tokens,
+        )
+
+
+def test_the_record_request_input_limit_replaces_the_output_cap() -> None:
+    """Set, it bounds merge requests whatever the output cap, and never past the input limit."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.25, cap=1_200)
+    assert strategy._record_request_limit() == 1_200, "the premise: the output cap bounds it"
+
+    strategy.record_request_input_tokens = 2_400
+    assert strategy._record_request_limit() == 2_400
+    strategy.user_turns._summary_options_disabled = True
+    assert strategy._record_request_limit() == 2_400, "retired options do not change it"
+    strategy.record_request_input_tokens = strategy.user_turns.max_summary_input_tokens + 1
+    assert strategy._record_request_limit() == strategy.user_turns.max_summary_input_tokens
+
+
+async def test_records_over_the_output_cap_merge_within_the_request_input_limit() -> None:
+    """A pair the output cap alone would refuse merges once the request has its own limit."""
+    messages = _history(2)
+    pair = len(_numbered_records([_body(0), _body(1)])) // 4
+    for cap, merged in ((pair // 2, False), (pair // 2, True)):
+        summarizer = _Summarizer()
+        strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=cap)
+        if merged:
+            strategy.record_request_input_tokens = 4 * pair
+        assert await strategy._merge_batches(copy.deepcopy(messages), None, 0.001) is merged
+        assert bool(summarizer.merges) is merged
+
+
 async def test_lossy_parent_retries_halves_and_replays_both_accepted_children() -> None:
     summarizer = _Summarizer(
         merge=lambda body: (
