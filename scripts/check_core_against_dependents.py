@@ -26,9 +26,8 @@ ceilings, with `Release-As:` in the commit footer, so the
 break is out of reach of everything already installed and each dependent adopts on its own
 schedule. See `docs/release-compatibility.md`.
 
-Sibling packages stay installed so optional cross-package tests can run. The branch half uses
-checkout wheels; the published half resolves published siblings within the tested wheel's
-declared ranges. Siblings without a non-yanked release are absent from the published half.
+The branch half installs the checkout sibling wheels. The published half installs the tested
+wheel's declared dependencies and adds published siblings explicitly imported by its tagged tests.
 
 Only the core is forced with `--overrides` in both halves: sibling core bounds must not replace
 the candidate being tested. All other dependency constraints remain enforced by the resolver.
@@ -40,6 +39,7 @@ stance as the admit and import checks.
 from __future__ import annotations
 
 import argparse
+import ast
 import subprocess
 import sys
 import tempfile
@@ -258,9 +258,32 @@ def assess_branch(core_wheel: Path, wheels: dict[str, Path]) -> list[Result]:
     return results
 
 
-def assess_published(
-    released: tuple[int, ...], core_wheel: Path, wheels: dict[str, Path], scratch: Path
-) -> list[Result]:
+def suite_siblings(tests: Path, available: set[str]) -> list[str]:
+    """Find published sandbox siblings imported by this release's tests and fixtures."""
+    modules: set[str] = set()
+    for path in tests.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            # A fixture may contain invalid Python. Pytest reports syntax errors in modules it loads.
+            continue
+        for node in ast.walk(tree):
+            match node:
+                case ast.Import(names=names):
+                    modules.update(alias.name for alias in names)
+                case ast.ImportFrom(level=0, module=str(module)):
+                    modules.add(module)
+                case ast.Call(
+                    func=ast.Attribute(attr="importorskip" | "import_module")
+                    | ast.Name(id="importorskip" | "import_module" | "__import__"),
+                    args=[ast.Constant(value=str(module)), *_],
+                ):
+                    modules.add(module)
+    distributions = {module.partition(".")[0].replace("_", "-") for module in modules}
+    return sorted(distributions & available)
+
+
+def assess_published(released: tuple[int, ...], core_wheel: Path, scratch: Path) -> list[Result]:
     """Every published dependent version whose ceiling admits the candidate, at its own tag."""
     published = {
         distribution: (
@@ -270,6 +293,7 @@ def assess_published(
         )
         for distribution in dependent_distributions(_ROOT)
     }
+    available = {name for name, versions in published.items() if versions}
     results = []
     for distribution, released_version in at_risk(published, released):
         tag = f"{distribution}-v{released_version}"
@@ -281,10 +305,10 @@ def assess_published(
             continue
         try:
             expected_failures = prepare_tests(distribution, released_version, tests)
+            siblings = suite_siblings(tests, available - {distribution})
         except (OSError, ValueError) as error:
             results.append(Result("published", distribution, released_version, False, str(error)))
             continue
-        siblings = [name for name in wheels if name != distribution and published.get(name)]
         passed, summary = run_suite(
             [f"{distribution}=={released_version}", *siblings],
             core_wheel,
@@ -310,7 +334,7 @@ def main(argv: list[str]) -> int:
 
     with tempfile.TemporaryDirectory() as scratch:
         results = assess_branch(parsed.core_wheel, wheels) + assess_published(
-            version(parsed.released), parsed.core_wheel, wheels, Path(scratch)
+            version(parsed.released), parsed.core_wheel, Path(scratch)
         )
         for result in results:
             print(result.line())

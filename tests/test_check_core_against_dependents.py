@@ -383,16 +383,15 @@ class TestBothHalvesForceIt:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         core = _wheel(tmp_path, "maf_sandbox-0.33.0-py3-none-any.whl")
-        wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.13.0-py3-none-any.whl")
         monkeypatch.setattr(check, "dependent_distributions", lambda root: ["maf-sandbox-bicep"])
         monkeypatch.setattr(check, "fetch_version_requirements", lambda name: {"0.12.0": []})
         monkeypatch.setattr(
             check, "at_risk", lambda published, released: [("maf-sandbox-bicep", "0.12.0")]
         )
-        monkeypatch.setattr(check, "recover_tests", lambda tag, name, into: tmp_path / "tests")
+        monkeypatch.setattr(check, "recover_tests", lambda tag, name, into: tmp_path)
         seen = self._capture(monkeypatch)
 
-        check.assess_published((0, 33, 0), core, {"maf-sandbox-bicep": wheel}, tmp_path)
+        check.assess_published((0, 33, 0), core, tmp_path)
 
         (requirements, passed_core) = seen[0]
         assert passed_core == core
@@ -400,41 +399,73 @@ class TestBothHalvesForceIt:
 
 
 @pytest.mark.parametrize("unavailable", [None, {}])
+@pytest.mark.parametrize(
+    "docker_import",
+    [
+        "import maf_sandbox_docker.conformance",
+        "from maf_sandbox_docker import DockerSandboxBackend",
+        'pytest.importorskip("maf_sandbox_docker.conformance")',
+        'importlib.import_module("maf_sandbox_docker")',
+    ],
+)
 def test_published_siblings_resolve_with_each_historical_dependent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable, docker_import: str
 ):
     core = _wheel(tmp_path, "maf_sandbox-0.53.2-py3-none-any.whl")
-    wheels = {
-        name: _wheel(tmp_path, f"{name.replace('-', '_')}-{version}-py3-none-any.whl")
-        for name, version in [
-            ("maf-sandbox-mcp", "0.3.2"),
-            ("maf-sandbox-bicep", "0.26.1"),
-            ("maf-sandbox-docker", "0.30.10"),
-            ("maf-sandbox-new", "0.0.0"),
-        ]
-    }
     published = {
-        "maf-sandbox-mcp": {
-            "0.3.1": ["maf-sandbox>=0.53.0,<0.54", "maf-sandbox-bicep>=0.25.0,<0.26"],
-            "0.3.2": ["maf-sandbox>=0.53.0,<0.54", "maf-sandbox-bicep>=0.25.0,<0.27"],
+        "maf-sandbox-bicep": {
+            "0.25.1": ["maf-sandbox>=0.53.0,<0.54"],
+            "0.25.2": ["maf-sandbox>=0.53.0,<0.54"],
         },
-        "maf-sandbox-bicep": {"0.25.1": ["maf-sandbox>=0.52.0,<0.53"]},
         "maf-sandbox-docker": {"0.30.10": ["maf-sandbox>=0.52.0,<0.53"]},
+        "maf-sandbox-antivirus": {"0.1.1": ["maf-sandbox>=0.52.0,<0.53"]},
         "maf-sandbox-new": unavailable,
     }
+
+    def recover(tag: str, name: str, into: Path) -> Path:
+        into.mkdir()
+        imports = 'import maf_sandbox_bicep\npytest.importorskip("maf_sandbox_new")\n'
+        if tag == "maf-sandbox-bicep-v0.25.2":
+            imports += docker_import
+        (into / "conftest.py").write_text(imports, encoding="utf-8")
+        (into / "invalid_source.py").write_text("def broken(:\n", encoding="utf-8")
+        return into
+
     monkeypatch.setattr(check, "dependent_distributions", lambda root: list(published))
     monkeypatch.setattr(check, "fetch_version_requirements", published.get)
-    monkeypatch.setattr(check, "recover_tests", lambda tag, name, into: into / "tests")
+    monkeypatch.setattr(check, "recover_tests", recover)
     seen = TestBothHalvesForceIt._capture(monkeypatch)
 
-    results = check.assess_published((0, 53, 2), core, wheels, tmp_path)
+    results = check.assess_published((0, 53, 2), core, tmp_path)
 
-    assert [result.against for result in results] == ["0.3.1", "0.3.2"]
+    assert [result.against for result in results] == ["0.25.1", "0.25.2"]
     assert all(result.passed for result in results)
     assert seen == [
-        ([f"maf-sandbox-mcp=={version}", "maf-sandbox-bicep", "maf-sandbox-docker"], core)
-        for version in ("0.3.1", "0.3.2")
+        (["maf-sandbox-bicep==0.25.1"], core),
+        (["maf-sandbox-bicep==0.25.2", "maf-sandbox-docker"], core),
     ]
+
+
+def test_published_mxc_runs_alone_when_its_wheel_admits_the_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    core = _wheel(tmp_path, "maf_sandbox-0.55.0-py3-none-any.whl")
+    published = {
+        "maf-sandbox-mxc": {"0.1.0": ["maf-sandbox<0.56,>=0.54.0"]},
+        "maf-sandbox-antivirus": {"0.1.1": ["maf-sandbox<0.55", "agent-framework-core<1.25"]},
+    }
+    (tmp_path / "test_mxc.py").write_text(
+        "from maf_sandbox import SandboxRouter\nimport maf_sandbox_mxc\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(check, "dependent_distributions", lambda root: list(published))
+    monkeypatch.setattr(check, "fetch_version_requirements", published.get)
+    monkeypatch.setattr(check, "recover_tests", lambda tag, name, into: tmp_path)
+    seen = TestBothHalvesForceIt._capture(monkeypatch)
+
+    results = check.assess_published((0, 55, 0), core, tmp_path)
+
+    assert [(row.distribution, row.against) for row in results] == [("maf-sandbox-mxc", "0.1.0")]
+    assert seen == [(["maf-sandbox-mxc==0.1.0"], core)]
 
 
 class TestTheCli:

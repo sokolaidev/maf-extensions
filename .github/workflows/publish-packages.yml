@@ -534,7 +534,7 @@ jobs:
           UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
-          python3 scripts/check_core_against_dependents.py \
+          uv run --no-project --python 3.14 python scripts/check_core_against_dependents.py \
             "$VERSION" dist/maf_sandbox-"$VERSION"-py3-none-any.whl
 
   publish:
