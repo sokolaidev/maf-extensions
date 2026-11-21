@@ -28,7 +28,6 @@ from maf_compaction import _record_replay as replay_module
 from maf_compaction._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _ChainTimeSpent,
-    _PreparedMerge,
     _RecordAnswer,
     _RecordMergeWork,
 )
@@ -471,13 +470,14 @@ async def test_background_retains_answers_but_foreground_alone_relaxes() -> None
     summarizer = _Summarizer(merge=_lossy)
     strategy = _configured(summarizer, merge_coverage_floor=0.7)
     messages = _records()
-    prepared: list[_PreparedMerge] = []
-
-    def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
-        prepared.append(_PreparedMerge(sources, count, transcript, answer, strategy.merge_prompt))
-
-    worker = strategy._record_worker(1000, ready, lambda: True)
-    await worker._prepare_record_merges(copy.deepcopy(messages))
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, 1000)
+    await work.start(tool_reply())
+    await running(work)
+    worker = work._worker
+    assert worker is not None
+    prepared = work._ready
     assert len(prepared) == 3
     assert worker.current_merge_coverage_share == strategy.current_merge_coverage_share == 0.8
     assert not strategy.session_state()["merge_coverage"]["answers"]
@@ -487,6 +487,7 @@ async def test_background_retains_answers_but_foreground_alone_relaxes() -> None
     assert len(summarizer.merges) == 3
     assert strategy.current_merge_coverage_share == 0.75
     assert worker.current_merge_coverage_share == 0.8
+    await work.close()
 
 
 @pytest.mark.parametrize("step", [0.00001, 1e-16])
@@ -507,7 +508,7 @@ async def test_background_relaxation_does_not_rescan_history_for_empty_steps(
     work = _RecordMergeWork()
     work.bind(strategy, None)
     work.remember(messages, strategy.max_input_tokens)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     try:
         await running(work)
         assert not strategy._over(messages)
@@ -572,7 +573,7 @@ async def test_completed_background_sweep_relaxes_only_its_current_sources_and_p
     work = _RecordMergeWork()
     work.bind(strategy, None)
     work.remember(messages, budget)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     try:
         await running(work)
         assert work._worker is not None
@@ -632,7 +633,7 @@ async def test_interrupted_background_sweep_does_not_authorize_relaxation(
     work = _RecordMergeWork()
     work.bind(strategy, None)
     work.remember(messages, 1000)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     try:
         await running(work)
         await strategy._last_resort(messages)

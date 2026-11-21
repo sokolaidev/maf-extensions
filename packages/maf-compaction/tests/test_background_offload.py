@@ -74,7 +74,7 @@ async def _busy_worker(
     with contextlib.suppress(ValueError):
         await strategy(messages)
     work.remember(messages, budget)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await asyncio.wait_for(model.asked.wait(), 30)
     return strategy, work, messages, model
 
@@ -110,7 +110,11 @@ class _HoldingTokenizer(_SlowTokenizer):
         self.release = threading.Event()
 
     def count_tokens(self, text: str) -> int:
-        if self.armed and threading.current_thread() is not threading.main_thread():
+        if (
+            self.armed
+            and "compaction records" in text
+            and threading.current_thread() is not threading.main_thread()
+        ):
             self.armed = False
             self.holding.set()
             self.release.wait(10)
@@ -131,9 +135,9 @@ async def test_a_running_worker_step_keeps_the_foreground_from_reading_its_searc
     read: list[Any] = []
     monkeypatch.setattr(strategy, "_remember_record_search", read.append)
     tokenizer.armed = True
-    work.start(tool_reply())
+    await work.start(tool_reply())
     try:
-        # The worker's first step is counting tokens on its thread, and holds there.
+        # The worker holds its step lock while counting the merge request.
         assert await asyncio.to_thread(tokenizer.holding.wait, 10)
         await work.apply_ready(messages)
         assert read == []
