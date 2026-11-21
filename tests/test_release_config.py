@@ -619,6 +619,9 @@ class TestReleasePullRequestsKeepThemselvesCurrent:
     def test_always_update_is_on(self):
         assert CONFIG["always-update"] is True
 
+    def test_package_release_prs_are_refreshed_sequentially(self):
+        assert CONFIG["sequential-calls"] is True
+
 
 class TestDependentsPinCoresInAShapeTheRangeScriptCanRead:
     """Every automated dependency range must be readable by the release-time helper."""
