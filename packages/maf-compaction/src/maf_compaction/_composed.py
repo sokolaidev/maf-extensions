@@ -1038,7 +1038,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.run_past_limit_factor = run_past_limit_factor
         self.record_request_input_tokens = record_request_input_tokens
         self.merge_same_tool_first = merge_same_tool_first
-        self._same_tool_runs_off = False
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -3090,7 +3089,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         powers: list[int] = [1]
         # Per record, where the run a batch from it may take ends (``merge_same_tool_first``).
         ends: list[int] = []
-        segmented = [False]
         probes = 0
         changed = False
 
@@ -3125,10 +3123,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
             ends[:] = (
                 _same_tool_segment_ends(covered_tools(messages, groups, active))
-                if self.merge_same_tool_first and not self._same_tool_runs_off
+                if self.merge_same_tool_first
                 else [len(groups)] * len(groups)
             )
-            segmented[0] = any(end < len(groups) for end in ends)
             inputs = {(prompt_digest, digests[last(group)], limit) for group in groups}
             self._record_input_fits = {
                 key: fits for key, fits in self._record_input_fits.items() if key in inputs
@@ -3182,9 +3179,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         async def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
-            remaining = ends[first] - first
-            if remaining < 2:
-                return []
+            remaining = len(groups) - first
             checked = 1
             known = self._searched.get((digests[last(groups[first])], limit))
             if (
@@ -3207,7 +3202,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if pair <= limit:
                     remember(first, 2, 2)
                     batch, extent = await async_bounded_prefix_extent(
-                        groups[first : ends[first]],
+                        groups[first:],
                         render=render,
                         prompt=self.merge_prompt,
                         tokenizer=self.tokenizer,
@@ -3351,6 +3346,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             cursor = self._batch_resume[4]
         self._batch_resume = None
         batches: list[tuple[list[dict[str, Any]], str, int]] = []
+        # The first batch the same-tool runs cut below two records, for a sweep that merges none.
+        across: list[dict[str, Any]] | None = None
         exhausted = False
         interrupted = False
         while over:
@@ -3382,6 +3379,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     continue
                 try:
                     batch = await search(cursor)
+                    run = ends[cursor] - cursor
+                    if len(batch) > run:
+                        found = batch
+                        batch = batch[:run] if run >= 2 else []
+                        # Without the bound, a shorter run need not fit where a longer one did.
+                        if batch and factor is None and await off_loop(size, batch) > limit:
+                            batch = []
+                        if not batch and across is None:
+                            across = found
                 except _BatchProbesSpent:
                     interrupted = True
                     self._merge_event("search_limit", remaining=len(groups) - cursor)
@@ -3404,6 +3410,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     batches.append((batch, transcript, 0))
                     if len(batches) < self._summary_parallelism():
                         continue
+            if not batches and across is not None and not changed:
+                # Same-tool runs are a preference: when no batch within them merges, the first
+                # batch across them the search found is taken rather than none.
+                transcript = await off_loop(
+                    _numbered_records, [bodies[last(group)] for group in across]
+                )
+                batches.append((across, transcript, 0))
+                across = None
             if not batches:
                 break
             seen_messages.update((id(message), message) for message in messages)
@@ -3420,6 +3434,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 handled.update(fresh)
                 seen_messages.update(fresh)
                 changed = True
+                across = None
                 groups, _, over = await off_loop(survey)
                 layout = prompt_digest, limit, len(groups), chain(0, len(groups))
                 self._batch_resume = None
@@ -3435,14 +3450,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         starts = {(digests[last(group)], limit) for group in groups}
         self._searched = {key: found for key, found in self._searched.items() if key in starts}
         self._merge_sweep_complete = exhausted and not interrupted and not changed
-        if over and segmented[0] and not changed and not interrupted:
-            # Same-tool runs are a preference: when none of them can merge, the sweep goes on
-            # without them, so a batch across runs that fits is taken rather than none.
-            self._same_tool_runs_off = True
-            try:
-                return await self._merge_batches(messages, start, share)
-            finally:
-                self._same_tool_runs_off = False
         return changed
 
     def _summary_parallelism(self) -> int:

@@ -14,6 +14,7 @@ from agent_framework import ChatResponse, Content, Message, UsageDetails
 from test_record_budget import (
     _VALUE,
     _body,
+    _CountingTokenizer,
     _history,
     _record_pair,
     _record_size,
@@ -223,6 +224,81 @@ async def test_a_record_merged_across_a_held_one_keeps_what_both_sources_covered
     assert await strategy._merge_batches(messages, None, 0.001)
 
     assert _batch_size(summarizer.merges[-1]) == 2, "only the two search records"
+
+
+def _tool_pairs(pairs: int, body: Any) -> list[Message]:
+    """Records in same-tool pairs, ``body(index)`` each, then the closing turn."""
+    messages = _history(0)
+    closing = messages.pop()
+    for index in range(2 * pairs):
+        messages += _tool_then_record(index, f"tool_{index // 2}", body(index))
+    return [*messages, closing]
+
+
+async def test_a_sweep_spends_one_probe_budget_with_same_tool_runs() -> None:
+    """Pairs that fit alone and never together: one sweep renders no more than its limit allows,
+    with the runs and the batches across them searched by the same probes."""
+    tokenizer = _CountingTokenizer()
+    pairs = composed_module._MAX_BATCH_PROBES
+    messages = _tool_pairs(pairs, lambda index: _body(index) + " and its full listing" * 115)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    strategy = _strategy(_Summarizer(), budget=budget, share=0.25, tokenizer=tokenizer)
+
+    assert not await strategy._merge_batches(messages, None, 0.25), "no two records fit"
+
+    records = 2 * pairs
+    assert tokenizer.transcripts <= records + composed_module._MAX_BATCH_PROBES, (
+        f"{tokenizer.transcripts} transcripts rendered"
+    )
+
+
+async def test_sweeps_restored_between_them_reach_a_batch_across_same_tool_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhaustive search over same-tool pairs that never fit inside: each sweep goes on from where
+    the last stopped, until the pair that fits across two runs is merged.
+
+    With eight probes a sweep, the scan from the first record is cut off on every sweep, so the
+    search state one sweep leaves must be the state the next one resumes.
+    """
+    monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", 8)
+    small = _body
+    large = lambda index: _body(index) + " and its full listing" * 18  # noqa: E731
+    front = 6
+    # Large then small, small then large: each run's pair is over the limit, the two smalls
+    # across the last boundary fit.
+    sizes = ["large"] * (2 * front) + ["large", "small", "small", "large"]
+    messages = _history(0)
+    closing = messages.pop()
+    for index, size in enumerate(sizes):
+        messages += _tool_then_record(
+            index, f"tool_{index // 2}", (large if size == "large" else small)(index)
+        )
+    messages.append(closing)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None)
+    limit = summary_input_tokens(
+        strategy.merge_prompt,
+        _numbered_records([small(0), small(1)]),
+        tokenizer=strategy.tokenizer,
+    )
+
+    def configured(target: Any) -> Any:
+        target.run_past_limit_factor = None
+        target.record_request_input_tokens = limit
+        return target
+
+    strategy = configured(strategy)
+    for _ in range(60):
+        if await strategy._merge_batches(messages, None, 0.001):
+            break
+        restored = configured(_strategy(summarizer, budget=1_000_000, share=0.001, cap=None))
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+
+    (merged,) = summarizer.merges
+    smalls = [2 * front + 1, 2 * front + 2]
+    assert sorted(int(index) for index in re.findall(r"lookup_(\d+) ", merged)) == smalls
 
 
 async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:
