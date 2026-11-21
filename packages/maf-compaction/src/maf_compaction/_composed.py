@@ -202,11 +202,6 @@ def _worker_copy[T](part: T, *keep: str) -> T:
     return owned
 
 
-def _annotate(messages: list[Message], tokenizer: Any) -> None:
-    annotate_message_groups(messages)
-    annotate_token_counts(messages, tokenizer=tokenizer)
-
-
 class _BatchProbesSpent(Exception):
     """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
 
@@ -1200,7 +1195,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
         token = self._chain_deadline.set(deadline)
         try:
-            await off_loop(_annotate, messages, self.tokenizer)
+            await off_loop(self._annotate_messages, messages)
             start = _ChainStart.take(messages) if await off_loop(self._over, messages) else None
             if start is None and self.record_budget_share is None:
                 self._merge_event("no_pressure")
@@ -1878,7 +1873,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
             return False
-        await off_loop(_annotate, messages, self.tokenizer)
+        await off_loop(self._annotate_messages, messages)
         refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
         with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
             return await self._compact(messages)
@@ -2927,10 +2922,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             changed = True
         return changed
 
+    def _annotate_messages(self, messages: list[Message]) -> None:
+        if self._background_records is not None and messages is self._background_records.messages:
+            self._background_records.annotate(self.tokenizer)
+        else:
+            annotate_message_groups(messages)
+            annotate_token_counts(messages, tokenizer=self.tokenizer)
+
     def _over(self, messages: list[Message]) -> bool:
         """Return whether the prompt, as it now stands, is over the input budget."""
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        self._annotate_messages(messages)
         return included_token_count(messages) > self._budget
 
     def _target(self, messages: list[Message], start: _ChainStart) -> int:
@@ -2949,8 +2950,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def _short_of_target(self, messages: list[Message], start: _ChainStart) -> bool:
         """Return whether the prompt, as it now stands, is over the chain's target."""
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        self._annotate_messages(messages)
         return included_token_count(messages) > self._target(messages, start)
 
     async def _fall_back(self, messages: list[Message], start: _ChainStart) -> bool:
@@ -3673,8 +3673,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def _record_tokens(self, messages: list[Message]) -> int:
         """Return the included tokens of every record still being sent."""
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        self._annotate_messages(messages)
         held = self._background_records.held_tokens if self._background_records is not None else 0
         return held + included_token_count(
             [
@@ -4174,7 +4173,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for group in groups:
                 set_excluded(messages[int(group["end_index"])], excluded=True)
             messages.insert(int(groups[-1]["end_index"]) + 1, replacement)
-            _annotate(messages, self.tokenizer)
+            self._annotate_messages(messages)
             return None
         edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)

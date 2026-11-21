@@ -15,6 +15,7 @@ from agent_framework._compaction import (
     GROUP_TOKEN_COUNT_BASIS_KEY,
     GROUP_TOKEN_COUNT_KEY,
     TOKEN_COUNT_BASIS_VERSION,
+    _token_count,  # pyright: ignore[reportPrivateUsage]
     annotate_message_groups,
 )
 from agent_framework._compaction import (
@@ -23,6 +24,13 @@ from agent_framework._compaction import (
 
 MEDIA_TYPES = frozenset({"data", "uri", "hosted_file"})
 _MEDIA_COUNTED = "_maf_media_counted"
+MESSAGE_COUNTED = "_maf_message_counted"
+
+
+def _message_counter(tokenizer: TokenizerProtocol) -> Callable[[Message], int] | None:
+    """Return the tokenizer's optional whole-message counter."""
+    counter = getattr(tokenizer, "count_message_tokens", None)
+    return cast(Callable[[Message], int], counter) if callable(counter) else None
 
 
 def media_parts(content: Content) -> list[Content]:
@@ -72,7 +80,12 @@ class MediaTokenEstimator:
 
     def count_message_tokens(self, message: Message) -> int:
         """Count a message with media replaced by configured estimates."""
+        count = _message_counter(self.tokenizer)
+        if count is not None and not any(media_parts(content) for content in message.contents):
+            return count(message)
         shadow, media_cost = _prepare_message(message, self)
+        if count is not None:
+            return count(shadow) + media_cost
         framework_annotate_token_counts([shadow], tokenizer=self.tokenizer, force_retokenize=True)
         return (
             int(shadow.additional_properties[GROUP_ANNOTATION_KEY][GROUP_TOKEN_COUNT_KEY])
@@ -206,12 +219,38 @@ def annotate_token_counts(
     ``counts`` shares one replay call's counts between its candidate histories; it is read
     only for a count from an index, which is the one that repeats.
     """
+    count = structural_counter(tokenizer)
+    if count is not None:
+        start = (
+            0
+            if force_retokenize or from_index is None
+            else max(0, min(from_index, len(messages) - 1))
+        )
+        for index, message in enumerate(messages[:start]):
+            previous = message.additional_properties.get(MESSAGE_COUNTED)
+            if previous is None or previous != _token_count(message):
+                start = index
+                break
+        annotate_message_groups(messages, from_index=None if from_index is None else start)
+        for message in messages[start:]:
+            # The hook may read fields outside the framework's serialization and replay cache.
+            annotation = message.additional_properties[GROUP_ANNOTATION_KEY]
+            tokens = count(message)
+            annotation[GROUP_TOKEN_COUNT_KEY] = tokens
+            annotation[GROUP_TOKEN_COUNT_BASIS_KEY] = TOKEN_COUNT_BASIS_VERSION
+            message.additional_properties[MESSAGE_COUNTED] = tokens
+        return
+
     estimator = (
         tokenizer if isinstance(tokenizer, MediaTokenEstimator) else MediaTokenEstimator(tokenizer)
     )
     shadows: list[Message] = []
     costs: dict[int, int] = {}
+    previously_structural: list[Message] = []
     for index, message in enumerate(messages):
+        if MESSAGE_COUNTED in message.additional_properties:
+            previously_structural.append(message)
+            force_retokenize = True
         if any(media_parts(content) for content in message.contents):
             shadow, cost = _prepare_message(message, estimator)
             shadows.append(shadow)
@@ -236,3 +275,17 @@ def annotate_token_counts(
         annotation[GROUP_TOKEN_COUNT_KEY] += cost
         messages[index].additional_properties[GROUP_ANNOTATION_KEY] = annotation
         messages[index].additional_properties[_MEDIA_COUNTED] = True
+    for message in previously_structural:
+        message.additional_properties.pop(MESSAGE_COUNTED, None)
+
+
+def structural_counter(tokenizer: TokenizerProtocol) -> Callable[[Message], int] | None:
+    """Keep the framework's incremental accounting for a media estimator over a text tokenizer."""
+    count = _message_counter(tokenizer)
+    if (
+        isinstance(tokenizer, MediaTokenEstimator)
+        and getattr(count, "__func__", None) is MediaTokenEstimator.count_message_tokens
+        and _message_counter(tokenizer.tokenizer) is None
+    ):
+        return None
+    return count

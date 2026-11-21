@@ -418,7 +418,7 @@ Optional `summary_options={"max_tokens": 2000}` passes chat options to user-band
 
 ## Images and other media
 
-User turns containing media stay verbatim by default, including their text. All compaction strategies and recall triggers estimate 1,024 tokens per `data`, `uri` or `hosted_file` part, including media inside tool-result items. Inline base64 and remote URLs are replaced for counting, so their string lengths do not determine the estimate. Configure provider-appropriate costs by passing the same estimator to every strategy and recall middleware:
+User turns containing media stay verbatim by default, including their text. With a text-only tokenizer, compaction strategies and recall triggers estimate 1,024 tokens per `data`, `uri` or `hosted_file` part, including media inside tool-result items. Inline base64 and remote URLs are replaced for counting, so their string lengths do not determine the estimate. Pass the same estimator to every strategy and recall middleware to configure provider-specific costs.
 
 ```python
 from agent_framework import CharacterEstimatorTokenizer
@@ -431,7 +431,9 @@ tokenizer = MediaTokenEstimator(
 )
 ```
 
-A pure `estimate_media(content) -> int` callback can override both fixed costs. Estimates must be positive integers; they are not provider usage measurements. `count_message_tokens(message)` exposes the estimate to host code. `count_tokens(text)` delegates to the underlying text tokenizer; framework token gates outside this package retain their own accounting. The composition can reserve instructions and tool schemas per sending call as described above; reserve other provider overhead separately.
+A pure `estimate_media(content) -> int` callback can override both fixed costs. Estimates must be positive integers. The composition can reserve instructions and tool schemas per sending call as described above.
+
+For provider-specific message accounting, implement `count_message_tokens(message: Message) -> int` alongside `count_tokens(text: str) -> int` on your tokenizer. Pass it directly to count the original message, including its media. Wrap it in `MediaTokenEstimator` to receive a message with each media part replaced by a text marker and let the wrapper add its configured costs. Raw text, including tool results during shortening, always goes to `count_tokens`. Text-only tokenizers keep the framework serialization estimate and default media costs. Framework token gates outside this package use the framework's own accounting.
 
 To compact media-bearing user turns, pass an async `describe_media(content, message) -> str | None` hook to `UserTurnAnchoredSummarizationCompactionStrategy`. It receives copies of the media part and full user turn. Return a description or `None` for an unsupported part. To describe only some formats, also pass `describes_media(content) -> bool`: a turn holding any media part it rejects stays preserved and the band folds past it, as without a hook, where a `None` answer stops the pass at that turn. The host chooses and calls the vision, transcription or document service, including its timeout and request/output limits. The strategy retains part order and marks descriptions as inferred context, then applies `max_summary_input_tokens` to the complete summarizer request. Host-preserved turns and unknown non-text types remain protected. Failed, empty or oversized descriptions retain the turn; cancellation propagates. The original turn is excluded only after accepting a smaller summary.
 

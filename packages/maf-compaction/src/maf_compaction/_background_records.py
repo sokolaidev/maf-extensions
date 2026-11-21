@@ -19,7 +19,7 @@ from agent_framework._compaction import (
     included_token_count,
 )
 
-from ._media import annotate_token_counts
+from ._media import MESSAGE_COUNTED, annotate_token_counts, structural_counter
 from ._record_replay import _message_key, source_lineage  # pyright: ignore[reportPrivateUsage]
 from ._shed import durable_message_id
 from ._toolsummary import (
@@ -48,10 +48,13 @@ def counted_history(
 ) -> list[Message]:
     """Use the foreground's token counts. Own any annotation the response or a new message needs."""
     messages = [*history, *response]
+    count = structural_counter(tokenizer)
     for index, message in enumerate(messages):
         annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY, {})
         if (
             message.message_id
+            and count is None
+            and MESSAGE_COUNTED not in message.additional_properties
             and annotation.get(GROUP_TOKEN_COUNT_BASIS_KEY) == TOKEN_COUNT_BASIS_VERSION
             and isinstance(annotation.get(GROUP_TOKEN_COUNT_KEY), int)
         ):
@@ -75,6 +78,14 @@ class BackgroundRecords:
     originals: dict[int, dict[str, Any]]
     held_tokens: int
     exclusions: dict[str, int]
+
+    def annotate(self, tokenizer: TokenizerProtocol) -> None:
+        """Keep the source weights on the projection and measure newly inserted records."""
+        annotate_message_groups(self.messages)
+        for message in self.messages:
+            annotation = message.additional_properties[GROUP_ANNOTATION_KEY]
+            if annotation.get(GROUP_TOKEN_COUNT_KEY) is None:
+                annotate_token_counts([message], tokenizer=tokenizer)
 
     @classmethod
     def capture(cls, history: list[Message]) -> BackgroundRecords:
