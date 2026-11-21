@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.55.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.54.0...maf-sandbox-v0.55.0) (2026-11-21)
+
+
+### Features
+
+* add MXC Python execution and native file conformance ([#2785](https://github.com/sokolaidev/maf-extensions/issues/2785)) ([0c03b78](https://github.com/sokolaidev/maf-extensions/commit/0c03b780c6a6fb5319c059ae3602cc70ce28bf62))
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
 ## [0.54.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.3...maf-sandbox-v0.54.0) (2026-11-14)
 
 

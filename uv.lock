@@ -1810,7 +1810,7 @@ dev = [
 
 [[package]]
 name = "maf-sandbox"
-version = "0.54.0"
+version = "0.55.0"
 source = { editable = "packages/maf-sandbox" }
 dependencies = [
     { name = "agent-framework-core" },
