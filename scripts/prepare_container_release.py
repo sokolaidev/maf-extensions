@@ -288,7 +288,7 @@ def prepare(
     run(
         ["bash", "scripts/build_scan_image.sh", profile],
         cwd=ROOT,
-        timeout=(7200 if profile == "terraform-avm" else 2400)
+        timeout=(7200 if profile in {"terraform-avm", "opentofu-avm"} else 2400)
         + (1800 if profile in PYTHON_PROFILES else 0),
         env=os.environ | {"BICEP_ROUTE": bicep_route},
     )
