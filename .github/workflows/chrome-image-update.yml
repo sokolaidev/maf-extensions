@@ -15,7 +15,7 @@ on:
         options: [none, security, package]
         default: none
       justification:
-        description: Affected CVE/advisory, or package and required browser capability
+        description: Required only for package updates - package and needed browser capability
         type: string
         default: ""
 
@@ -144,6 +144,6 @@ jobs:
           --marker '<!-- chrome-image-update-failure-tracker -->'
           --title 'Automatic Chrome image updates need attention'
           --reproduce 'Inspect the retained Chrome upstream and candidate evidence, then dispatch chrome-image-update.yml from current main; leave deliver disabled for qualification only.'
-          --expected 'A newer authenticated stable Chrome package passes rendering, inventory, security and source checks. Scheduled PR delivery requires verified current published-image High/Critical fixes; manual delivery requires an explicit security or package requirement.'
+          --expected 'A newer authenticated stable Chrome package passes rendering, inventory, security and source checks. Scheduled and manual security delivery require verified current published-image High/Critical fixes; manual package delivery requires a package justification.'
           --context 'Signature failures, unavailable packages and failed qualification require investigation. Source updates do not publish replacement images. Main changes and competing PRs defer delivery until fresh evidence can be acquired.'
           --packages maf-sandbox maf-sandbox-document
