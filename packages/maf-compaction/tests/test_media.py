@@ -496,7 +496,8 @@ def test_message_counter_owns_media_unless_wrapped_in_media_estimator():
         annotate_token_counts([message], tokenizer=estimator, **options)
         assert included_token_count([message]) == 108
         assert tokenizer.messages[-1].contents[0].items[0].text == "[media]"
-    assert message.contents[0].items[0].type == "uri"
+    items = message.contents[0].items
+    assert items is not None and items[0].type == "uri"
 
 
 def test_background_merge_keeps_source_weights_and_counts_new_records():
