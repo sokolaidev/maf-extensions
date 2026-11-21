@@ -424,6 +424,8 @@ async def test_nonmonotonic_counts_respect_each_operations_minimum_prefix(kind):
         assert await strategy(messages)
     else:
         chain = composed(client, record_budget_share=0.5 if kind == "batch" else None)
+        # This tokenizer counts a pair far past the cap and a triple under it.
+        chain.run_past_limit_factor = None
         chain.user_turns = strategy
         chain.tokenizer = strategy.tokenizer
         messages = records()

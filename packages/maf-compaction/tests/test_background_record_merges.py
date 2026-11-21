@@ -1,6 +1,7 @@
 """Background answers must wait for foreground validation and stay inside their run."""
 
 import asyncio
+import logging
 from contextlib import suppress
 from copy import deepcopy
 
@@ -524,6 +525,16 @@ async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
     assert not work.defer_merges
     await over_budget_pass(strategy, messages)
     assert strategy.records_merged >= 1, "the foreground merged, as without the bundle"
+    await work.close()
+
+
+async def test_a_worker_stopped_at_its_deadline_says_so(caplog):
+    strategy, work, _ = await prepared()
+    strategy.chain_seconds = 1e-9
+    with caplog.at_level(logging.INFO, logger="maf_compaction"):
+        work.start(tool_reply())
+        await running(work)
+    assert "Background record merge stopped at its" in caplog.text
     await work.close()
 
 

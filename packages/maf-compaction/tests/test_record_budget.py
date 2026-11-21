@@ -911,6 +911,48 @@ async def test_a_sweep_spends_at_most_its_probe_limit_when_no_two_records_share_
     assert _MAX_BATCH_PROBES < unbounded, "the limit is below every start scanning every prefix"
 
 
+@pytest.mark.parametrize(
+    ("factor", "reached"), [(composed_module.DEFAULT_RUN_PAST_LIMIT_FACTOR, True), (None, False)]
+)
+async def test_one_sweep_gets_past_a_front_of_records_that_never_pair(
+    factor: float | None, reached: bool
+) -> None:
+    """A start whose runs count past the bound is left after a probe or two, so the first sweep
+    reaches the records behind it; searching every longer run spends the sweep on that front."""
+    tokenizer = _CountingTokenizer()
+    messages = _padded_history(30, 2_400, plain_tail=2)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+    strategy.run_past_limit_factor = factor
+
+    assert await strategy._merge_batches(messages, None, 0.25) is reached
+
+    if reached:
+        (merged,) = summarizer.merges
+        assert "lookup_30 " in merged, "a batch reaching past the front"
+        assert tokenizer.transcripts <= 3 * 32, f"{tokenizer.transcripts} transcripts rendered"
+    else:
+        assert not summarizer.merges
+
+
+async def test_a_start_past_the_bound_is_not_searched_again_after_a_restore() -> None:
+    """What a search found past the bound is kept with the session, so a later sweep skips it."""
+    messages = _padded_history(30, 2_400)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    strategy = _strategy(_Summarizer(), budget=budget, share=0.25)
+    assert not await strategy._merge_batches(messages, None, 0.25), "no two records fit"
+
+    state = json.loads(json.dumps(strategy.session_state()))
+    assert any(entry[6] for entry in state["searched_records"])
+    tokenizer = _CountingTokenizer()
+    restored = _strategy(_Summarizer(), budget=budget, share=0.25, tokenizer=tokenizer)
+    restored.restore_session_state(state)
+
+    assert not await restored._merge_batches(messages, None, 0.25)
+    assert tokenizer.transcripts == 0, f"{tokenizer.transcripts} transcripts rendered again"
+
+
 async def test_a_sweep_reads_the_history_once_and_again_only_after_an_accepted_merge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1159,11 +1201,14 @@ async def test_an_appended_record_reopens_a_start_whose_pair_did_not_fit() -> No
     summarizer = _Summarizer()
     messages = _history(2)
     first = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    # This tokenizer counts a pair far past the cap and a triple under it.
+    first.run_past_limit_factor = None
 
     assert not await first._merge_batches(messages, None, 0.001), "two records never fit"
 
     messages[-1:-1] = _record_pair(2)
     restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.run_past_limit_factor = None
     restored.restore_session_state(json.loads(json.dumps(first.session_state())))
 
     assert await restored._merge_batches(messages, None, 0.001)
@@ -1456,4 +1501,6 @@ def test_a_search_memory_from_an_earlier_snapshot_shape_restores() -> None:
 
     strategy.restore_session_state(json.loads(json.dumps(state)))
 
-    assert strategy.session_state()["searched_records"] == [["start", 900, 3, "run", 0, False]]
+    assert strategy.session_state()["searched_records"] == [
+        ["start", 900, 3, "run", 0, False, False]
+    ]
