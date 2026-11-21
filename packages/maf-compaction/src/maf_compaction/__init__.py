@@ -63,6 +63,7 @@ from ._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
 from ._media import MediaTokenEstimator
+from ._middleware_provider import CompactionMiddlewareProvider
 from ._nested import find_nested_strategy
 from ._persistence import SessionPersistence, SessionResponseStream
 from ._preserve import (
@@ -122,6 +123,7 @@ from ._usersummary import (
 )
 
 __all__ = [
+    "CompactionMiddlewareProvider",
     "DEFAULT_BAND_SHARE",
     "DEFAULT_CHAIN_GAIN_FRACTION",
     "DEFAULT_CHAIN_SECONDS",
