@@ -157,11 +157,12 @@ def main(argv: list[str] | None = None) -> None:
             (root / "packages" / name / "pyproject.toml").read_text(encoding="utf-8")
         )["project"]
         packages.append(f"{name} {project['version']}")
+    package_label = "Monitoring checkout packages" if args.monitor else "Packages"
     body = (
         f"{args.marker}\n\n**Describe the bug**\n{failure}\n\n"
         f"**To Reproduce**\n{args.reproduce}\n\n"
         f"**Expected behavior**\n{args.expected}\n\n"
-        f"**Environment**\n- Runner: ubuntu-latest\n- Packages: {', '.join(packages)}"
+        f"**Environment**\n- Runner: ubuntu-latest\n- {package_label}: {', '.join(packages)}"
         f" (workspace commit {os.environ['GITHUB_SHA']})\n"
         "- Python version: see the linked run's setup and execution logs; "
         "setup may fail before Python starts.\n\n"
