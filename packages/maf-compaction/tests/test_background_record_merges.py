@@ -532,7 +532,7 @@ async def test_a_worker_stopped_at_its_deadline_says_so(caplog):
     strategy, work, _ = await prepared()
     strategy.chain_seconds = 1e-9
     with caplog.at_level(logging.INFO, logger="maf_compaction"):
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await running(work)
     assert "Background record merge stopped at its" in caplog.text
     await work.close()
