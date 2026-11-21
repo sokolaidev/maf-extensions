@@ -80,7 +80,7 @@ async def prepared(model=None):
 async def test_background_does_not_mutate_live_history_or_decisions():
     strategy, work, messages = await prepared()
     before = deepcopy(strategy.session_state()), deepcopy(messages)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert strategy.session_state() == before[0]
     assert [m.to_dict() for m in messages] == [m.to_dict() for m in before[1]]
@@ -96,6 +96,32 @@ async def test_background_does_not_mutate_live_history_or_decisions():
     await work.close()
 
 
+@pytest.mark.parametrize("change_gap", [False, True])
+async def test_long_intervening_history_becomes_one_gap_and_is_revalidated(change_gap):
+    strategy, work, messages = await prepared()
+    gap = [Message("user", ["old payload"], message_id=f"gap-{i}") for i in range(1000)]
+    for message in gap:
+        message.additional_properties[EXCLUDED_KEY] = True
+    messages[4:4] = gap
+    await work.start(tool_reply())
+    try:
+        assert work._worker is not None
+        snapshot = work._worker._background_records
+        assert snapshot is not None
+        # Four records, the task before them, the intervening gap and the trailing turn.
+        assert len(snapshot.messages) == 7
+        assert all("old payload" not in m.text for m in snapshot.messages)
+        assert work._history is None
+        await running(work)
+        assert len(work._ready) == 1
+        if change_gap:
+            gap[500].contents = [Content.from_text("changed after preparation")]
+        assert await work.apply_ready(messages) is (not change_gap)
+        assert strategy.records_merged == int(not change_gap)
+    finally:
+        await work.close()
+
+
 async def test_merge_observer_separates_preparation_and_application():
     strategy, work, messages = await prepared()
     events = []
@@ -103,7 +129,7 @@ async def test_merge_observer_separates_preparation_and_application():
         lambda phase, event, details: events.append((phase, event, details)),
         tracked_values=_values(0),
     ):
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await running(work)
         assert ("background", "answer_prepared") in [(p, e) for p, e, _ in events]
         assert all(p != "apply" for p, _, _ in events)
@@ -127,11 +153,11 @@ async def test_observer_failure_preserves_merge_journal_and_worker_cleanup():
             raise RuntimeError("observer failure")
 
     with observe_record_merges(fail):
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await running(work)
         assert await strategy(messages)
         work.remember(messages, strategy.max_input_tokens)
-        work.start(tool_reply())
+        await work.start(tool_reply())
         task = running(work)
         await work.close()
     assert task.done()
@@ -179,7 +205,7 @@ async def test_next_pass_does_not_wait_for_unfinished_merge():
             return await super().get_response(messages, **kwargs)
 
     strategy, work, messages = await prepared(Waiting())
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     assert not await strategy(messages)
     assert not release.is_set() and not running(work).done()
@@ -202,7 +228,7 @@ async def test_prompt_change_discards_background_answer_and_search(complete):
             return await super().get_response(messages, **kwargs)
 
     strategy, work, messages = await prepared(Waiting())
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     if complete:
         release.set()
@@ -238,7 +264,7 @@ async def test_partial_search_after_prompt_change_drops_old_batches(monkeypatch,
     work.bind(strategy, None)
     messages = _history(4)
     await strategy(messages)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert not await strategy(messages)
     assert len(strategy.session_state()["searched_records"]) > 1
@@ -254,14 +280,14 @@ async def test_partial_search_after_prompt_change_drops_old_batches(monkeypatch,
     strategy.merge_prompt += " New merge policy."
     with monkeypatch.context() as limited:
         limited.setattr(composed_module, "_MAX_BATCH_PROBES", 1)
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await running(work)
         assert work._worker is not None
         partial = work._worker.session_state()
         assert len(partial["searched_records"]) == 1
         assert not await strategy(messages)
     adopted = strategy.session_state()
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert await strategy(messages)
     assert strategy.records_merged == 2
@@ -275,7 +301,7 @@ async def test_partial_search_after_prompt_change_drops_old_batches(monkeypatch,
 @pytest.mark.parametrize("change", ["content", "identity", "hold", "reasoning", "excluded"])
 async def test_stale_or_newly_protected_sources_refuse_background_answer(change):
     strategy, work, messages = await prepared()
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     if change == "content":
         messages[3].contents[0].result += " changed"
@@ -308,7 +334,7 @@ async def test_cancelled_worker_cannot_publish_late_results(ignore_cancellation)
             return await super().get_response(messages, **kwargs)
 
     strategy, work, messages = await prepared(Waiting())
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     await work.close()
     assert not work._ready
@@ -335,7 +361,7 @@ async def test_completed_child_can_apply_while_its_sibling_is_running():
         )
     )
     strategy, work, messages = await prepared(model)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     assert await strategy(messages)
     assert strategy.records_merged == 1
@@ -365,7 +391,7 @@ async def test_running_split_sibling_survives_run_end_and_restore():
         )
     )
     strategy, work, messages = await prepared(model)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     assert await strategy(messages)
     assert strategy.records_merged == 1
@@ -384,7 +410,7 @@ async def test_running_split_sibling_survives_run_end_and_restore():
     resumed.bind(restored, None)
     await restored(messages)
     release.set()
-    resumed.start(tool_reply())
+    await resumed.start(tool_reply())
     await running(resumed)
     assert await restored(messages)
     assert restored.records_merged == 1
@@ -399,7 +425,7 @@ async def test_disabled_share_only_merges_background_records_over_budget(budget)
     strategy, work, messages = await prepared(model)
     strategy.record_budget_share = None
     work.remember(messages, budget)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert bool(model.requests) == (budget == 50)
     await strategy(messages)
@@ -431,7 +457,7 @@ async def test_an_over_budget_background_merge_reaches_records_behind_the_loops_
         )
     ]
     work.remember(messages, OVER_BUDGET)
-    work.start(reply)
+    await work.start(reply)
     await running(work)
     assert model.merges, "the worker prepared a merge behind the reasoning"
 
@@ -476,7 +502,7 @@ async def test_a_pass_that_ends_over_budget_still_hands_the_worker_its_history()
 
     await over_budget_pass(strategy, messages)
     assert not model.merges
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert model.merges, "the worker started from the over-budget pass's list"
 
@@ -493,7 +519,7 @@ async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
     work.bind(strategy, None)
     messages = _history(4)
 
-    work.start(tool_reply())
+    await work.start(tool_reply())
     assert work._task is None
     assert not work.defer_merges
     await over_budget_pass(strategy, messages)
@@ -516,7 +542,7 @@ async def test_cancelled_lossy_answer_cannot_start_child_requests():
 
     model = Waiting(merge=lambda body: _VALUE.findall(body)[0])
     _, work, _ = await prepared(model)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     await asyncio.wait_for(work.close(), 2)
     assert len(model.requests) == 1
@@ -787,7 +813,7 @@ async def test_authoritative_state_or_stack_changes_discard_background_work(chan
     messages = _history(4)
     with registry.activate(session) as first:
         await first.strategy(messages)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     if complete:
         release.set()
@@ -832,7 +858,7 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
         )
     )
     strategy, work, messages = await prepared(model)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert work._worker is not None
     worker_state = work._worker.session_state()
@@ -850,7 +876,7 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
     resumed = _RecordMergeWork()
     resumed.bind(restored, None)
     await restored(messages)
-    resumed.start(tool_reply())
+    await resumed.start(tool_reply())
     await running(resumed)
     assert await restored(messages)
     assert restored.records_merged == 1
@@ -894,7 +920,7 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
 
     token = record_merge_observer.set(observe)
     try:
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await asyncio.wait_for(entered.wait(), 2)
         # The search runs beside the pass on its own state: the pass is not held up waiting for
         # it, and leaves the merging to it.
@@ -915,7 +941,7 @@ async def test_pending_background_work_does_not_bypass_the_sending_budget():
             await asyncio.Future()
 
     strategy, work, messages = await prepared(Waiting())
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await entered.wait()
     token = strategy._request_budget.set(50)
     try:
@@ -940,7 +966,7 @@ async def test_background_option_retirement_is_reused_by_later_requests():
     strategy, work, messages = await prepared(RejectingOptions())
     strategy.user_turns.summary_options = {"reasoning_effort": "minimal"}
     strategy.user_turns.retry_without_summary_options = True
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await running(work)
     assert await strategy(messages)
     assert strategy.user_turns._summary_options_disabled

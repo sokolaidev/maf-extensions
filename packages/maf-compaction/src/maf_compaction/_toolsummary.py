@@ -925,8 +925,8 @@ def _consolidatable_record_groups(
     *,
     replay: bool = False,
     exclusions: dict[str, int] | None = None,
-) -> tuple[list[dict[str, Any]], dict[int, str]]:
-    """Return :func:`consolidatable_record_groups` and the recall matches it was read with."""
+) -> tuple[list[dict[str, Any]], dict[int, str], list[dict[str, Any]]]:
+    """Return eligible groups, matched recall results and all active record groups."""
     spans = group_messages(messages)
     matches = function_result_candidates(messages)
     recalls = _recall_results(messages, matches)
@@ -936,7 +936,8 @@ def _consolidatable_record_groups(
     last_reasoning = -1 if replay else _last_reasoning_index(messages)
     answered = _answered_elsewhere(messages, matches)
     groups: list[dict[str, Any]] = []
-    for group in _active_record_groups(messages, spans, recalls):
+    active = _active_record_groups(messages, spans, recalls)
+    for group in active:
         if (group["start_index"], group["end_index"]) not in removable:
             reason = "not_removable_whole"
         elif group["end_index"] < last_reasoning:
@@ -958,7 +959,7 @@ def _consolidatable_record_groups(
             continue
         if exclusions is not None:
             exclusions[reason] = exclusions.get(reason, 0) + 1
-    return groups, recalls
+    return groups, recalls, active
 
 
 def _answered_elsewhere(
@@ -998,7 +999,7 @@ def reshapeable_record_groups(
         The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.reshape_records` may be
         handed.
     """
-    groups, recalls = _consolidatable_record_groups(messages, replay=True)
+    groups, recalls, _ = _consolidatable_record_groups(messages, replay=True)
     eligible = [
         group
         for group in groups

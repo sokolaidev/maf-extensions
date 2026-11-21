@@ -323,15 +323,15 @@ class _RecordMergeChatMiddleware(ChatMiddleware):
         with self.registry.activate(session):
             pass
 
-        def observed(response: ChatResponse) -> ChatResponse:
-            work.start(list(response.messages))
+        async def observed(response: ChatResponse) -> ChatResponse:
+            await work.start(list(response.messages))
             return response
 
         await call_next()
         if isinstance(context.result, ResponseStream):
             context.result.with_result_hook(observed)
         elif isinstance(context.result, ChatResponse):
-            observed(context.result)
+            await observed(context.result)
 
 
 def make_session_record_merge_middleware(registry: SessionCompactionRegistry) -> MiddlewareBundle:

@@ -57,6 +57,7 @@ from ._anchored import (
     EXCLUDE_REASON,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
+from ._background_records import BackgroundRecords, counted_history, has_records
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts
 from ._merge_coverage import LossyMerge, MergeCoverage
@@ -86,6 +87,7 @@ from ._record_replay import (
     replacement_identity,
     replay_match,
     source_key,
+    source_lineage,
     source_members,
 )
 from ._request import RequestOverhead
@@ -166,6 +168,17 @@ def _first_batch_with_sources(
     return None
 
 
+def _background_batch_with_sources(
+    messages: list[Message], count: int, sources: str
+) -> list[dict[str, Any]] | None:
+    records = BackgroundRecords.capture(messages)
+    groups = consolidatable_record_groups(records.messages)
+    batch = _first_batch_with_sources(records.messages, groups, count, sources)
+    if batch is None:
+        return None
+    return [records.originals[id(records.messages[int(group["end_index"])])] for group in batch]
+
+
 def _expected_record_groups(
     messages: list[Message], expected: Collection[int]
 ) -> list[dict[str, Any]]:
@@ -177,12 +190,13 @@ def _expected_record_groups(
     ]
 
 
-def _own_containers[T](part: T) -> T:
-    """A shallow copy of ``part`` whose dict, list and set attributes are copies too."""
+def _worker_copy[T](part: T, *keep: str) -> T:
+    """Own mutable containers, carrying only the state used by record search and requests."""
     owned = copy(part)
     for name, value in vars(part).items():
         if isinstance(value, (dict, list, set)):
-            setattr(owned, name, copy(cast("Collection[Any]", value)))
+            container = cast("dict[Any, Any] | list[Any] | set[Any]", value)
+            setattr(owned, name, copy(container) if name in keep else type(container)())
     return owned
 
 
@@ -275,7 +289,7 @@ class _RecordMergeWork:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-    def start(self, response: list[Message]) -> None:
+    async def start(self, response: list[Message]) -> None:
         if not any(c.type == "function_call" for m in response for c in m.contents):
             self.cancel()
             return
@@ -284,9 +298,31 @@ class _RecordMergeWork:
             return
         self.defer_merges = True
         if self._task is not None:
+            self._history = None
             return
-        messages = deepcopy([*self._history, *response])
         generation = self._generation
+        history, self._history = self._history, None
+        strategy = self.strategy
+        budget = self._budget
+
+        def snapshot() -> BackgroundRecords:
+            if not has_records(history) and not has_records(response):
+                return BackgroundRecords([], {}, 0, {})
+            messages = counted_history(history, response, strategy.tokenizer)
+            with _yielding_when(
+                over_budget=included_token_count(messages) > budget, policy=strategy.overflow_policy
+            ):
+                return BackgroundRecords.capture(messages)
+
+        try:
+            records = await off_loop(snapshot)
+        except Exception as error:
+            self.defer_merges = False
+            strategy._merge_event("worker_failed", phase="background")  # pyright: ignore[reportPrivateUsage]
+            logger.warning("Background record snapshot failed (%s).", type(error).__name__)
+            return
+        if generation != self._generation or self._task is not None:
+            return
         prompt = self.strategy.merge_prompt
         self.strategy._merge_event("worker_started", phase="background")  # pyright: ignore[reportPrivateUsage]
 
@@ -299,11 +335,14 @@ class _RecordMergeWork:
                     )
 
         worker = self.strategy._record_worker(  # pyright: ignore[reportPrivateUsage]
-            self._budget, ready, lambda: generation == self._generation
+            budget, ready, lambda: generation == self._generation
         )
+        worker._background_records = records  # pyright: ignore[reportPrivateUsage]
         self._worker = worker
         self._worker_steps = threading.Lock()
-        self._task = asyncio.create_task(self._run_worker(worker, messages, self._worker_steps))
+        self._task = asyncio.create_task(
+            self._run_worker(worker, records.messages, self._worker_steps)
+        )
         self._tasks.add(self._task)
         self._task.add_done_callback(self._tasks.discard)
 
@@ -313,8 +352,13 @@ class _RecordMergeWork:
         messages: list[Message],
         steps: threading.Lock,
     ) -> None:
-        with steps_locked(steps):
-            await worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
+        try:
+            with steps_locked(steps):
+                await worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
+        finally:
+            worker._background_records = None  # pyright: ignore[reportPrivateUsage]
+            worker._record_answer_ready = None  # pyright: ignore[reportPrivateUsage]
+            worker._record_work_current = None  # pyright: ignore[reportPrivateUsage]
 
     async def apply_ready(self, messages: list[Message]) -> bool:
         strategy = self.strategy
@@ -1026,6 +1070,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._batch_resume: tuple[str, int, int, str, int] | None = None
         self._pending_merges: list[_PendingMerge] = []
         self._refused_rewrites: dict[tuple[str, int, str], int] = {}
+        self._background_records: BackgroundRecords | None = None
         self._background: _RecordMergeWork | None = None
         self._record_answer_ready: Callable[[str, int, str, _RecordAnswer], None] | None = None
         self._record_work_current: Callable[[], bool] | None = None
@@ -1042,17 +1087,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ready: Callable[[str, int, str, _RecordAnswer], None],
         current: Callable[[], bool],
     ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
-        worker = copy(self)
+        worker = _worker_copy(
+            self,
+            "_refused_merges",
+            "_split_merges",
+            "_searched",
+            "_record_input_fits",
+            "_pending_merges",
+        )
         # Every container it can write is its own, so its steps and the foreground's run on
         # worker threads side by side (_offload).
-        worker.tool_results = _own_containers(self.tool_results)
-        worker.tool_results.fallback = _own_containers(self.tool_results.fallback)
-        worker.user_turns = _own_containers(self.user_turns)
+        worker.tool_results = _worker_copy(self.tool_results)
+        worker.tool_results.fallback = _worker_copy(self.tool_results.fallback)
+        worker.user_turns = _worker_copy(self.user_turns)
+        worker.user_turns.summary_options = deepcopy(self.user_turns.summary_options)
         worker._background = None
         worker._merge_coverage = copy(self._merge_coverage)
-        worker._record_consolidations_by_coverage = {}
+        worker._merge_coverage.answers = []
         worker._carried = None
-        worker.restore_session_state(deepcopy(self.session_state()))
         worker._request_budget = ContextVar("background_record_budget", default=budget)
         worker._chain_deadline = ContextVar("background_record_deadline", default=None)
         worker._record_answer_ready = ready
@@ -1110,9 +1162,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if item.prompt != self.merge_prompt:
                 self._merge_event("answer_discarded", phase="apply", reason="prompt_changed")
                 continue
-            groups = await off_loop(consolidatable_record_groups, messages)
             batch = await off_loop(
-                _first_batch_with_sources, messages, groups, item.count, item.sources
+                _background_batch_with_sources, messages, item.count, item.sources
             )
             if batch is None:
                 self._merge_event("answer_discarded", phase="apply", reason="sources_unavailable")
@@ -1125,6 +1176,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 answer=item.answer,
                 remember_lossy=True,
                 merge_phase="apply",
+                prepared_sources=item.sources,
             )
             if outcome == "accepted":
                 self._records_merged += 1
@@ -2968,7 +3020,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             exclusions: dict[str, int] | None = (
                 {} if record_merge_observer.get() is not None else None
             )
-            groups, _ = _consolidatable_record_groups(messages, exclusions=exclusions)
+            groups, _, _ = _consolidatable_record_groups(messages, exclusions=exclusions)
+            if exclusions is not None and self._background_records is not None:
+                exclusions.update(self._background_records.exclusions)
             missing = [group for group in groups if last(group) not in bodies]
             if missing:
                 for group, body in zip(missing, record_bodies(messages, missing), strict=True):
@@ -3484,7 +3538,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Return the included tokens of every record still being sent."""
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        return included_token_count(
+        held = self._background_records.held_tokens if self._background_records is not None else 0
+        return held + included_token_count(
             [
                 message
                 for group in active_record_groups(messages)
@@ -3575,9 +3630,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         messages: list[Message],
         worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ) -> bool:
-        if (
-            worker._completed_merge_sweep is None
-            or worker._completed_merge_sweep != self._merge_sweep_key(messages)
+        if worker._completed_merge_sweep is None or worker._completed_merge_sweep != await off_loop(
+            lambda: self._merge_sweep_key(BackgroundRecords.capture(messages).messages)
         ):
             return False
         return await self._relax_merge_coverage(messages)
@@ -3797,6 +3851,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         min_gain_fraction: float = 0.0,
         remember_lossy: bool = False,
         merge_phase: RecordMergePhase | None = None,
+        prepared_sources: str | None = None,
         operation: RecordReduction = "merge",
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
@@ -3850,9 +3905,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if answer is None:
             return "failed"
         if self._record_answer_ready is not None:
-            sources_key = source_key(messages, groups)
-            if sources_key is not None:
-                self._record_answer_ready(sources_key, len(groups), transcript, answer)
+            prepared_sources = source_key(messages, groups)
+            if prepared_sources is not None:
+                self._record_answer_ready(prepared_sources, len(groups), transcript, answer)
         if any(_record_has_external_hold(message) for message in sources):
             if merge:
                 self._merge_event("answer_discarded", phase=merge_phase, reason="external_hold")
@@ -3923,13 +3978,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 }
                 tracked.intersection_update(source_values)
                 kept_tracked = len(tracked.intersection(_record_tokens(text, fold_case=False)))
+            if prepared_sources is None and edit is not None:
+                prepared_sources = edit.sources
             replacement = messages[int(groups[-1]["end_index"]) + 1]
             self._merge_event(
                 "answer_accepted",
                 phase=merge_phase,
                 records=len(groups),
                 replacement=record_merge_identity(replacement) or "",
-                batch=_digest(f"{edit.sources}:{text}") if edit is not None else "",
+                batch=_digest(f"{prepared_sources}:{text}") if prepared_sources else "",
                 values=total,
                 kept_values=kept,
                 tracked_values=len(tracked),
@@ -3970,6 +4027,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         Returns the edit recorded for replay, or None when there is none.
         """
+        if self._background_records is not None:
+            # Only the foreground journals an edit against the authoritative history.
+            replacement = build_record_message(text)
+            replacement.additional_properties[LINEAGE_KEY] = source_lineage(messages, groups)
+            for group in groups:
+                set_excluded(messages[int(group["end_index"])], excluded=True)
+            messages.insert(int(groups[-1]["end_index"]) + 1, replacement)
+            _annotate(messages, self.tokenizer)
+            return None
         edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
@@ -3982,7 +4048,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
-        self._keep_records(messages)
+        if self._background_records is None:
+            self._keep_records(messages)
         self._refresh_merge_coverage(messages)
 
     def _keeps_values(self, bodies: list[str], text: str) -> bool:

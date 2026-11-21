@@ -115,7 +115,7 @@ async def test_background_leaves_unidentified_sources_for_foreground(kind):
     work = _RecordMergeWork()
     work.bind(strategy, None)
     work.remember(messages, 100_000)
-    work.start(tool_reply())
+    await work.start(tool_reply())
     await asyncio.wait_for(running(work), 2)
     assert not model.requests
     assert not work._ready
@@ -255,7 +255,7 @@ async def test_cancellation_drains_every_request(background):
     if background:
         work.bind(strategy, None)
         work.remember(messages, 100_000)
-        work.start(tool_reply())
+        await work.start(tool_reply())
         task = running(work)
     else:
         task = asyncio.create_task(strategy._merge_batches(messages, None, 0.001))
