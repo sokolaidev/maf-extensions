@@ -4,6 +4,8 @@ All notable changes to `maf-sandbox` are documented here. The format follows [Ke
 
 ## [0.55.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.54.0...maf-sandbox-v0.55.0) (2026-11-21)
 
+> **Publication correction.** Version 0.55.0 did not reach PyPI. The [publish job](https://github.com/sokolaidev/maf-extensions/actions/runs/44918557450/job/136893967725#step:6:1) stopped before upload because it tried to install Antivirus alongside the published MXC 0.1.0 test suite, and Antivirus required an older Agent Framework Core. The immutable 0.55.0 tag predates the [gate fix](https://github.com/sokolaidev/maf-extensions/pull/2880). The planned replacement is 0.55.1.
+
 
 ### Features
 
