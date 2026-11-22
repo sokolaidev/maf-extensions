@@ -170,12 +170,20 @@ def test_unexpected_image_is_scanned_and_retained_until_its_own_confirmed_absenc
     monkeypatch.setattr(monitor, "anonymous_pull", pull)
     monkeypatch.setattr(monitor, "assess", assess)
     monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    emitted = []
+    monkeypatch.setattr(monitor, "outputs", emitted.append)
     monitor.begin(tmp_path)
     monkeypatch.setattr(monitor, "now", lambda: DONE)
     monitor.scan(tmp_path, 0)
     monitor.finish(tmp_path)
     record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
     entry = record["unexpectedDigests"][wrong]
+    notice = json.loads(emitted[-1]["notification"])["summary"]
+    assert f"unexpected registry digest: {wrong} (scanner reported 1 High" in notice
+    archive_url = "https://github.com/sokolaidev/maf-extensions/releases/download/image-monitor-456-1/reports-0000.zip"
+    assert f"[Scan archive]({archive_url}), directory `bicep-0.1.0-{wrong[7:]}/`" in notice
+    assert "CVE-unexpected" not in notice
+    assert "High CVE-unexpected" in read(tmp_path / "diagnostics.json")["summary"]
     assert wrong in pulls
     assert entry["latestAttempt"]["outcome"] == "vulnerable"
     assert entry["lastKnownVulnerable"]["findings"][0]["id"] == "CVE-unexpected"
@@ -663,6 +671,27 @@ def test_monitor_notification_identifies_findings_and_ignores_scan_timestamps():
     assert details() == original
     record["latestAttempt"]["findings"].append({"id": "CVE-third", "severity": "High"})
     assert details()["problems"] != original["problems"]
+
+    def public(link):
+        return json.loads(
+            monitor.notification(
+                catalogue,
+                monitor.monitoring_health(catalogue, DONE),
+                evidence_links={("bicep/0.1.0", CANDIDATE["registryDigest"]): link},
+            )
+        )
+
+    notice = public("first archive")
+    assert "scanner reported 1 Critical, 2 High" in notice["summary"]
+    assert "CVE-" not in notice["summary"] and "assessment: vulnerable" not in notice["summary"]
+    assert "first archive" in notice["summary"]
+    assert public("next archive")["problems"] == notice["problems"] == details()["problems"]
+    findings = record["latestAttempt"]["findings"]
+    findings.append(findings[-1].copy())
+    assert public("first archive") == notice
+    findings[0]["id"] = "CVE-replacement"
+    changed = public("first archive")
+    assert changed["summary"] == notice["summary"] and changed["problems"] != notice["problems"]
 
 
 def test_monitor_notification_includes_a_candidate_reserved_during_the_scan():

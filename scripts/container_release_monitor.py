@@ -12,11 +12,13 @@ import subprocess
 import urllib.error
 import uuid
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from container_release import (
     PREFIX,
+    REPOSITORY,
     decode,
     digest,
     empty_catalogue,
@@ -93,21 +95,39 @@ def failure_reason(diagnostic: dict[str, Any]) -> str:
     return f"{diagnostic['stage']} failed: " + " caused by ".join(errors)
 
 
-def assessment_details(attempt: dict[str, Any]) -> list[str]:
-    """Describe the assessment without run-specific metadata."""
+def assessment_details(
+    status: str,
+    attempt: dict[str, Any],
+    image: tuple[str, str],
+    evidence_links: dict[tuple[str, str], str] | None,
+) -> tuple[str, list[str]]:
+    """Keep finding identities in full diagnostics and direct issue readers to their evidence."""
+    label = f"assessment: {status}"
     details = [attempt["reason"]] if attempt.get("reason") else []
-    findings = sorted(
-        {f"{finding['severity']} {finding['id']}" for finding in attempt.get("findings", [])}
-    )
-    if findings:
-        details.append("findings: " + ", ".join(findings))
-    return details
+    findings = {(item["severity"], item["id"]) for item in attempt.get("findings", [])}
+    if evidence_links is None:
+        if findings:
+            identifiers = sorted(f"{severity} {identifier}" for severity, identifier in findings)
+            details.append("findings: " + ", ".join(identifiers))
+        return label, details
+
+    counts = Counter(severity for severity, _ in findings)
+    summary = ", ".join(f"{count} {severity}" for severity, count in sorted(counts.items()))
+    if status == "vulnerable":
+        label = f"scanner reported {summary or 'findings'}"
+    elif summary:
+        details.append(f"scanner reported {summary}")
+    if link := evidence_links.get(image):
+        details.append(link)
+    return label, details
 
 
-def notification(
-    catalogue: dict[str, Any], health: dict[str, Any], *, truncate: bool = True
-) -> str:
-    """Build stable issue diagnostics; retain the full summary for artifact transport."""
+def notification_rows(
+    catalogue: dict[str, Any],
+    health: dict[str, Any],
+    evidence_links: dict[tuple[str, str], str] | None,
+) -> list[str]:
+    """Render actionable digests in stable order for issue updates and full diagnostics."""
     rows = []
     for scope in ("current", "historical", "publication"):
         for name, status in sorted(health[scope].items()):
@@ -117,28 +137,50 @@ def notification(
             ):
                 continue
             record = catalogue["releases"][name]
-            attempt = record.get("latestAttempt", {})
+            label, details = assessment_details(
+                status,
+                record.get("latestAttempt", {}),
+                (name, record["registryDigest"]),
+                evidence_links,
+            )
             reasons = [
                 f"scope: {scope}",
-                f"assessment: {status}",
+                label,
                 f"publication: {record['state']}",
                 f"delivery: {record['delivery']}",
             ]
             if monitoring_problem:
                 reasons.append("monitoring evidence incomplete, stale or undelivered")
-            reasons.extend(assessment_details(attempt))
+            reasons.extend(details)
             if record.get("registryDiscovery", {}).get("outcome") == "unavailable":
                 reasons.append("registry discovery unavailable")
             for entry_digest, entry in sorted(record.get("unexpectedDigests", {}).items()):
                 if unexpected_end(entry) is None:
                     unexpected_attempt = entry.get("latestAttempt", {})
-                    details = [f"assessment: {unexpected_attempt.get('outcome', 'unavailable')}"]
-                    details.extend(assessment_details(unexpected_attempt))
+                    label, details = assessment_details(
+                        unexpected_attempt.get("outcome", "unavailable"),
+                        unexpected_attempt,
+                        (name, entry_digest),
+                        evidence_links,
+                    )
                     reasons.append(
-                        f"unexpected registry digest: {entry_digest} ({'; '.join(details)})"
+                        f"unexpected registry digest: {entry_digest} ({'; '.join([label, *details])})"
                     )
             rows.append(f"- **{name}** (`{record['registryDigest']}`): " + "; ".join(reasons) + ".")
+    return rows
+
+
+def notification(
+    catalogue: dict[str, Any],
+    health: dict[str, Any],
+    *,
+    evidence_links: dict[tuple[str, str], str] | None = None,
+) -> str:
+    """Deduplicate on full findings even when the public counts stay the same."""
+    rows = notification_rows(catalogue, health, None)
     identity = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+    if evidence_links is not None:
+        rows = notification_rows(catalogue, health, evidence_links)
     warnings = sum(state != "clean" for state in health["historical"].values())
     summary = (
         f"Current images tracked: {len(health['current'])}. "
@@ -146,7 +188,7 @@ def notification(
     )
     if rows:
         summary += "\n\nAffected images and reasons:\n\n" + "\n".join(rows)
-    if truncate and len(summary) > 32000:
+    if evidence_links is not None and len(summary) > 32000:
         summary = (
             summary[:32000]
             + "\n\nDetails truncated; see the finish job log, which retains full diagnostics "
@@ -412,6 +454,8 @@ def finish(directory: Path) -> None:
     retained.mkdir(parents=True, exist_ok=True)
     assessments: dict[str, dict[str, Any]] = {}
     members: dict[str, str] = {}
+    evidence_tag = f"image-monitor-{run_id}-{attempt}"
+    evidence_links: dict[tuple[str, str], str] = {}
     for number, target in enumerate(value["targets"]):
         candidate = target["candidate"]
         name = target_name(target)
@@ -475,6 +519,10 @@ def finish(directory: Path) -> None:
             raise ValueError("Monitor worker did not finish its assessment")
         assessments[name] = assessment
         archive = retained / f"reports-{number // BATCH_SIZE:04d}.zip"
+        url = f"https://github.com/{REPOSITORY}/releases/download/{evidence_tag}/{archive.name}"
+        evidence_links[key(candidate), target_digest(target)] = (
+            f"[Scan archive]({url}), directory `{name}/`"
+        )
         with zipfile.ZipFile(
             archive, "w" if number % BATCH_SIZE == 0 else "a", zipfile.ZIP_DEFLATED
         ) as bundle:
@@ -507,7 +555,6 @@ def finish(directory: Path) -> None:
                     bundle.open(info, "w", force_zip64=True) as target_file,
                 ):
                     shutil.copyfileobj(source_file, target_file)
-    evidence_tag = f"image-monitor-{run_id}-{attempt}"
     if assessments:
         write(
             retained / "monitor-index.json",
@@ -548,7 +595,7 @@ def finish(directory: Path) -> None:
     )
     catalogue = snapshot.catalogue if snapshot else empty_catalogue()
     health = monitoring_health(catalogue, at)
-    diagnostics = json.loads(notification(catalogue, health, truncate=False))
+    diagnostics = json.loads(notification(catalogue, health))
     # Keep a safe fallback in the producer log even when artifact storage is unavailable.
     token = uuid.uuid4().hex
     print(f"::stop-commands::{token}", flush=True)
@@ -585,7 +632,7 @@ def finish(directory: Path) -> None:
         {
             "attention": str(health["attention"]).lower(),
             "historical_warnings": str(len(warnings)),
-            "notification": notification(catalogue, health),
+            "notification": notification(catalogue, health, evidence_links=evidence_links),
         }
     )
 

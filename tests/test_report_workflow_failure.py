@@ -172,6 +172,11 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
     assert "https://github.com/example/project/actions/runs/123/attempts/2" in body["body"]
     assert kwargs["check"] is True
     assert argv[argv.index("--title") + 1] in body["body"]
+    if name == "container-image-monitor.yml":
+        assert "private reporting channel" in body["body"]
+        assert "verified mitigation or fixed image digest" in body["body"]
+        if not existing:
+            assert "Monitoring checkout packages:" in body["body"]
     if name == "cleanup-live.yml":
         for guidance in (
             "over 24 hours",

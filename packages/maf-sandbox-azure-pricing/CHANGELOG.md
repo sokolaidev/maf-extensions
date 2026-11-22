@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.3.0...maf-sandbox-azure-pricing-v0.4.0) (2026-11-22)
+
+
+### Features
+
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
+
+### Fixes
+
+* **azure-pricing:** distinguish rate limits and execution deadlines from failed lookups ([#2878](https://github.com/sokolaidev/maf-extensions/issues/2878)) ([8780d90](https://github.com/sokolaidev/maf-extensions/commit/8780d9036597de9cca8b5c5d5a9eb31c69485607))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.2.2...maf-sandbox-azure-pricing-v0.3.0) (2026-11-15)
 
 
