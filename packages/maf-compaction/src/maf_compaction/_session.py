@@ -411,9 +411,7 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                     ):
                         key = self.registry.saved_view_key
                         if key is not None and (saved := session.state.pop(key, None)) is not None:
-                            return await stack.strategy.compact_before(
-                                messages, options=context.options or {}, saved_view=saved
-                            )
+                            stack.strategy.restore_saved_view(saved)
                         return await stack.strategy.compact_before(
                             messages, options=context.options or {}
                         )

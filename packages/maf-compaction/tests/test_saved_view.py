@@ -39,7 +39,9 @@ async def _call(
 ) -> list[Any]:
     async def compact(messages: list[Message]) -> bool:
         try:
-            return await strategy.compact_before(messages, options={}, saved_view=saved)
+            if saved is not None:
+                strategy.restore_saved_view(saved)
+            return await strategy.compact_before(messages, options={})
         except CompactionBudgetExceeded:
             return True
 

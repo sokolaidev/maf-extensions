@@ -1142,6 +1142,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # The list the last per-call pass left, for the next call to start from; see
         # ``_carryover``. Process-local, and never part of ``session_state``.
         self._carried: CarriedView | None = None
+        self._saved_view: dict[str, Any] | None = None
         self._calls_resumed = 0
         # Every phase of the pass in hand has run, and only the budget verdict is left.
         self._settled = False
@@ -1170,6 +1171,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker._merge_coverage = copy(self._merge_coverage)
         worker._merge_coverage.answers = []
         worker._carried = None
+        worker._saved_view = None
         worker._request_budget = ContextVar("background_record_budget", default=budget)
         worker._chain_deadline = ContextVar("background_record_deadline", default=None)
         worker._record_answer_ready = ready
@@ -1809,10 +1811,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         calls this itself.
         """
         self._carried = None
+        self._saved_view = None
+
+    def restore_saved_view(self, saved: dict[str, Any]) -> None:
+        """Offer a detached layout to the next per-call pass, which validates it against history."""
+        self._carried = None
+        self._saved_view = saved
 
     def take_saved_view(self) -> dict[str, Any] | None:
         """Release the kept list and return its portable layout when it can be represented."""
         carried, self._carried = self._carried, None
+        self._saved_view = None
         if carried is None:
             return None
         decisions = self.session_state()
@@ -1836,14 +1845,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise CompactionBudgetExceeded(overhead, available)
         return available - overhead
 
-    async def compact_before(
-        self,
-        messages: list[Message],
-        *,
-        options: Mapping[str, Any],
-        saved_view: dict[str, Any] | None = None,
-    ) -> bool:
+    async def compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
         """Compact outgoing messages, optionally starting a turn from a previously saved view."""
+        saved_view, self._saved_view = self._saved_view, None
         try:
             budget = self.sending_budget(options)
         except CompactionBudgetExceeded as exc:
