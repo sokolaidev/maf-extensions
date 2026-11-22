@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Final
+from weakref import WeakValueDictionary
 
 from agent_framework import (
     AgentContext,
@@ -29,6 +30,7 @@ from ._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _RecordMergeWork,  # pyright: ignore[reportPrivateUsage]
 )
+from ._offload import off_loop
 from ._toolsummary import (
     DEFAULT_RECORD_TARGET_TOKENS,
     RecallGate,
@@ -117,6 +119,7 @@ class SessionCompactionRegistry:
     A composed strategy keeps the list its last per-call pass left, so the next call need not
     put every decision back. That list holds a conversation's messages, so only the
     ``max_carried_views`` most recently used sessions keep one; zero keeps none.
+    Set ``saved_view_key`` to a separate session-state key to persist a layout at turn end.
     """
 
     def __init__(
@@ -126,6 +129,7 @@ class SessionCompactionRegistry:
         state_key: str = "maf_compaction",
         max_cached_sessions: int = 128,
         max_carried_views: int = DEFAULT_MAX_CARRIED_VIEWS,
+        saved_view_key: str | None = None,
     ) -> None:
         if max_cached_sessions < 0:
             raise ValueError("max_cached_sessions must be non-negative.")
@@ -133,10 +137,14 @@ class SessionCompactionRegistry:
             raise ValueError("max_carried_views must be non-negative.")
         if not state_key:
             raise ValueError("state_key must not be empty.")
+        if saved_view_key is not None and (not saved_view_key or saved_view_key == state_key):
+            raise ValueError("saved_view_key must be nonempty and differ from state_key.")
         self.build = build
         self.state_key = state_key
         self.max_cached_sessions = max_cached_sessions
         self.max_carried_views = max_carried_views
+        self.saved_view_key = saved_view_key
+        self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
         self._current: ContextVar[_Binding | None] = ContextVar("compaction_session", default=None)
@@ -162,6 +170,8 @@ class SessionCompactionRegistry:
         # A removed snapshot is a reset, even when this session is still cached.
         if stack is None or data is None:
             stack = self.build()
+        if data is None and self.saved_view_key is not None:
+            session.state.pop(self.saved_view_key, None)
         if entry := self._merge_work.get(session.session_id):
             owner, work = entry
             if owner is not session:
@@ -190,8 +200,11 @@ class SessionCompactionRegistry:
                 binding.stack = None
                 del self._active[session.session_id]
             self._cache[session.session_id] = stack
+            if self.saved_view_key is not None:
+                self._owners[session.session_id] = session
             while len(self._cache) > self.max_cached_sessions:
-                self._cache.popitem(last=False)
+                evicted, _ = self._cache.popitem(last=False)
+                self._owners.pop(evicted, None)
             self._release_carried_views()
 
     def _release_carried_views(self) -> None:
@@ -213,20 +226,32 @@ class SessionCompactionRegistry:
         """
         if session_id in self._active:
             raise RuntimeError("Cannot release a session during an active compaction phase.")
-        stack = self._cache.pop(session_id, None)
-        if stack is not None:
-            self._forget(stack)
+        self.release_carried_view(session_id)
+        self._cache.pop(session_id, None)
+        self._owners.pop(session_id, None)
 
     def release_carried_view(self, session_id: str) -> None:
-        """Release a session's kept list once its run is over and no call will resume from it."""
+        """Release a turn's kept list, saving its layout when a saved_view_key is configured."""
         stack = self._cache.get(session_id)
-        if stack is not None:
-            self._forget(stack)
-
-    @staticmethod
-    def _forget(stack: CompactionStack) -> None:
-        if isinstance(stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
+        if stack is None or not isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        ):
+            return
+        owner = self._owners.get(session_id)
+        if self.saved_view_key is not None and owner is not None and stack.strategy.carries_view:
+            saved = stack.strategy.take_saved_view()
+            if saved is not None:
+                owner.state[self.saved_view_key] = saved
+            else:
+                owner.state.pop(self.saved_view_key, None)
+        else:
             stack.strategy.forget_carried_view()
+
+    async def _end_turn(self, session_id: str) -> None:
+        if self.saved_view_key is None:
+            self.release_carried_view(session_id)
+        else:
+            await off_loop(self.release_carried_view, session_id)
 
     def _remember_merge_state(self, session: AgentSession) -> None:
         if entry := self._merge_work.get(session.session_id):
@@ -260,6 +285,8 @@ class SessionCompactionProvider(CompactionProvider):
     ) -> None:
         if registry.state_key in (source_id, history_source_id):
             raise ValueError("The registry state_key must differ from provider source IDs.")
+        if registry.saved_view_key in (source_id, history_source_id):
+            raise ValueError("The registry saved_view_key must differ from provider source IDs.")
         self.registry = registry
         super().__init__(
             before_strategy=self._compact if before else None,
@@ -283,8 +310,7 @@ class SessionCompactionProvider(CompactionProvider):
     ) -> None:
         with self.registry.activate(session):
             await super().after_run(agent=agent, session=session, context=context, state=state)
-        # The turn is over, so no later call of it will start from the kept list.
-        self.registry.release_carried_view(session.session_id)
+        await self.registry._end_turn(session.session_id)  # pyright: ignore[reportPrivateUsage]
 
 
 class _RecordMergeRunMiddleware(AgentMiddleware):
@@ -306,8 +332,10 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
         async def close() -> None:
             if self.registry._merge_work.get(session.session_id) is entry:  # pyright: ignore[reportPrivateUsage]
                 del self.registry._merge_work[session.session_id]  # pyright: ignore[reportPrivateUsage]
-            self.registry.release_carried_view(session.session_id)
-            await work.close()
+                try:
+                    await self.registry._end_turn(session.session_id)  # pyright: ignore[reportPrivateUsage]
+                finally:
+                    await work.close()
 
         if context.stream:
             context.stream_cleanup_hooks.append(close)
@@ -381,6 +409,11 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                     if isinstance(
                         stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
                     ):
+                        key = self.registry.saved_view_key
+                        if key is not None and (saved := session.state.pop(key, None)) is not None:
+                            return await stack.strategy.compact_before(
+                                messages, options=context.options or {}, saved_view=saved
+                            )
                         return await stack.strategy.compact_before(
                             messages, options=context.options or {}
                         )

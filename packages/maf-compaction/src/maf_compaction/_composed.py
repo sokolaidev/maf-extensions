@@ -92,6 +92,7 @@ from ._record_replay import (
     source_members,
 )
 from ._request import RequestOverhead
+from ._saved_view import resume_saved_view, save_view
 from ._shed import durable_message_id, positional_shed_sources, unique_shed_groups
 from ._summary_input import (
     async_bounded_prefix_extent,
@@ -1809,6 +1810,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         self._carried = None
 
+    def take_saved_view(self) -> dict[str, Any] | None:
+        """Release the kept list and return its portable layout when it can be represented."""
+        carried, self._carried = self._carried, None
+        if carried is None:
+            return None
+        decisions = self.session_state()
+        if (
+            carried.decisions_before_storage is not None
+            and carried.decisions_before_storage != decisions
+        ):
+            return None
+        return save_view(carried, decisions)
+
     @property
     def _budget(self) -> int:
         budget = self._request_budget.get()
@@ -1822,8 +1836,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise CompactionBudgetExceeded(overhead, available)
         return available - overhead
 
-    async def compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
-        """Compact outgoing messages; direct calls retain the history-storage budget."""
+    async def compact_before(
+        self,
+        messages: list[Message],
+        *,
+        options: Mapping[str, Any],
+        saved_view: dict[str, Any] | None = None,
+    ) -> bool:
+        """Compact outgoing messages, optionally starting a turn from a previously saved view."""
         try:
             budget = self.sending_budget(options)
         except CompactionBudgetExceeded as exc:
@@ -1835,6 +1855,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         handed = Handed.take(messages)
         carried, self._carried = self._carried, None
         resumed = carried.resume(messages, handed) if carried is not None else None
+        if carried is None and saved_view is not None:
+            resumed = await off_loop(
+                resume_saved_view, saved_view, self.session_state(), messages, handed
+            )
         if resumed is not None and resumed.restored:
             self._calls_resumed += 1
         # Handed back as the last pass left it, the list is no account of the stored messages.
@@ -1959,6 +1983,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         if self._carried is not None:
             self._carried.settled_tools = None
+            # A separate stored-history pass can advance the decisions after the last model call.
+            if self._carried.decisions_before_storage is None:
+                self._carried.decisions_before_storage = self.session_state()
         if not messages:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
