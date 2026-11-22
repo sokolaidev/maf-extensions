@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
+from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -33,10 +34,14 @@ from agent_framework._compaction import (
     GROUP_KIND_KEY,
     GROUP_TOKEN_COUNT_BASIS_KEY,
     GROUP_TOKEN_COUNT_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    group_messages,
 )
 
+from ._anchored import AnchoredCompactionStrategy, _is_marker  # pyright: ignore[reportPrivateUsage]
 from ._media import MESSAGE_COUNTED
-from ._preserve import _ATTRIBUTION_KEY  # pyright: ignore[reportPrivateUsage]
+from ._preserve import _ATTRIBUTION_KEY, removable_spans  # pyright: ignore[reportPrivateUsage]
 from ._request import RECALL_PROMPT_KEY
 from ._shed import durable_message_id
 
@@ -330,8 +335,14 @@ def apply_view(
     current: Handed,
     paired: list[tuple[Message, Message, int]],
     tail_start: int,
-) -> Resumed:
+    *,
+    omitted: Iterable[int] = (),
+) -> Resumed | None:
     """Commit a matched prefix, respecting this call's attribution, token counts and tail IDs."""
+    excluded = {index for kept, _, index in paired if kept.additional_properties.get(EXCLUDED_KEY)}
+    excluded.update(omitted)
+    if not _removals_fit(view, current.messages, excluded):
+        return None
     tail = messages[tail_start:]
     handed_now = {
         id(standing): message
@@ -367,3 +378,35 @@ def apply_view(
     messages[:] = [*resumed, *tail]
     stands_for = {id(standing): message for standing, message, _ in paired}
     return Resumed(restored=True, changed=_sent(messages, stands_for) != before)
+
+
+def _removals_fit(view: list[Message], messages: list[Message], excluded: set[int]) -> bool:
+    """Check whole-group exclusions and their notes against the history this call received."""
+    notes = [message for message in view if _is_marker(message)]
+    if not excluded and not notes:
+        return True
+    # Grouping assigns missing positional IDs. A rejected layout must leave the input untouched.
+    history = [message if message.message_id else copy(message) for message in messages]
+    groups = group_messages(history)
+    removable = removable_spans(history, groups)
+    by_id = {group["group_id"]: group for group in groups}
+    for group in groups:
+        start, end = group["start_index"], group["end_index"]
+        members = range(start, end + 1)
+        if excluded.intersection(members) and (
+            (start, end) not in removable or not excluded.issuperset(members)
+        ):
+            return False
+    for note in notes:
+        links = note.additional_properties[GROUP_ANNOTATION_KEY]
+        group_ids = links[SUMMARY_OF_GROUP_IDS_KEY]
+        if len(group_ids) != 1 or (group := by_id.get(group_ids[0])) is None:
+            return False
+        sources = history[group["start_index"] : group["end_index"] + 1]
+        if (
+            group["kind"] not in {"tool_call", "assistant_text"}
+            or links[SUMMARY_OF_MESSAGE_IDS_KEY] != [message.message_id for message in sources]
+            or note.text != AnchoredCompactionStrategy._note_for(history, group)  # pyright: ignore[reportPrivateUsage]
+        ):
+            return False
+    return True

@@ -205,7 +205,8 @@ def resume_saved_view(
     if match is None:
         return None
     view, paired, consumed = match
-    return apply_view(view, messages, current, paired, consumed)
+    omitted = set(range(consumed)).difference(index for _, _, index in paired)
+    return apply_view(view, messages, current, paired, consumed, omitted=omitted)
 
 
 def _flags(properties: dict[str, Any]) -> tuple[bool, str | None]:

@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 import pytest
-from agent_framework import Agent, AgentSession, InMemoryHistoryProvider, Message
+from agent_framework import Agent, AgentSession, Content, InMemoryHistoryProvider, Message
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
@@ -23,6 +23,7 @@ from maf_compaction import (
     SessionToolResultRecallMiddleware,
     make_session_record_merge_middleware,
 )
+from maf_compaction._anchored import AnchoredCompactionStrategy
 from maf_compaction._carryover import CarriedView, Handed
 from maf_compaction._saved_view import resume_saved_view, save_view
 from maf_compaction._toolsummary import build_record_message
@@ -106,6 +107,91 @@ def test_changed_tail_resumes_only_after_every_replacement() -> None:
     assert [m.text for m in loaded] == ["private transcript", record.text, "edited tail"]
     assert loaded[0].additional_properties[EXCLUDED_KEY]
     assert "_preserved" not in loaded[0].additional_properties
+
+
+@pytest.mark.parametrize("original_tail", [True, False])
+def test_changed_following_message_replays_the_reply_note(original_tail: bool) -> None:
+    sources = [
+        Message("user", ["Question"], message_id="u"),
+        Message("assistant", ["Answer"], message_id="a"),
+    ]
+    if original_tail:
+        sources.append(Message("user", ["Next"], message_id="next"))
+    previous = _reload(sources)
+    handed = Handed.take(previous)
+    anchored = AnchoredCompactionStrategy(max_input_tokens=4000, tokenizer=TOKENIZER)
+    assert anchored.shed_again(previous, ["a"])
+    assert any("already answered" in m.text for m in previous)
+    saved = save_view(CarriedView(handed, previous), {})
+    assert saved
+    current = [
+        *_reload(sources[:2]),
+        Message("system", ["Instructions"]),
+        Message("tool", ["Result"]),
+    ]
+    before = [m.to_dict() for m in current]
+    assert resume_saved_view(saved, {}, current, Handed.take(current)) is None
+    assert [m.to_dict() for m in current] == before
+    assert anchored.shed_again(current, ["a"])
+    assert any(m.text == "[compacted: an earlier assistant reply]" for m in current)
+
+
+@pytest.mark.parametrize("change", ["mixed attribution", "later result", "larger group"])
+def test_cached_tool_exclusion_requires_a_still_removable_whole_group(change: str) -> None:
+    sources = [
+        Message(
+            "assistant", [Content.from_function_call("c", "fetch", arguments={})], message_id="call"
+        ),
+        Message("tool", [Content.from_function_result("c", result="result")], message_id="result"),
+    ]
+    if change == "later result":
+        sources[0].contents.append(Content.from_function_call("pending", "fetch", arguments={}))
+    previous = _reload(sources)
+    handed = Handed.take(previous)
+    anchored = AnchoredCompactionStrategy(max_input_tokens=4000, tokenizer=TOKENIZER)
+    assert anchored.shed_again(previous, ["call", "result"])
+    saved = save_view(CarriedView(handed, previous), {})
+    assert saved
+    current = _reload(sources)
+    if change == "mixed attribution":
+        current[0].additional_properties["_attribution"] = "history"
+    elif change == "later result":
+        current.extend(
+            [
+                Message("user", ["Next"]),
+                Message("tool", [Content.from_function_result("pending", result="later")]),
+            ]
+        )
+    else:
+        current.append(Message("tool", ["Another result"]))
+    before = [m.to_dict() for m in current]
+    assert resume_saved_view(saved, {}, current, Handed.take(current)) is None
+    assert [m.to_dict() for m in current] == before
+    assert not anchored.shed_again(current, ["call", "result"])
+
+
+@pytest.mark.parametrize("omitted", [True, False])
+def test_saved_record_cannot_remove_a_mixed_attribution_group(omitted: bool) -> None:
+    sources = [
+        Message("assistant", [Content.from_function_call("c", "fetch", arguments={})]),
+        Message("tool", [Content.from_function_result("c", result="ok")]),
+    ]
+    handed = Handed.take(sources)
+    kept = [] if omitted else [copy.copy(m) for m in sources]
+    for m in kept:
+        m.additional_properties = {
+            EXCLUDED_KEY: True,
+            EXCLUDE_REASON_KEY: "tool_summary_consolidated",
+        }
+    saved = save_view(CarriedView(handed, [*kept, build_record_message("Remember.")]), {})
+    assert saved
+    loaded = _reload(sources)
+    assert resume_saved_view(saved, {}, loaded, Handed.take(loaded))
+    loaded = _reload(sources)
+    loaded[0].additional_properties["_attribution"] = "history"
+    before = [m.to_dict() for m in loaded]
+    assert resume_saved_view(saved, {}, loaded, Handed.take(loaded)) is None
+    assert [m.to_dict() for m in loaded] == before
 
 
 @pytest.mark.parametrize(

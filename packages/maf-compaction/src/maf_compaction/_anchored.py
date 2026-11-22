@@ -739,15 +739,15 @@ class AnchoredCompactionStrategy:
         start, end = group["start_index"], group["end_index"]
         members = messages[start : end + 1]
         if not any(m.text.strip() and not _is_marker(m) for m in members) or not any(
-            m.role == "user" for m in messages[:start]
+            messages[index].role == "user" for index in range(start)
         ):
             return _NOTES[kind]
         # Excluded source messages still distinguish narration from the final reply.
         following = next(
             (
                 m
-                for m in messages[end + 1 :]
-                if m.role not in {"system", "developer"}
+                for index in range(end + 1, len(messages))
+                if (m := messages[index]).role not in {"system", "developer"}
                 and not _is_marker(m)
                 and not m.additional_properties.get(RECALL_PROMPT_KEY, False)
             ),

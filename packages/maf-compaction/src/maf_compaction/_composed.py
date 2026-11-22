@@ -1858,7 +1858,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise
         handed = Handed.take(messages)
         carried, self._carried = self._carried, None
-        resumed = carried.resume(messages, handed) if carried is not None else None
+        resumed = await off_loop(carried.resume, messages, handed) if carried is not None else None
         if carried is None and saved_view is not None:
             resumed = await off_loop(
                 resume_saved_view, saved_view, self.session_state(), messages, handed
