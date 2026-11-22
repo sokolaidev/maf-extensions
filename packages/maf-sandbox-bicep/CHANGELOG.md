@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.27.0...maf-sandbox-bicep-v0.28.0) (2026-11-22)
+
+
+### Features
+
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
 ## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.26.1...maf-sandbox-bicep-v0.27.0) (2026-11-20)
 
 
