@@ -120,6 +120,58 @@ def test_planned_update_without_delivery_notifies(qualification):
     assert qualification in report.pending(values, "platform")[0]["reason"]
 
 
+@pytest.mark.parametrize(
+    "kind,qualification", [("platform", "release-needed"), ("go", "source-already-fixed")]
+)
+@pytest.mark.parametrize("status", ["update", *sorted(report.REBUILD)])
+def test_qualified_rebuild_reports_publication_and_preserves_unsupported(
+    kind, qualification, status
+):
+    values = {
+        "plan.json": {"findings": [finding(status), finding("unsupported-component")]},
+        "qualified.json": {"status": qualification},
+    }
+    rows = report.pending(values, kind)
+    assert "Publish a replacement image" in rows[0]["reason"]
+    assert "other findings may remain" in rows[0]["reason"]
+    assert "no qualified PR" not in rows[0]["reason"]
+    assert "Automation cannot deliver" in rows[1]["reason"]
+
+
+def test_chrome_advisory_changes_notify_again_with_unchanged_versions(monkeypatch):
+    tracker = None
+    comments = []
+    writes = []
+
+    def gh(endpoint, *args, body=None):
+        nonlocal tracker
+        if body:
+            writes.append(body["body"])
+            record = {"body": body["body"], "user": {"login": "github-actions[bot]"}}
+            if tracker is None:
+                tracker = {**record, "number": 7}
+            else:
+                comments.append(record)
+            return "{}"
+        return json.dumps([comments if "/comments?" in endpoint else [tracker] if tracker else []])
+
+    monkeypatch.setattr(report, "gh", gh)
+    values = {
+        "delivery-requirement.json": {"kind": "security", "reason": "High finding CVE-first"},
+        "receipt.json": {"before": "157", "package": {"version": "158"}},
+    }
+    report.notify("chrome", source_run(), values, "example/repo", "123", "1")
+    report.notify("chrome", source_run(), values, "example/repo", "124", "1")
+    assert len(writes) == 1
+    values["delivery-requirement.json"]["reason"] = "High finding CVE-second"
+    report.notify("chrome", source_run(), values, "example/repo", "125", "1")
+    assert len(writes) == 2
+    assert "CVE-first" in writes[0]
+    assert "CVE-second" in writes[1]
+    report.notify("chrome", source_run(), values, "example/repo", "126", "1")
+    assert len(writes) == 2
+
+
 def test_chrome_authorized_security_update_without_pr_notifies():
     values = {
         "delivery-requirement.json": {"kind": "security"},

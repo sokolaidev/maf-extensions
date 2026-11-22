@@ -170,10 +170,13 @@ def pending(values: dict, kind: str) -> list[dict]:
             continue
         reasons = []
         for status in sorted(statuses):
-            if status in REBUILD:
+            if (status in REBUILD or status == "update") and qualified in {
+                "release-needed",
+                "source-already-fixed",
+            }:
+                reason = "Qualification found no source edit needed for the targeted finding. Publish a replacement image after release qualification; other findings may remain."
+            elif status in REBUILD:
                 reason = "Publish a replacement image after release qualification; the recipe may already contain the targeted fix."
-                if qualified == "release-needed":
-                    reason = "Rebuild qualification removed the targeted finding without a source edit. Publish a replacement image; other findings may remain."
             elif status == "update":
                 reason = f"Source update planned but no qualified PR was delivered (qualification: {qualified})."
             elif status == "no-compatible-fix":
@@ -204,7 +207,7 @@ def pending(values: dict, kind: str) -> list[dict]:
                     "fix": {
                         "versions": [receipt.get("package", {}).get("version", "see evidence")]
                     },
-                    "reason": "A security update was authorized but PR delivery did not complete. Inspect delivery settings, credentials and logs.",
+                    "reason": f"{requirement.get('reason', 'A security update was authorized')} PR delivery did not complete. Inspect delivery settings, credentials and logs.",
                 }
             )
     return rows
