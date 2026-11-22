@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.7.0...maf-cachebench-v0.8.0) (2026-11-22)
+
+
+### Features
+
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.6.1...maf-cachebench-v0.7.0) (2026-11-20)
 
 
