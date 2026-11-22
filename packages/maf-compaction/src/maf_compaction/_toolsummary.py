@@ -76,6 +76,7 @@ from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
 from ._offload import off_loop
 from ._preserve import (
+    _ATTRIBUTION_KEY,  # pyright: ignore[reportPrivateUsage]
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
     is_preserved,
@@ -95,6 +96,8 @@ from ._tool_result import (
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
+
+    from ._tool_rounds import SettledTools
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +429,38 @@ def _recall_results(
     return {key: identity for key, identity in matched.items() if identities[identity] == 1}
 
 
+@dataclass(frozen=True)
+class _RecallCounts:
+    messages: list[Message]
+    anchor: int | None
+    identity: str
+    pending: int
+    tokens: int
+
+
+_RECALL_COUNTS: ContextVar[_RecallCounts | None] = ContextVar("settled_recall_counts", default=None)
+
+
+def _counts_for(messages: Sequence[Message]) -> _RecallCounts | None:
+    counts = _RECALL_COUNTS.get()
+    return counts if counts is not None and counts.messages is messages else None
+
+
+@contextmanager
+def settled_recall_counts(
+    messages: list[Message], steady: SettledTools, tokens: int
+) -> Generator[None]:
+    """Share counts only while the recall hooks read this verified list."""
+    pending = steady.pending + steady.added_rounds(messages)
+    reset = _RECALL_COUNTS.set(
+        _RecallCounts(messages, steady.anchor, steady.identity, pending, tokens)
+    )
+    try:
+        yield
+    finally:
+        _RECALL_COUNTS.reset(reset)
+
+
 def find_record_index(messages: Sequence[Message]) -> int | None:
     """Return the index of the newest recall tool result, if one exists.
 
@@ -455,6 +490,8 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
     Returns:
         The index of the result message, or None when no complete record exists.
     """
+    if (counts := _counts_for(messages)) is not None:
+        return counts.anchor
     recall_results = _recall_results(messages)
     newest: int | None = None
     for index, message in enumerate(messages):
@@ -493,6 +530,8 @@ def _newest_record_identity(messages: list[Message]) -> str:
     standing records, and only when it is smaller than them, so a written record never repeats
     the one straight before it. The two forms are prefixed apart so neither can read as the other.
     """
+    if (counts := _counts_for(messages)) is not None:
+        return counts.identity
     index = find_record_index(messages)
     if index is None:
         return ""
@@ -1562,6 +1601,8 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
     Returns:
         How many non-recall tool-call groups still have included messages after the record.
     """
+    if (counts := _counts_for(messages)) is not None and counts.anchor == record_index:
+        return counts.pending
     boundary = -1 if record_index is None else record_index
     count = 0
     recalls = _recall_results(messages)
@@ -1593,7 +1634,9 @@ def _recall_triggered(
         return True
     if record_index is not None and (not repeat_records or pending < min_groups_before_repeat):
         return False
-    return included_token_count(messages) > trigger_tokens
+    counts = _counts_for(messages)
+    tokens = counts.tokens if counts is not None else included_token_count(messages)
+    return tokens > trigger_tokens
 
 
 class RecallGate:
@@ -2265,6 +2308,27 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             return repaired, _After.DONE
         return repaired, _After.FALL_BACK
 
+    def _resume_record_phase(
+        self,
+        messages: list[Message],
+        *,
+        steady: SettledTools,
+        budget: int,
+    ) -> None:
+        """Advance recall for new tool rounds after the same, already judged record."""
+        if (anchor := steady.anchor) is not None:
+            recalls: dict[int, str] = {}
+            candidates = []
+            if steady.identity not in self._value_judgments and (
+                not _is_written_record(messages[anchor]) or stands_in([messages[anchor]])
+            ):
+                recalls = _recall_results(messages)
+                candidates = self._record_candidates(messages, anchor, recalls)
+            self._observe_values(messages, anchor, candidates, recalls, identity=steady.identity)
+            if steady.triggered:
+                self._reforce_or_settle(steady.records)
+        self._capture_pending_value_targets(messages, budget, steady=steady)
+
     async def fall_back_after_record(
         self, messages: list[Message], *, ceiling: int | None = None
     ) -> bool:
@@ -2562,18 +2626,37 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """Latest judgment: has_values, value_free, no_candidates, no_values, or None before one."""
         return self._last_record_value_judgment
 
-    def _capture_pending_value_targets(self, messages: list[Message], budget: int | None) -> None:
+    def _capture_pending_value_targets(
+        self, messages: list[Message], budget: int | None, *, steady: SettledTools | None = None
+    ) -> None:
         due = self.record_pending(messages, max_input_tokens=budget) or (
             self._value_capture_due is not None and self._value_capture_due(messages, budget)
         )
         if due:
-            self._capture_value_targets(messages)
+            self._capture_value_targets(messages, steady=steady)
 
-    def _capture_value_targets(self, messages: list[Message]) -> None:
+    def _capture_value_targets(
+        self, messages: list[Message], *, steady: SettledTools | None = None
+    ) -> None:
         """Retain the pending request's values before compaction can remove their groups."""
         annotate_message_groups(messages)
         anchor = _newest_record_identity(messages)
         if self._value_targets is not None and anchor != self._value_target_anchor:
+            return
+        if steady is not None and steady.target_end and self._value_targets is not None:
+            count = steady.target_count
+            for i in range(steady.target_end, len(messages), 2):
+                call, result = messages[i : i + 2]
+                if (_ATTRIBUTION_KEY in call.additional_properties) == (
+                    _ATTRIBUTION_KEY in result.additional_properties
+                ):
+                    self._value_targets.update(
+                        _distinctive_tokens(cast(str, result.contents[0].result))
+                    )
+                    count += 1
+                if i + 2 <= len(messages) - 2:
+                    steady.target_end, steady.target_count = i + 2, count
+            self._value_target_groups = max(self._value_target_groups, count)
             return
         recall_results = _recall_results(messages)
         candidates = self._record_candidates(messages, len(messages), recall_results)
@@ -2597,6 +2680,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 for message in messages[candidate[0]["start_index"] : candidate[0]["end_index"] + 1]
             )
         ]
+        if steady is not None:
+            steady.target_end = len(messages) - 2
+            steady.target_count = sum(
+                group["end_index"] < steady.target_end for group, _, _ in candidates
+            )
         if not candidates:
             return
         values = {value for _, _, group_values in candidates for value in group_values}
@@ -2612,12 +2700,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         anchor: int,
         candidates: list[tuple[dict[str, Any], set[str], set[str]]],
         recall_results: dict[int, str],
+        *,
+        identity: str | None = None,
     ) -> None:
         # Consolidation sees standing records, not the pending recall's target groups; a reshaped
         # record is the model's own, under the identity it carries.
         if _is_written_record(messages[anchor]) and not stands_in([messages[anchor]]):
             return
-        identity = _record_identity(messages[anchor], recall_results)
+        if identity is None:
+            identity = _record_identity(messages[anchor], recall_results)
         if not identity:
             return
         if self._value_targets is not None and identity != self._value_target_anchor:

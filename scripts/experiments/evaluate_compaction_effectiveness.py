@@ -152,11 +152,11 @@ class Trace:
             )
             return response
 
-        async def compacted(strategy: Any, messages: Any) -> bool:
+        async def compacted(strategy: Any, messages: Any, **kwargs: Any) -> _composed._PassResult:
             before = included_token_count(messages)
             calls = sum(row["kind"] == "agent" for row in self.rows)
             try:
-                changed = await compact(strategy, messages)
+                result = await compact(strategy, messages, **kwargs)
             except Exception as error:
                 self.emit(
                     "compaction_failure",
@@ -172,10 +172,10 @@ class Trace:
                 before=before,
                 after=after,
                 budget=strategy._budget,
-                changed=changed,
+                changed=result[0],
                 agent_calls_before=calls,
             )
-            return changed
+            return result
 
         def snapshot(*args: Any, **kwargs: Any) -> Any:
             self.phase = "probe"

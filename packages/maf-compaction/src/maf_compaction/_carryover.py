@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import Content, Message
 from agent_framework._compaction import (
@@ -39,6 +39,9 @@ from ._media import MESSAGE_COUNTED
 from ._preserve import _ATTRIBUTION_KEY  # pyright: ignore[reportPrivateUsage]
 from ._request import RECALL_PROMPT_KEY
 from ._shed import durable_message_id
+
+if TYPE_CHECKING:
+    from ._tool_rounds import SettledTools
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +211,7 @@ class CarriedView:
                 will, so what was handed before it stays the account of the stored messages.
         """
         self.view = [message for message in view if not _is_transient(message)]
+        self.settled_tools: SettledTools | None = None
         self._members = {id(message) for message in self.view}
         # A pass puts a shallow copy in a message's place and never rebinds a contents list, so
         # the copy is found by the list it shares.

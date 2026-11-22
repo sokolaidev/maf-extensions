@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_framework import Content, Message
-from agent_framework._compaction import group_messages
+from agent_framework._compaction import EXCLUDED_KEY, group_messages
 
 
 def durable_message_id(message_id: str | None) -> bool:
@@ -94,3 +94,15 @@ def unique_shed_groups(
         groups.append((_group_key(members) if keys is None else keys.key(members), members))
     counts = Counter(key for key, _ in groups)
     return [(key, members) for key, members in groups if counts[key] == 1]
+
+
+def positional_shed_sources(messages: list[Message]) -> list[tuple[str, list[Message]]]:
+    """Identify included groups whose shedding must survive reassigned positional ids."""
+    if all(durable_message_id(m.message_id) for m in messages):
+        return []
+    return [
+        (key, members)
+        for key, members in unique_shed_groups(messages)
+        if any(not durable_message_id(m.message_id) for m in members)
+        and not any(m.additional_properties.get(EXCLUDED_KEY) for m in members)
+    ]

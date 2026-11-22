@@ -55,11 +55,12 @@ from agent_framework._compaction import (
 from ._anchored import (
     DEFAULT_MIN_GAIN_FRACTION,
     EXCLUDE_REASON,
+    AnchoredCompactionStrategy,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._background_records import BackgroundRecords, counted_history, has_records
 from ._carryover import CarriedView, Handed
-from ._media import annotate_token_counts
+from ._media import annotate_token_counts, structural_counter
 from ._merge_coverage import LossyMerge, MergeCoverage
 from ._offload import off_loop, steps_locked
 from ._preserve import (
@@ -91,7 +92,7 @@ from ._record_replay import (
     source_members,
 )
 from ._request import RequestOverhead
-from ._shed import durable_message_id, unique_shed_groups
+from ._shed import durable_message_id, positional_shed_sources, unique_shed_groups
 from ._summary_input import (
     async_bounded_prefix_extent,
     bounded_prefix,
@@ -100,6 +101,7 @@ from ._summary_input import (
     versioned_prompt,
 )
 from ._summary_limiter import SummaryRateLimited
+from ._tool_rounds import SettledTools
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
@@ -125,6 +127,7 @@ from ._toolsummary import (
     reshape_payloads,
     reshape_replacements,
     reshapeable_record_groups,
+    settled_recall_counts,
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import (
@@ -157,6 +160,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+type _PassResult = tuple[bool, list[tuple[str, list[Message]]], int]
 
 
 def _first_batch_with_sources(
@@ -1836,8 +1841,23 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         continuing = carried if resumed is not None and not resumed.restored else None
         self._settled = False
         token = self._request_budget.set(budget)
+        steady = carried.settled_tools if resumed is not None and carried is not None else None
         try:
-            changed = await self(messages)
+            if (
+                messages
+                and resumed is not None
+                and type(self) is ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                and type(self.tool_results) is ToolResultAnchoredSummarizationCompactionStrategy
+                and type(self.user_turns) is UserTurnAnchoredSummarizationCompactionStrategy
+                and type(self.tool_results.fallback) is AnchoredCompactionStrategy
+                and self.tool_results.rewrite_result_text is None
+                and self.tool_results.tokenizer is self.tokenizer
+                and structural_counter(self.tokenizer) is None
+            ):
+                changed, steady = await self._continued(messages, steady)
+            else:
+                changed = await self(messages)
+                steady = None
         except CompactionBudgetExceeded:
             # The closing budget check refuses a list every phase has already worked on.
             if self._settled:
@@ -1847,7 +1867,75 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._request_budget.reset(token)
         if changed or resumed is not None:
             self._carried = CarriedView(handed, messages, continuing=continuing)
+            if len(self._carried.view) == len(messages):
+                self._carried.settled_tools = steady
         return changed or (resumed is not None and resumed.changed)
+
+    def _round_policy(self) -> tuple[Any, ...]:
+        tool = self.tool_results
+        user = self.user_turns
+        # The journal and shed sets only grow between restores. Restoring different state
+        # releases the entire carried view.
+        return (
+            len(self._record_order),
+            self._kept_records.copy(),
+            len(self._reshaped),
+            len(self._shed_ids),
+            len(self._shed_groups),
+            tool.decision_state(),
+            user.session_state(),
+            self.tokenizer,
+            tool.coverage_share,
+            tool.keep_head_groups,
+            tool.record_target_tokens,
+            user.keep_head_user_turns,
+            user.keep_tail_user_turns,
+            user.summary_mode,
+        )
+
+    async def _continued(
+        self, messages: list[Message], steady: SettledTools | None
+    ) -> tuple[bool, SettledTools | None]:
+        """Reuse a settled prefix only across complete, independent tool exchanges."""
+        tokens = None
+        if steady is not None:
+            tokens = await off_loop(
+                steady.measure,
+                messages,
+                self._round_policy(),
+                tokenizer=self.tokenizer,
+                budget=self._budget,
+                trigger=int(self._budget * self.tool_results.trigger_fraction),
+                shed_ids=self._shed_ids,
+                shed_groups=self._shed_groups,
+            )
+        if tokens is None:
+            steady = None
+            await off_loop(self._annotate_messages, messages)
+        changed, sources, entry_tokens = await self._compact_annotated(
+            messages, steady=steady, tokens=tokens or 0
+        )
+        if changed:
+            return True, None
+        if steady is None:
+            return False, await off_loop(self._settled_tools, messages, sources, entry_tokens)
+        steady.extend(messages, entry_tokens, self._round_policy())
+        return False, steady
+
+    def _settled_tools(
+        self, messages: list[Message], sources: list[tuple[str, list[Message]]], tokens: int
+    ) -> SettledTools | None:
+        if included_token_count(messages) != tokens:
+            return None
+        return SettledTools.capture(
+            messages,
+            tokens=tokens,
+            policy=self._round_policy(),
+            responses=_responses(messages),
+            triggered=tokens > int(self._budget * self.tool_results.trigger_fraction),
+            head=self.tool_results.keep_head_groups,
+            shed_sources=sources,
+        )
 
     async def __call__(self, messages: list[Message]) -> bool:
         """Run the record phase, then the user phase on what it left, then the chain if still over.
@@ -1869,30 +1957,59 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if anything changed the outgoing messages. A successful return fits the budget;
             an irreducible overflow raises CompactionBudgetExceeded.
         """
+        if self._carried is not None:
+            self._carried.settled_tools = None
         if not messages:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
             return False
         await off_loop(self._annotate_messages, messages)
+        changed, _, _ = await self._compact_annotated(messages)
+        return changed
+
+    async def _compact_annotated(
+        self, messages: list[Message], *, steady: SettledTools | None = None, tokens: int = 0
+    ) -> _PassResult:
         refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
         with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
-            return await self._compact(messages)
+            return await self._compact(messages, steady=steady, tokens=tokens)
 
-    async def _compact(self, messages: list[Message]) -> bool:
+    async def _compact(
+        self,
+        messages: list[Message],
+        *,
+        steady: SettledTools | None = None,
+        tokens: int = 0,
+    ) -> _PassResult:
         """Apply all phases within the caller's replay-refusal scope."""
-        replayed, shed_sources, entry_tokens = await off_loop(self._enter_pass, messages)
         decisions_kept = self._decisions_kept
-
-        changed = await self.tool_results.compact_against(
-            messages,
-            prompt_tokens=entry_tokens,
-            trigger_tokens=int(self._budget * self.tool_results.trigger_fraction),
-            fallback_after_record=False,
-            fallback_without_record=False,
-            ceiling=self._request_budget.get(),
-        )
+        if steady is None:
+            replayed, shed_sources, entry_tokens = await off_loop(self._enter_pass, messages)
+            changed = await self.tool_results.compact_against(
+                messages,
+                prompt_tokens=entry_tokens,
+                trigger_tokens=int(self._budget * self.tool_results.trigger_fraction),
+                fallback_after_record=False,
+                fallback_without_record=False,
+                ceiling=self._request_budget.get(),
+            )
+        else:
+            replayed, entry_tokens = False, tokens
+            shed_sources = await off_loop(steady.shed_sources, messages)
+            with settled_recall_counts(messages, steady, entry_tokens):
+                await off_loop(
+                    self.tool_results._resume_record_phase,  # pyright: ignore[reportPrivateUsage]
+                    messages,
+                    steady=steady,
+                    budget=self._budget,
+                )
+            changed = False
         replay, prompt_tokens, holding = await off_loop(
-            self._after_record_phase, messages, changed=changed, entry_tokens=entry_tokens
+            self._after_record_phase,
+            messages,
+            changed=changed,
+            entry_tokens=entry_tokens,
+            steady=steady,
         )
         compacted = False
         if (not replay.changed or replay.new_turns) and not holding:
@@ -1901,12 +2018,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 prompt_tokens=prompt_tokens,
                 trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
-        chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
+        known_fit = steady is not None and not (replay.changed or compacted)
+        chained = await self._last_resort(
+            messages, replayed_user_fold=replay.chain_fold, known_fit=known_fit
+        )
         if replayed and self._decisions_kept == decisions_kept:
             self._decisions_kept += 1
         self._settled = True
         try:
-            fitted = await off_loop(self._enforce_budget, messages)
+            fitted = (
+                False
+                if known_fit and not chained
+                else await off_loop(self._enforce_budget, messages)
+            )
         finally:
             self._shed_groups.update(
                 key
@@ -1921,11 +2045,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             # next request carries, so the worker must start from it all the same.
             if self._background is not None:
                 self._background.remember(messages, self._budget)
-        return replayed or replay.changed or changed or compacted or chained or fitted
+        return (
+            replayed or replay.changed or changed or compacted or chained or fitted,
+            shed_sources,
+            entry_tokens,
+        )
 
-    def _enter_pass(
-        self, messages: list[Message]
-    ) -> tuple[bool, list[tuple[Any, list[Message]]], int]:
+    def _enter_pass(self, messages: list[Message]) -> _PassResult:
         """Put back earlier passes' decisions and measure the entry, off the loop.
 
         Returns whether anything was put back, the shed groups this pass may lose, and the
@@ -1938,20 +2064,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Before the record phase counts records, so a stand-in and the pair it replaced are
         # never both counted.
         replayed = self._reshape_records(messages, replay=True) or replayed
-        shed_sources = (
-            [
-                (key, members)
-                for key, members in unique_shed_groups(messages)
-                if any(not durable_message_id(message.message_id) for message in members)
-                and not any(_is_excluded(message) for message in members)
-            ]
-            if any(not durable_message_id(message.message_id) for message in messages)
-            else []
-        )
-        return replayed, shed_sources, included_token_count(messages)
+        return replayed, positional_shed_sources(messages), included_token_count(messages)
 
     def _after_record_phase(
-        self, messages: list[Message], *, changed: bool, entry_tokens: int
+        self,
+        messages: list[Message],
+        *,
+        changed: bool,
+        entry_tokens: int,
+        steady: SettledTools | None = None,
     ) -> tuple[Any, int, bool]:
         """Re-measure what the record phase left and decide whether the user half holds."""
         if changed:
@@ -1960,6 +2081,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
         replay = self.user_turns.replay_summaries(messages)
+        if steady is not None and not replay.changed:
+            with settled_recall_counts(messages, steady, entry_tokens):
+                holding = self._holds_for_record(
+                    messages,
+                    entry_tokens=entry_tokens,
+                    prompt_tokens=entry_tokens,
+                    clock=steady.responses + steady.added_rounds(messages),
+                )
+            return replay, entry_tokens, holding
         prompt_tokens = included_token_count(messages)
         holding = (not replay.changed or replay.new_turns) and self._holds_for_record(
             messages, entry_tokens=entry_tokens, prompt_tokens=prompt_tokens
@@ -2005,7 +2135,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     def _holds_for_record(
-        self, messages: list[Message], *, entry_tokens: int, prompt_tokens: int
+        self,
+        messages: list[Message],
+        *,
+        entry_tokens: int,
+        prompt_tokens: int,
+        clock: int | None = None,
     ) -> bool:
         """Return whether the user half must stay idle on this pass because a record is on its way.
 
@@ -2063,7 +2198,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True to keep the user half idle on this pass.
         """
-        clock = _responses(messages)
+        if clock is None:
+            clock = _responses(messages)
         anchor = _newest_record_identity(messages)
         if anchor != self._anchor:
             previous = record_anchor_position(messages, self._anchor)
@@ -2099,7 +2235,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return True
 
     async def _last_resort(
-        self, messages: list[Message], *, replayed_user_fold: bool = False
+        self, messages: list[Message], *, replayed_user_fold: bool = False, known_fit: bool = False
     ) -> bool:
         """Put back the chain's earlier decisions, then run its steps if the prompt is over.
 
@@ -2129,16 +2265,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if anything changed the outgoing messages.
         """
-        changed = await off_loop(
-            self._keep_decisions, messages, replayed_user_fold=replayed_user_fold
-        )
-        # Refresh and application must see the same eligible sources.
-        over = await off_loop(self._over, messages)
+        changed = over = False
+        if not known_fit:
+            changed = await off_loop(
+                self._keep_decisions, messages, replayed_user_fold=replayed_user_fold
+            )
+            over = await off_loop(self._over, messages)
         with _yielding_when(over_budget=over, policy=self.overflow_policy):
             await off_loop(self._refresh_merge_coverage, messages)
             if self._background is not None:
                 changed = await self._background.apply_ready(messages) or changed
-        if not await off_loop(self._over, messages):
+        if (known_fit and not changed) or not await off_loop(self._over, messages):
             self._merge_event("under_budget")
             return changed
         start = _ChainStart.take(messages)
