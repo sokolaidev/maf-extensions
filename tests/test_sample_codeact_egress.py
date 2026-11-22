@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
+from _sample_agent import load_sample
 from maf_sandbox import (
     Capability,
     Egress,
@@ -25,19 +23,6 @@ SAMPLES = (
     "16_docker_codeact_outputs_store",
     "19_autogen_docker_codeact",
 )
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_sample(name, monkeypatch):
-    directory = ROOT / "samples" / name
-    monkeypatch.syspath_prepend(str(directory))
-    monkeypatch.delitem(sys.modules, "_scaffold", raising=False)
-    spec = importlib.util.spec_from_file_location(f"egress_{name}", directory / "agent.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    sys.modules.pop("_scaffold", None)
-    return module
 
 
 class AdmissionReached(Exception):
@@ -47,7 +32,7 @@ class AdmissionReached(Exception):
 @pytest.mark.parametrize("name", SAMPLES)
 @pytest.mark.parametrize("supports_methods", [True, False])
 def test_sample_admits_only_a_backend_enforcing_get_on_pypi(name, supports_methods, monkeypatch):
-    module = load_sample(name, monkeypatch)
+    module = load_sample(name)
     monkeypatch.setenv("MAF_EGRESS_PROXY_IMAGE", "sample-proxy:test")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://model.invalid")
     monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", "test-model")
@@ -91,7 +76,7 @@ def test_sample_admits_only_a_backend_enforcing_get_on_pypi(name, supports_metho
 
 @pytest.mark.parametrize("name", SAMPLES)
 def test_missing_proxy_configuration_refuses_before_backend_or_model_creation(name, monkeypatch):
-    module = load_sample(name, monkeypatch)
+    module = load_sample(name)
     monkeypatch.delenv("MAF_EGRESS_PROXY_IMAGE", raising=False)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://model.invalid")
     monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", "test-model")

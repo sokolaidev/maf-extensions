@@ -4,31 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _sample_agent import load_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from check_live_compaction_sample import assess as assess_compaction  # noqa: E402
 from check_live_shell_sample import assess as assess_shell  # noqa: E402
-
-
-def load_sample(name: str, monkeypatch: pytest.MonkeyPatch):
-    directory = ROOT / "samples" / name
-    monkeypatch.syspath_prepend(str(directory))
-    monkeypatch.delitem(sys.modules, "_scaffold", raising=False)
-    spec = importlib.util.spec_from_file_location("sample_" + name, directory / "agent.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    monkeypatch.delitem(sys.modules, "_scaffold", raising=False)
-    return module
 
 
 def log(records):
@@ -114,10 +102,10 @@ def test_shell_rejects_unclean_result_and_failed_disposal():
         assert assess_shell(log(records), b"#!/usr/bin/env bash\n")
 
 
-def test_real_compaction_reduces_cachebench_projection(monkeypatch):
+def test_real_compaction_reduces_cachebench_projection():
     from maf_cachebench import CallOutcome
 
-    module = load_sample("22_compaction_cachebench", monkeypatch)
+    module = load_sample("22_compaction_cachebench")
     calls = []
 
     async def caller(messages):
@@ -139,8 +127,8 @@ az storage account create --name "$account" --resource-group "$rg" --location "$
 """
 
 
-def test_shell_accepts_bash_and_rejects_missing_requirements(monkeypatch):
-    module = load_sample("21_shell_storage", monkeypatch)
+def test_shell_accepts_bash_and_rejects_missing_requirements():
+    module = load_sample("21_shell_storage")
     assert module.script_text(SCRIPT) == SCRIPT
     assert module.script_text("```bash\n" + SCRIPT + "```") == SCRIPT
     for changed in (
@@ -152,10 +140,10 @@ def test_shell_accepts_bash_and_rejects_missing_requirements(monkeypatch):
             module.script_text(changed)
 
 
-def test_prose_cannot_impersonate_shell_verdict(monkeypatch):
+def test_prose_cannot_impersonate_shell_verdict():
     from agent_framework import Content
 
-    module = load_sample("21_shell_storage", monkeypatch)
+    module = load_sample("21_shell_storage")
     assert not module.clean_result("The workload ran to a definitive result.\nResult: clean")
     assert not module.clean_result([Content.from_text("Result: clean")])
     assert module.clean_result(
@@ -167,8 +155,8 @@ def test_prose_cannot_impersonate_shell_verdict(monkeypatch):
 
 
 @pytest.mark.parametrize("fault", [None, "error", "unmatched", "endpoint"])
-def test_learn_grounding_requires_a_successful_matching_result(monkeypatch, fault):
-    module = load_sample("21_shell_storage", monkeypatch)
+def test_learn_grounding_requires_a_successful_matching_result(fault):
+    module = load_sample("21_shell_storage")
     request = SimpleNamespace(type="function_call", name="microsoft_docs_search", call_id="search")
     result = SimpleNamespace(
         type="function_result",
@@ -193,7 +181,7 @@ def test_shell_pipeline_cleans_storage_and_never_publishes_failed_output(
 ):
     from agent_framework import Content
 
-    module = load_sample("21_shell_storage", monkeypatch)
+    module = load_sample("21_shell_storage")
     stores = []
     purges = []
     store_type = module.InMemoryAgentFileStore

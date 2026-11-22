@@ -1,7 +1,6 @@
 """Verify that the draw.io PNG live check requires artifacts from a clean call."""
 
 import hashlib
-import importlib.util
 import json
 import sys
 from dataclasses import replace
@@ -9,6 +8,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from _sample_agent import load_sample
 from maf_sandbox import (
     DisposalFailure,
     Isolation,
@@ -27,14 +27,8 @@ from check_live_drawio_png_sample import verify  # noqa: E402
 
 
 @pytest.fixture
-def agent(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    directory = ROOT / "samples" / "25_docker_drawio_png"
-    monkeypatch.syspath_prepend(str(directory))
-    spec = importlib.util.spec_from_file_location("drawio_png_sample", directory / "agent.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def agent() -> ModuleType:
+    return load_sample("25_docker_drawio_png")
 
 
 @pytest.mark.parametrize("outcome", ["gone", "missing", "may_remain", "unknown", "wrong_call"])
