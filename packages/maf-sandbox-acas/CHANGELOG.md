@@ -4,6 +4,13 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.33.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.32.3...maf-sandbox-acas-v0.33.0) (2026-11-22)
+
+
+### Features
+
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
 ## [0.32.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.32.2...maf-sandbox-acas-v0.32.3) (2026-11-20)
 
 
