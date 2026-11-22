@@ -1896,7 +1896,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-codeact"
-version = "0.27.0"
+version = "0.28.0"
 source = { editable = "packages/maf-sandbox-codeact" }
 dependencies = [
     { name = "agent-framework-core" },
