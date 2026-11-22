@@ -64,6 +64,125 @@ def test_fixture_roles_are_matched_and_reference_fields_are_hidden():
     )
 
 
+_FIELDS = "Incoming target: NODE-1784\nOutgoing target: NODE-9642"
+_SWAPPED = "Incoming target: NODE-9642\nOutgoing target: NODE-1784"
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate", "role", "expected"),
+    [
+        (
+            _FIELDS,
+            " OUTGOING target: NODE-9642\nIncoming   target : NODE-1784 ",
+            " INCOMING target ",
+            "match",
+        ),
+        (_FIELDS, _SWAPPED, "Incoming target", "conflict"),
+        (_FIELDS, _SWAPPED, None, "needs_interpretation"),
+        (_FIELDS, _SWAPPED, "Unknown", "needs_interpretation"),
+        (
+            _FIELDS,
+            _FIELDS + "\nincoming target: NODE-1784",
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        (
+            _FIELDS,
+            _FIELDS + "\nIncoming target: NODE-9642",
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        (
+            _FIELDS + "\nIncoming target: NODE-9642",
+            _SWAPPED,
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        (_FIELDS, "Outgoing target: NODE-9642", "Incoming target", "needs_interpretation"),
+        (_FIELDS, "Incoming target: NODE-1784", "Incoming target", "needs_interpretation"),
+        (
+            _FIELDS,
+            _FIELDS + "\nUse the outgoing target.",
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        (
+            _FIELDS + "\nUse the outgoing target.",
+            _FIELDS,
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        (_FIELDS, _SWAPPED + "\nCorrection: reversed", "Incoming target", "needs_interpretation"),
+        (_FIELDS, _FIELDS + " instead of NODE-1784", "Incoming target", "needs_interpretation"),
+        (
+            _FIELDS,
+            _FIELDS.replace("NODE-1784", "node-1784"),
+            "Incoming target",
+            "needs_interpretation",
+        ),
+        ("A: 1000\nB: 2000\nC: 2000", "A: 2000\nB: 1000\nC: 1000", "A", "needs_interpretation"),
+    ],
+)
+def test_complete_structured_comparison(source, candidate, role, expected):
+    request = roles.CandidateRequest(
+        "Which deployment target should be used next?", (source,), candidate
+    )
+    assert roles.compare_roles(request, task_role=role) == expected
+
+
+@pytest.mark.anyio
+async def test_routed_judge_sees_only_unresolved_candidates_and_preserves_the_task_answer():
+    cases = list(roles._cases())
+    prose_swaps = {"invoice", "cutover", "settlement"}
+    routed = [
+        c
+        for c in cases
+        if c.variant == "paraphrase" or (c.variant == "swap" and c.name in prose_swaps)
+    ]
+    verdicts = {
+        c.request: roles.CandidateVerdict("changed" if c.variant == "swap" else "faithful", 0.9)
+        for c in routed
+    }
+    calls = []
+
+    async def judge(request):
+        if request not in verdicts:
+            pytest.fail("judge called for a conclusive structured decision")
+        calls.append(request)
+        return verdicts[request]
+
+    report = await roles.evaluate_roles(judge=judge, model_id="fixture", route_structured=True)
+    assert calls == [c.request for c in routed]
+    for case, result in zip(cases, report.cases, strict=True):
+        row = result.policies["routed_judge"]
+        assert row.answer == case.source_answer
+        assert row.accepted == (case.variant != "swap")
+        if case in routed:
+            assert result.structured_comparison == "needs_interpretation"
+            assert row.requests == 1 and row.verdict == verdicts[case.request]
+        else:
+            assert result.structured_comparison == (
+                "conflict" if case.variant == "swap" else "match"
+            )
+            assert row.requests == 0 and row.latency_ms == 0 and row.verdict is None
+    assert report.summaries["held_out"]["routed_judge"].requests == 6
+    assert report.summaries["held_out"]["routed_judge"].passed
+
+
+@pytest.mark.anyio
+async def test_routed_fallback_applies_only_after_an_unresolved_comparison():
+    async def judge(request):
+        return roles.CandidateVerdict("uncertain", 0.95)
+
+    with pytest.raises(ValueError, match="requires a candidate judge"):
+        await roles.evaluate_roles(route_structured=True)
+    report = await roles.evaluate_roles(judge=judge, model_id="fixture", route_structured=True)
+    held_out = report.summaries["held_out"]["routed_judge"]
+    assert held_out.requests == held_out.fallbacks == 6
+    assert held_out.false_accepts == 2
+    assert not held_out.passed
+
+
 @pytest.mark.anyio
 async def test_candidate_judge_receives_every_candidate_and_scores_held_out_separately():
     cases = list(roles._cases())

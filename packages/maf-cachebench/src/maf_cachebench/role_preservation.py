@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from statistics import median
@@ -22,6 +23,7 @@ RUBRIC = (
 CONFIDENCE = 0.8
 _TIMEOUT = 5.0
 _MAX_BYTES = 4096
+_SOURCE_NOTE = "\nThis entry is from the signed handover record."
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,7 @@ class _Case:
     split: str
     variant: str
     request: CandidateRequest
+    task_role: str
     source_answer: str
     candidate_answer: str
 
@@ -141,9 +144,7 @@ def _cases() -> Iterator[_Case]:
         if source.other_first:
             records = records[::-1]
         faithful = "\n".join(reversed(records))
-        sources = tuple(
-            record + "\nThis entry is from the signed handover record." for record in records
-        )
+        sources = tuple(record + _SOURCE_NOTE for record in records)
         swap = (
             source.paraphrase.format(answer=other, other=answer)
             if source.swap_prose
@@ -165,6 +166,7 @@ def _cases() -> Iterator[_Case]:
                 source.split,
                 variant,
                 CandidateRequest(source.task, sources, candidate),
+                first,
                 answer,
                 candidate_answer,
             )
@@ -177,6 +179,42 @@ def _pairs(text: str) -> set[tuple[str, str]]:
         if separator:
             pairs.add((label.strip().casefold(), value.strip()))
     return pairs
+
+
+RoleComparison = Literal["match", "conflict", "needs_interpretation"]
+
+
+def _structured_fields(text: str) -> dict[str, str] | None:
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        label, _, value = line.partition(":")
+        label = " ".join(label.split()).casefold()
+        value = value.strip()
+        if not label or label in fields or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+            return None
+        fields[label] = value
+    return fields
+
+
+def compare_roles(request: CandidateRequest, *, task_role: str | None) -> RoleComparison:
+    """Return the structured decision for the caller's task role or defer ambiguous text."""
+    role = " ".join((task_role or "").split()).casefold()
+    sources = _structured_fields("\n".join(s.removesuffix(_SOURCE_NOTE) for s in request.sources))
+    candidate = _structured_fields(request.candidate)
+    if (
+        not sources
+        or role not in sources
+        or candidate is None
+        or candidate.keys() != sources.keys()
+    ):
+        return "needs_interpretation"
+    if candidate == sources:
+        return "match"
+    if candidate[role] != sources[role] and sorted(candidate.values()) == sorted(sources.values()):
+        return "conflict"
+    return "needs_interpretation"
 
 
 @dataclass(frozen=True)
@@ -228,6 +266,7 @@ class CaseResult:
     expected_answer: str
     candidate_answer: str
     policies: dict[str, Observation]
+    structured_comparison: RoleComparison = "needs_interpretation"
 
 
 @dataclass(frozen=True)
@@ -280,21 +319,36 @@ class RoleReport:
 
 
 async def evaluate_roles(
-    *, judge: CandidateJudge | None = None, model_id: str | None = None
+    *,
+    judge: CandidateJudge | None = None,
+    model_id: str | None = None,
+    route_structured: bool = False,
 ) -> RoleReport:
-    """Compare the missing-value gate, literal role pairs and an optional full-candidate judge."""
+    """Measure the controls and optionally judge every candidate or just unresolved cases."""
+    if route_structured and judge is None:
+        raise ValueError("routed judging requires a candidate judge")
     if judge is not None and not (model_id and model_id.strip()):
         raise ValueError("a candidate judge requires a model identity")
     cases: list[CaseResult] = []
     for case in _cases():
         request = case.request
+        comparison = compare_roles(request, task_role=case.task_role)
         pairs_match = _pairs("\n".join(request.sources)) == _pairs(request.candidate)
         outcomes: dict[str, tuple[str, CandidateVerdict | None, int, float]] = {
             "missing_value": ("no_missing_values", None, 0, 0.0),
             "structured_pairs": ("faithful" if pairs_match else "changed", None, 0, 0.0),
         }
         if judge is not None:
-            outcomes["candidate_judge"] = await _ask(judge, request)
+            if route_structured and comparison != "needs_interpretation":
+                outcomes["routed_judge"] = (
+                    "faithful" if comparison == "match" else "changed",
+                    None,
+                    0,
+                    0.0,
+                )
+            else:
+                policy = "routed_judge" if route_structured else "candidate_judge"
+                outcomes[policy] = await _ask(judge, request)
         policies: dict[str, Observation] = {}
         for policy, (status, verdict, requests, elapsed) in outcomes.items():
             # Every fixture clears the count bar, including on an unavailable judgment.
@@ -318,6 +372,7 @@ async def evaluate_roles(
                 case.source_answer,
                 case.candidate_answer,
                 policies,
+                comparison,
             )
         )
     summaries = {
