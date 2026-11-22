@@ -29,8 +29,10 @@ import time
 import tomllib
 from fnmatch import fnmatch
 from pathlib import Path, PurePath
+from types import ModuleType
 
 import pytest
+from _sample_agent import load_sample
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "scripts"))  # the shared PEP 723 reader lives beside the checks
@@ -126,6 +128,26 @@ def test_no_sample_is_skipped_in_a_synced_workspace():
         "a sample declares belongs in the root `dev` dependency group or in `packages/`; run "
         "`uv sync` and add anything genuinely missing there rather than letting the case skip."
     )
+
+
+@pytest.mark.parametrize("already_cached", [False, True])
+def test_loading_a_sample_agent_restores_the_scaffold_cache(monkeypatch, already_cached):
+    previous = ModuleType("_scaffold")
+    if already_cached:
+        monkeypatch.setitem(sys.modules, "_scaffold", previous)
+    else:
+        monkeypatch.delitem(sys.modules, "_scaffold", raising=False)
+    before = sys.path.copy()
+
+    sample = "25_docker_drawio_png"
+    agent = load_sample(sample)
+
+    assert Path(agent.quoted.__code__.co_filename) == _SAMPLES / sample / "_scaffold.py"
+    assert sys.path == before
+    if already_cached:
+        assert sys.modules["_scaffold"] is previous
+    else:
+        assert "_scaffold" not in sys.modules
 
 
 def test_a_samples_helper_modules_do_not_outlive_its_import():

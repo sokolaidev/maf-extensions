@@ -3,28 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-from pathlib import Path
 
 import pytest
+from _sample_agent import load_sample
 from maf_sandbox import Artifact, OutputSink
 
-_SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 _RECORDING_SAMPLES = ("08_docker_codeact_files", "14_acas_codeact_files")
 
 
-def _load_agent(sample: str, monkeypatch: pytest.MonkeyPatch):
-    directory = _SAMPLES / sample
-    monkeypatch.syspath_prepend(str(directory))
-    spec = importlib.util.spec_from_file_location(f"sample_{sample}", directory / "agent.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_diagram_agent_wires_a_sink_that_replaces_previous_output(tmp_path, monkeypatch):
-    agent = _load_agent("07_docker_diagram", monkeypatch)
+    agent = load_sample("07_docker_diagram")
     monkeypatch.setattr(agent, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(agent, "require_env_vars", lambda names: dict.fromkeys(names, "unused"))
     sinks: list[OutputSink] = []
@@ -48,8 +36,8 @@ def test_diagram_agent_wires_a_sink_that_replaces_previous_output(tmp_path, monk
 
 
 @pytest.mark.parametrize("sample", _RECORDING_SAMPLES)
-def test_recording_sink_replaces_across_calls_and_turns(sample, tmp_path, monkeypatch):
-    agent = _load_agent(sample, monkeypatch)
+def test_recording_sink_replaces_across_calls_and_turns(sample, tmp_path):
+    agent = load_sample(sample)
     untouched = tmp_path / "other.md"
     untouched.write_bytes(b"other output")
     destination = tmp_path / "summary.md"
