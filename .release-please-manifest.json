@@ -1,7 +1,7 @@
 {
   "packages/maf-sandbox": "0.55.1",
   "packages/maf-sandbox-acas": "0.33.0",
-  "packages/maf-sandbox-bicep": "0.27.0",
+  "packages/maf-sandbox-bicep": "0.28.0",
   "packages/maf-sandbox-codeact": "0.28.0",
   "packages/maf-sandbox-deepagents": "0.8.0",
   "packages/maf-sandbox-docker": "0.31.0",
