@@ -1,0 +1,78 @@
+name: Verify published antivirus 0.1.8 evidence
+on:
+  push:
+    branches: [ci/antivirus-018-sqlite-evidence]
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: ghcr.io/sokolaidev/maf-extensions/antivirus@sha256:c5411fe7e887eee83830a5127c4901017ddea176f86d5f6dc217d714dedb5165
+      ASSESS_AT: '2026-11-23T23:59:59Z'
+      PYTHONPATH: scripts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pull the released digest and inspect its default Python
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$IMAGE"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt=no-new-privileges "$IMAGE" python3 -c 'import sys, ssl, _hashlib; print(sys.version, ssl.OPENSSL_VERSION, "default FIPS mode =", _hashlib.get_fips_mode())'
+          container_id=$(docker create "$IMAGE")
+          docker export -o "$RUNNER_TEMP/rootfs.tar" "$container_id"
+          docker rm "$container_id"
+      - name: Compare exported filesystem with release evidence
+        run: |
+          set -euo pipefail
+          for file in manifest.json sbom.syft.json grype.json; do
+            curl --fail --silent --show-error --location --retry 3 "https://github.com/sokolaidev/maf-extensions/releases/download/image-antivirus-v0.1.8/$file" -o "$RUNNER_TEMP/$file"
+          done
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess, tarfile
+          from pathlib import Path
+          from collections import Counter
+          from container_release import scan_result
+          
+          def sha(data):
+              return "sha256:" + hashlib.sha256(data).hexdigest()
+          
+          def release_json(name, digest):
+              data = (Path(os.environ["RUNNER_TEMP"]) / name).read_bytes()
+              assert sha(data) == digest, name
+              return json.loads(data)
+          
+          manifest = release_json("manifest.json", "sha256:c5411fe7e887eee83830a5127c4901017ddea176f86d5f6dc217d714dedb5165")
+          sbom = release_json("sbom.syft.json", "sha256:cd34dfb0076d7dd98fdc3bd46ee80df6da369f64a41c5b37edc1d3b2b37acf7f")
+          raw = release_json("grype.json", "sha256:042f0b63fb67e7e90ceb7dbd8a8a89e4469e49bce4b7d8618b4b791802a88dd3")
+          image = os.environ["IMAGE"]
+          image_id = subprocess.check_output(["docker","image","inspect","-f","{{.Id}}",image], text=True).strip()
+          assert image_id == manifest["config"]["digest"] == sbom["source"]["metadata"]["imageID"]
+          lib = "usr/lib/libsqlite3.so.3.54.1"
+          named_cli = []
+          observed = {}
+          links = {}
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "rootfs.tar") as tar:
+              for member in tar:
+                  name = member.name.removeprefix("./").lstrip("/")
+                  if member.isdir():
+                      continue
+                  if name.split("/")[-1] in {"sqlite", "sqlite3"}:
+                      named_cli.append(name)
+                  if name == lib:
+                      assert member.isfile()
+                      observed[name] = sha(tar.extractfile(member).read())
+                  if name == "usr/lib/libsqlite3.so.0":
+                      links[name] = member.linkname
+          files = [x for x in sbom["files"] if x["location"]["path"] == "/" + lib]
+          assert len(files) == 1
+          hashes = [d["value"] for d in files[0]["digests"] if d["algorithm"] == "sha256"]
+          print("REGISTRY EVIDENCE", image_id, observed, links, named_cli, hashes, flush=True)
+          assert not named_cli and observed[lib] == "sha256:" + hashes[0]
+          assert links == {"usr/lib/libsqlite3.so.0": lib.split("/")[-1]}
+          pkg, = [a for a in sbom["artifacts"] if a["name"] == "sqlite-libs"]
+          print("PACKAGE", pkg["purl"], [f["path"] for f in pkg["metadata"]["files"]], flush=True)
+          print("ACTUAL ASSESSMENT", scan_result(raw, image_id, os.environ["ASSESS_AT"], sbom=sbom), flush=True)
+          PY
