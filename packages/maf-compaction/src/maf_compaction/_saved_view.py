@@ -16,6 +16,7 @@ from agent_framework._compaction import (
     SUMMARIZED_BY_SUMMARY_ID_KEY,
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
+    group_messages,
 )
 
 from ._anchored import EXCLUDE_REASON, _is_marker  # pyright: ignore[reportPrivateUsage]
@@ -203,7 +204,7 @@ def resume_saved_view(
         return None
     if match is None:
         return None
-    view, paired, consumed = match
+    view, paired, consumed, assigned = match
     omitted = set(range(consumed)).difference(index for _, _, index in paired)
     hidden = omitted.union(
         at for kept, _, at in paired if kept.additional_properties.get(EXCLUDED_KEY)
@@ -212,7 +213,12 @@ def resume_saved_view(
         properties = messages[at].additional_properties
         if properties.get(PRESERVED_KEY) and properties.get(PRESERVE_REASON_KEY) not in _OWN_HOLDS:
             return None
-    return apply_view(view, messages, current, paired, consumed, omitted=omitted)
+    resumed = apply_view(view, messages, current, paired, consumed, omitted=omitted)
+    if resumed is not None:
+        for message, mid in assigned:
+            if not message.message_id:
+                message.message_id = mid
+    return resumed
 
 
 def _flags(properties: dict[str, Any]) -> tuple[bool, str | None]:
@@ -222,8 +228,20 @@ def _flags(properties: dict[str, Any]) -> tuple[bool, str | None]:
 def _match(
     layout: dict[str, Any],
     current: Handed,
-) -> tuple[list[Message], list[tuple[Message, Message, int]], int] | None:
+) -> (
+    tuple[list[Message], list[tuple[Message, Message, int]], int, list[tuple[Message, str | None]]]
+    | None
+):
     messages = current.messages
+    numbered = messages
+    assigned: list[tuple[Message, str | None]] = []
+    if any(not m.message_id for m in messages):
+        # Full replay numbers sources first. A cache miss must leave the input intact.
+        numbered = [m if m.message_id else copy(m) for m in messages]
+        group_messages(numbered)
+        assigned = [
+            (m, n.message_id) for m, n in zip(messages, numbered, strict=True) if m is not n
+        ]
     sources = layout["sources"]
     order: list[dict[str, Any]] = layout["order"]
     inserted: dict[int, Message] = {}
@@ -269,13 +287,18 @@ def _match(
             previous = inserted[slot]
             if (
                 _state(current.states[index]) != _state(_host_state(previous))
-                or (message.message_id is not None and message.message_id != previous.message_id)
+                or (
+                    (message.message_id or previous.message_id)
+                    and numbered[index].message_id != previous.message_id
+                )
                 or current.links[index] != _links(previous)
                 or not _insert_flags_match(message, previous)
             ):
                 return None
             from_store[slot] = index
-            inserted[slot] = _standing(message, previous.message_id, _overlay(previous))
+            inserted[slot] = _standing(
+                message, previous.message_id or numbered[index].message_id, _overlay(previous)
+            )
         else:
             break
         if slot is not None:
@@ -294,7 +317,7 @@ def _match(
         return None
     rebuilt: list[Message] = []
     paired: list[tuple[Message, Message, int]] = []
-    taken = {m.message_id for m in messages if m.message_id}
+    taken = {m.message_id for m in numbered if m.message_id}
     for index, entry in enumerate(order):
         if index in inserted:
             member = inserted[index]
@@ -323,12 +346,12 @@ def _match(
         elif entry["source"] < len(matched):
             at = matched[cast(int, entry["source"])]
             source = messages[at]
-            if source.message_id and source.message_id != entry["id"]:
+            if (source.message_id or entry["id"]) and numbered[at].message_id != entry["id"]:
                 return None
-            kept = _standing(source, entry["id"], entry["overlay"])
+            kept = _standing(source, entry["id"] or numbered[at].message_id, entry["overlay"])
             paired.append((kept, source, at))
             rebuilt.append(kept)
-    return rebuilt, paired, consumed
+    return rebuilt, paired, consumed, assigned
 
 
 def _insert_flags_match(message: Message, inserted: Message) -> bool:

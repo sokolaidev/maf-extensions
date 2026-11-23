@@ -443,6 +443,41 @@ def test_a_displaced_record_or_length_dependent_id_gets_a_full_replay() -> None:
     assert resume_saved_view(saved, {}, loaded, Handed.take(loaded)) is None
 
 
+@pytest.mark.parametrize("tail_size", [1, 2])
+async def test_direct_restoration_keeps_the_ids_full_replay_assigns(tail_size: int) -> None:
+    history = _transcript(3, 0, 0)
+    budget = _budget(history, 0.6)
+    first = _strategy(_Summarizer(), budget=budget, policy="shed")
+    await first.compact_before(_reload(history), options={})
+    saved = first.take_saved_view()
+    assert saved
+    history.extend(Message("user", [f"Tail {i}"]) for i in range(tail_size))
+    if tail_size == 2:
+        messages = _reload(history)
+        before = [m.to_dict() for m in messages]
+        assert (
+            resume_saved_view(saved, first.session_state(), messages, Handed.take(messages)) is None
+        )
+        assert [m.to_dict() for m in messages] == before
+    outputs = []
+    for warm in (False, True):
+        strategy = _strategy(_Summarizer(), budget=budget, policy="shed")
+        strategy.restore_session_state(copy.deepcopy(first.session_state()))
+        if warm:
+            strategy.restore_saved_view(saved)
+        messages = _reload(history)
+        await strategy.compact_before(messages, options={})
+        if warm:
+            assert strategy.calls_resumed == int(tail_size == 1)
+        outputs.append(
+            [
+                (m.message_id, m.role, m.to_dict()["contents"])
+                for m in project_included_messages(messages)
+            ]
+        )
+    assert outputs[1] == outputs[0]
+
+
 @pytest.mark.parametrize("ending", ["provider", "host-release", "merge-middleware"])
 async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> None:
     transcript = _transcript(14, 10, 6)
