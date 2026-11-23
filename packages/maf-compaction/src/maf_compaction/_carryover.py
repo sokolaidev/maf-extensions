@@ -194,6 +194,17 @@ class Handed:
             list(messages),
         )
 
+    def sources_still_match(self) -> bool:
+        """Check the sources and their stand-ins before the completed pass releases either."""
+        for source, used, expected in zip(self.messages, self.stood, self.digests, strict=True):
+            if _is_transient(source):
+                continue
+            if expected is None or content_digest(source.contents) != expected:
+                return False
+            if used.contents is not source.contents and content_digest(used.contents) != expected:
+                return False
+        return True
+
 
 @dataclass(frozen=True)
 class Resumed:
@@ -222,7 +233,11 @@ class CarriedView:
         """
         self.view = [message for message in view if not _is_transient(message)]
         self.settled_tools: SettledTools | None = None
-        self.portable = handed.portable and (continuing is None or continuing.portable)
+        self.portable = (
+            handed.portable
+            and (continuing is None or continuing.portable)
+            and handed.sources_still_match()
+        )
         self.decisions_before_storage: dict[str, Any] | None = None
         self._members = {id(message) for message in self.view}
         # A pass puts a shallow copy in a message's place and never rebinds a contents list, so

@@ -268,6 +268,28 @@ def test_a_new_record_cannot_be_saved_under_a_source_edited_during_the_pass(reta
     assert saved is None
 
 
+@pytest.mark.parametrize("substituted", [False, True])
+@pytest.mark.parametrize("edit", ["replace list", "replace item", "edit item", "clear list"])
+def test_a_removed_source_must_still_match_at_pass_completion(substituted: bool, edit: str) -> None:
+    source = Message("user", ["Original"], message_id="u")
+    handed = Handed.take([source])
+    used = copy.copy(source) if substituted else source
+    handed.stood[0] = used
+    if edit == "replace list":
+        used.contents = [Content.from_text("Changed")]
+    elif edit == "replace item":
+        used.contents[0] = Content.from_text("Changed")
+    elif edit == "edit item":
+        used.contents[0].text = "Changed"
+    else:
+        used.contents.clear()
+    record = build_record_message(f"Source read as {used.text!r}.")
+    carried = CarriedView(handed, [record])
+    handed.contents[0][0].text = "Original"
+    used.contents = list(handed.contents[0])
+    assert save_view(carried, {}) is None
+
+
 @pytest.mark.parametrize("original_tail", [True, False])
 def test_changed_following_message_replays_the_reply_note(original_tail: bool) -> None:
     sources = [
@@ -370,7 +392,7 @@ def test_unusable_layout_leaves_handed_messages_intact(change: str) -> None:
     if change == "damaged":
         saved["layout"] = saved["layout"][:-2]
     if change == "legacy":
-        saved["version"] = 3
+        saved["version"] = 4
     before = [m.to_dict() for m in messages]
     assert resume_saved_view(saved, decisions, messages, Handed.take(messages)) is None
     assert [m.to_dict() for m in messages] == before
@@ -504,7 +526,7 @@ async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> Non
         assert key not in session.state
         registry.release(session.session_id)
     saved = session.state[key]
-    assert saved["version"] == 4
+    assert saved["version"] == 5
     assert "layout" not in json.dumps(session.state[registry.state_key])
     registry.release(session.session_id)
     assert session.state[key] is saved
