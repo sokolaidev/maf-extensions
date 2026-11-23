@@ -169,7 +169,7 @@ jobs:
     name: MXC bounded files (${{ matrix.os }})
     needs: [mxc-file-kernel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
     strategy:
       fail-fast: false
       matrix:
