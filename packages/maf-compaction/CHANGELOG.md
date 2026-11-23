@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.16.0...maf-compaction-v0.17.0) (2026-11-23)
+
+
+### Features
+
+* **compaction:** resume the first model call from a saved turn view ([#2898](https://github.com/sokolaidev/maf-extensions/issues/2898)) ([7fcbcf5](https://github.com/sokolaidev/maf-extensions/commit/7fcbcf5b85958e3abdb6fe5fbc092a3ac020e444))
+
+
+### Performance
+
+* **compaction:** reuse settled record decisions between tool calls ([#2897](https://github.com/sokolaidev/maf-extensions/issues/2897)) ([43a0f4c](https://github.com/sokolaidev/maf-extensions/commit/43a0f4c2ac3df76bfe401a70459bdb42e6e06e79))
+
 ## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.15.1...maf-compaction-v0.16.0) (2026-11-22)
 
 
