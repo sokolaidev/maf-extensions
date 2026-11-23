@@ -25,7 +25,7 @@ from maf_compaction import (
 )
 from maf_compaction._anchored import AnchoredCompactionStrategy
 from maf_compaction._carryover import CarriedView, Handed
-from maf_compaction._saved_view import resume_saved_view, save_view
+from maf_compaction._saved_view import _match, resume_saved_view, save_view
 from maf_compaction._toolsummary import build_record_message
 
 pytestmark = pytest.mark.anyio
@@ -243,6 +243,19 @@ def test_a_store_that_stripped_a_generated_records_identity_gets_full_replay() -
     bare = Message(record.role, record.contents)
     for loaded in ([messages[0], bare, messages[1]], [*messages, Message("user", ["new"]), bare]):
         assert resume_saved_view(saved, {}, loaded, Handed.take(loaded)) is None
+
+
+@pytest.mark.parametrize("record", [False, True])
+def test_insert_slots_accept_only_single_text_generated_messages(record: bool) -> None:
+    saved, messages, _ = _layout()
+    entry = build_record_message("Remember.") if record else Message("user", ["Stored source"])
+    if record:
+        entry.contents.append(Content.from_text("Another part"))
+    layout = json.loads(saved["layout"])
+    insert = next(item for item in layout["order"] if "insert" in item)
+    insert["insert"] = entry.to_dict()
+    assert _match(layout, Handed.take(messages)) is None
+    assert save_view(CarriedView(Handed.take(messages), [*messages, entry]), {}) is None
 
 
 async def test_a_storage_pass_that_changes_decisions_cannot_save_the_old_view() -> None:

@@ -1814,7 +1814,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._saved_view = None
 
     def restore_saved_view(self, saved: dict[str, Any]) -> None:
-        """Offer a detached layout to the next per-call pass, which validates it against history."""
+        """Offer a layout from trusted session storage for the next pass to match to history."""
         self._carried = None
         self._saved_view = saved
 

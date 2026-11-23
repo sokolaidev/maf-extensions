@@ -124,6 +124,10 @@ def _generated(message: Message) -> bool:
     return _is_written_record(message) or _is_marker(message) or _is_summary(message)
 
 
+def _insertable(message: Message) -> bool:
+    return len(message.contents) == 1 and message.contents[0].type == "text" and _generated(message)
+
+
 def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any] | None:
     """Detach a cache from its messages and bind it to the decisions that produced it."""
     positions = {id(m): i for i, m in enumerate(carried.standing) if m is not None}
@@ -171,7 +175,7 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
         for message in carried.view:
             position = positions.get(id(message))
             if position is None:
-                if not _generated(message):
+                if not _insertable(message):
                     return None
                 order.append({"insert": message.to_dict()})
                 required = max(required, previous + 1)
@@ -226,6 +230,8 @@ def _match(
     for index, entry in enumerate(order):
         if "insert" in entry:
             message = Message.from_dict(entry["insert"])
+            if not _insertable(message):
+                return None
             inserted[index] = message
             by_digest[_contents(message.contents)].append(index)
         else:
