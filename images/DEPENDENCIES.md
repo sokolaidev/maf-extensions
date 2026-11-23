@@ -4,6 +4,12 @@ Wolfi is the default suite runtime. Each workload installs only its own requirem
 
 The suite maintainers own dependency review and qualification for all rows below. Dependabot proposes changes; it never approves, releases or publishes an image. Review installed SBOM components as well as source declarations: a digest pins the starting filesystem, while `apk upgrade`, package repositories and source restores can still change the resolved result. Retained candidate identities, receipts and inventories bind the resulting bytes.
 
+## Maintainer notifications for remaining findings
+
+Image security, platform remediation, Go remediation and Chrome update workflows report retained findings that have no delivered automatic source remedy. The workflows share one issue per affected image profile; each compares its own latest finding/component decisions so unchanged runs do not add repeated comments. A partially delivered PR leaves unsupported findings visible. Notifications include installed versions, reported fixed versions, planner decisions and the source attempt with its retained artifacts. Missing fixed-version metadata means the evidence has not identified a compatible fix, not that no upstream fix exists.
+
+`release-needed` means qualification removed the targeted finding without requiring a source edit: a maintainer must publish a qualified replacement image to deliver that fix. It does not mean all findings are resolved and does not publish anything automatically. Notification issues remain open for maintainer review; source PR delivery and successful rebuilt-image scans do not establish published-image recovery. Build-scan and remediation-plan notifications identify their source workflow and attempt within the shared issue because they inspect different image identities and may cover different profiles.
+
 ## Runtime and build images
 
 | Consumers | Authoritative declaration | Update mechanism and permitted line | Qualification |
