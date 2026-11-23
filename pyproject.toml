@@ -107,9 +107,9 @@ dev = [
     # maf-cachebench imports the other provider clients lazily, one per provider route, and
     # its strict pyright pass has to resolve every one of them. The Mistral and Ollama clients
     # exist only as pre-releases on the index, so their floors name one.
-    "agent-framework-foundry>=1.16.1,<2",
-    "agent-framework-mistral>=1.0.0b261106,<2",
-    "agent-framework-ollama>=1.0.0b261106,<2",
+    "agent-framework-foundry>=1.16.2,<2",
+    "agent-framework-mistral>=1.0.0b261112,<2",
+    "agent-framework-ollama>=1.0.0b261112,<2",
     "ollama>=0.5.3,<0.6",
     # Sample 17's Deep Agents wiring, for the same reason as the line above. `langchain-core`
     # arrives with it today and is named anyway: a sample declares what it imports, and a
