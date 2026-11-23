@@ -979,7 +979,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         state_record_budget: Tell the summarizer the output cap a merge or rewrite request is
             sent with, by appending :func:`record_answer_budget` to its prompt. Default on: the
             cap is a hard stop the model never sees, so without it a record longer than the cap
-            is cut off and refused. Requests sent without a cap are unchanged.
+            is cut off and refused. Requests sent without a cap are unchanged, a retry that
+            drops the options included, and so is one the sentence would take over
+            ``max_summary_input_tokens``.
         merge_answer_cache_bytes: Maximum serialized UTF-8 bytes of refused merge answers,
             default 1 MiB. Oldest answers are evicted first; zero disables retention.
 
@@ -3935,6 +3937,26 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         cap = self._record_output_cap()
         return limit if cap is None else min(limit, cap)
 
+    def _budgeted_prompt(self, prompt: str, request_tokens: int) -> str | None:
+        """``prompt`` with :func:`record_answer_budget` for the request's cap, or None for none.
+
+        None when the budget is switched off, the request has no cap, or the sentence would push
+        the request over ``max_summary_input_tokens``: the plain request, ``request_tokens``, was
+        checked against that ceiling, and it then goes out without the sentence rather than not
+        at all. A request counts the sum of its messages, so only the two prompts are measured
+        here, not the transcript again. Kept apart from the batch search, which sizes and
+        remembers batches by the plain prompt.
+        """
+        cap = self._record_output_cap()
+        if not self.state_record_budget or cap is None:
+            return None
+        budgeted = prompt + record_answer_budget(cap)
+        added = summary_input_tokens(budgeted, "", tokenizer=self.tokenizer) - summary_input_tokens(
+            prompt, "", tokenizer=self.tokenizer
+        )
+        fits = request_tokens + added <= self.user_turns.max_summary_input_tokens
+        return budgeted if fits else None
+
     def _record_output_cap(self) -> int | None:
         """The ``max_tokens`` a summarizer request is sent with now, or None when it has none.
 
@@ -4479,13 +4501,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The text, or None when the summarizer raised or said nothing.
         """
-        if not await off_loop(
-            fits_summary_input,
-            prompt,
-            transcript,
-            tokenizer=self.tokenizer,
-            limit=self.user_turns.max_summary_input_tokens,
-        ):
+        request_tokens = await off_loop(
+            summary_input_tokens, prompt, transcript, tokenizer=self.tokenizer
+        )
+        if request_tokens > self.user_turns.max_summary_input_tokens:
             logger.warning("Skipping record consolidation: summary input exceeds its token limit.")
             self._record_summary_failures += 1
             return None
@@ -4518,11 +4537,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 usage.get("reasoning_output_token_count"),
             )
 
-        cap = self._record_output_cap()
-        if self.state_record_budget and cap is not None:
-            # After the fit check and outside the batch search's prompt digest: the sentence is
-            # what the model reads, not part of what a batch is sized or remembered by.
-            prompt += record_answer_budget(cap)
+        capped_prompt = self._budgeted_prompt(prompt, request_tokens)
         try:
             text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
                 transcript,
@@ -4530,6 +4545,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 observe=observe,
                 allow_empty_on_length=True,
                 before_request=self._check_chain_deadline,
+                capped_prompt=capped_prompt,
             )
             return _RecordAnswer(text, incomplete)
         except asyncio.CancelledError:

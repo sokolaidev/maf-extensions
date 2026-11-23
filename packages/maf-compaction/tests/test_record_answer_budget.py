@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from agent_framework import ChatResponse, Message
 from test_record_budget import _CAP, _body, _history, _strategy, _Summarizer
 from test_summary_prompt_boundary import record_attempt
 
@@ -90,3 +93,68 @@ async def test_the_sentence_does_not_change_which_batch_fits() -> None:
 def test_the_package_exports_it() -> None:
     assert "record_answer_budget" in composed.__all__
     assert "RECORD_ANSWER_BUDGET_SHARE" in composed.__all__
+
+
+class _FailsWithOptions(_Summarizer):
+    """Refuses the first request, as a provider refuses an option it does not take."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.options: list[dict[str, Any]] = []
+
+    async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+        self.options.append(dict(kwargs.get("options") or {}))
+        if len(self.options) == 1:
+            self.requests.append((messages[0].text or "", messages[-1].text or ""))
+            raise ValueError("Unsupported option")
+        return await super().get_response(messages, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("operation", "prompt"),
+    [("merge", DEFAULT_RECORD_MERGE_PROMPT), ("rewrite", harder_record_prompt(1))],
+)
+async def test_the_retry_without_options_is_not_told_a_cap_it_lacks(
+    operation: str, prompt: str
+) -> None:
+    model = _FailsWithOptions()
+    model.rewrite = model.merge
+    strategy = _strategy(model, budget=100_000)
+    strategy.harder_attempts = 1
+    strategy.user_turns.retry_without_summary_options = True
+
+    assert await record_attempt(strategy, _history(2), operation)
+
+    assert model.options == [{"max_tokens": _CAP}, {}]
+    (first, _), (retry, _) = model.requests
+    assert first == prompt + record_answer_budget(_CAP)
+    assert retry == prompt, "the uncapped retry is sent the plain prompt"
+
+
+async def _plain_request_tokens() -> int:
+    """What a plain merge request of two records counts, as the strategy measures it."""
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000)
+    strategy.state_record_budget = False
+    assert await record_attempt(strategy, _history(2), "merge")
+    (prompt, transcript) = model.requests[0]
+    return summary_input_tokens(prompt, transcript, tokenizer=strategy.tokenizer)
+
+
+@pytest.mark.parametrize("room", [False, True])
+async def test_the_sentence_never_takes_a_request_over_its_input_ceiling(room: bool) -> None:
+    """At a ceiling the plain request fills exactly, the request goes out without the sentence
+    rather than over the ceiling or not at all; with room for it, the sentence is sent."""
+    plain = await _plain_request_tokens()
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000)
+    strategy.user_turns.max_summary_input_tokens = plain + (1_000 if room else 0)
+
+    assert await record_attempt(strategy, _history(2), "merge")
+
+    (sent, transcript) = model.requests[0]
+    assert sent == DEFAULT_RECORD_MERGE_PROMPT + (record_answer_budget(_CAP) if room else "")
+    assert (
+        summary_input_tokens(sent, transcript, tokenizer=strategy.tokenizer)
+        <= strategy.user_turns.max_summary_input_tokens
+    )
