@@ -930,6 +930,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             in place of ``summary_options["max_tokens"]``, which otherwise bounds both the
             answer and the request. Set it for a summarizer whose merges compress, for example
             twice the output cap. Never more than ``max_summary_input_tokens``.
+        record_merge_max_records: Most records one merge batch may hold, at least two.
+            ``None``, the default, bounds a batch by its request tokens alone. A batch of many
+            small records fits the request limit yet holds more values than one answer keeps,
+            so it is refused and split; the cap asks for the batches the summarizer can keep.
+            Pending splits larger than the cap are dropped and searched again.
         merge_coverage_share: Starting value coverage for merges and rewrites, defaulting to
             ``tool_results.coverage_share`` without changing tool-group grounding.
         merge_coverage_floor: Lowest merge coverage, defaulting to the starting bar (no
@@ -972,6 +977,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_merge_split_depth: int = 2,
         run_past_limit_factor: float | None = DEFAULT_RUN_PAST_LIMIT_FACTOR,
         record_request_input_tokens: int | None = None,
+        record_merge_max_records: int | None = None,
         merge_same_tool_first: bool = True,
         rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
         merge_coverage_share: float | None = None,
@@ -1034,6 +1040,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             type(record_request_input_tokens) is not int or record_request_input_tokens <= 0
         ):
             raise ValueError("record_request_input_tokens must be a positive integer or None.")
+        if record_merge_max_records is not None and (
+            type(record_merge_max_records) is not int or record_merge_max_records < 2
+        ):
+            raise ValueError("record_merge_max_records must be an integer of at least 2, or None.")
+        self.record_merge_max_records = record_merge_max_records
         self.chain_seconds = chain_seconds
         self.record_merge_split_depth = record_merge_split_depth
         self.run_past_limit_factor = run_past_limit_factor
@@ -3406,15 +3417,26 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             remember(first, checked)
             return []
 
+        async def capped(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """``batch`` cut to ``record_merge_max_records``; empty if the cut does not fit."""
+            cap = self.record_merge_max_records
+            if cap is None or len(batch) <= cap:
+                return batch
+            batch = batch[:cap]
+            # A shorter run need not fit where a longer one did.
+            return batch if await off_loop(size, batch) <= limit else []
+
         def pending_batch(
             selected: set[int],
         ) -> tuple[_PendingMerge, list[dict[str, Any]]] | None:
             matches: list[tuple[int, _PendingMerge]] = []
+            cap = self.record_merge_max_records
             for pending in self._pending_merges:
                 if (
                     pending.prompt != prompt_digest
                     or pending.limit != limit
                     or pending.depth > self.record_merge_split_depth
+                    or (cap is not None and pending.count > cap)
                 ):
                     continue
                 for first in range(len(groups) - pending.count + 1):
@@ -3494,7 +3516,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if not over:
                 return False
             groups, _ = await async_bounded_prefix_extent(
-                groups,
+                groups[: self.record_merge_max_records],
                 render=lambda prefix: _numbered_records([bodies[last(group)] for group in prefix]),
                 prompt=self.merge_prompt,
                 tokenizer=self.tokenizer,
@@ -3546,7 +3568,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     handled.add(oldest)
                     continue
                 try:
-                    batch = await search(cursor)
+                    batch = await capped(await search(cursor))
                     run = ends[cursor] - cursor
                     if len(batch) > run:
                         found = batch
