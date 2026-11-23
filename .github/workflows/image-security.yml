@@ -79,7 +79,7 @@ jobs:
       always() && needs.select.result == 'success' && needs.select.outputs.scan == 'true' &&
       (needs.python-packages.result == 'success' || needs.python-packages.result == 'skipped')
     runs-on: ${{ matrix.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
-    timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 180 || 75 }}
+    timeout-minutes: ${{ contains(fromJSON('["terraform-avm","opentofu-avm"]'), matrix.profile) && 180 || 75 }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -111,7 +111,7 @@ jobs:
           python3 scripts/build_wolfi_python.py --verify-bundle "$RUNNER_TEMP/wolfi-python-packages"
           echo "MAF_WOLFI_PYTHON_PACKAGES=$RUNNER_TEMP/wolfi-python-packages" >> "$GITHUB_ENV"
       - name: Make room for the AVM provider toolchain and build cache
-        if: matrix.profile == 'terraform-avm'
+        if: contains(fromJSON('["terraform-avm","opentofu-avm"]'), matrix.profile)
         run: |
           test "$RUNNER_ENVIRONMENT" = github-hosted
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup

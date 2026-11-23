@@ -213,7 +213,7 @@ def test_release_build_budget_includes_python_compilation(monkeypatch, tmp_path,
         "opentofu-avm",
         "hyperlight-aks-probe",
     }
-    expected = 7200 if profile == "terraform-avm" else 2400
+    expected = 7200 if profile in {"terraform-avm", "opentofu-avm"} else 2400
     if profile in python_profiles:
         expected += 1800
 

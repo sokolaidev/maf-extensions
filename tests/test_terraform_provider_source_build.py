@@ -314,7 +314,7 @@ def test_source_unpack_skips_symlink_fixtures_and_refuses_other_symlinks(tmp_pat
 
 @pytest.mark.parametrize(
     "manifest_name",
-    ["dependencies.terraform-avm.json", "dependencies.opentofu-avm-network.json"],
+    ["dependencies.terraform-avm.json", "dependencies.opentofu-avm.json"],
 )
 def test_release_catalogue_requires_source_builds_with_distinct_reviewed_package_hashes(
     manifest_name,

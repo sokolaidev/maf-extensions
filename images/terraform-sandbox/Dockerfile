@@ -4,7 +4,7 @@ FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
 COPY Dockerfile image.json install.py build_opentofu.py build_go.py /recipe/
-RUN python3 /recipe/build_opentofu.py
+RUN python3 /recipe/build_opentofu.py && go clean -cache -modcache
 
 FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS terraform-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local

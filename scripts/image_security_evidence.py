@@ -17,7 +17,7 @@ PROVIDER_MANIFESTS = {
     "terraform-random": "dependencies.terraform.json",
     "opentofu-random": "dependencies.opentofu.json",
     "terraform-avm": "dependencies.terraform-avm.json",
-    "opentofu-avm": "dependencies.opentofu-avm-network.json",
+    "opentofu-avm": "dependencies.opentofu-avm.json",
 }
 
 

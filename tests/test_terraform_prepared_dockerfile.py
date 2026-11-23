@@ -6,6 +6,7 @@ import ast
 import itertools
 import json
 import re
+import runpy
 import shutil
 import sys
 from pathlib import Path
@@ -16,11 +17,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "images/terraform-sandbox/prepared.Dockerfile"
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(DOCKERFILE.parent))
+import shared_avm_archives  # noqa: E402
 import terraform_dependencies as prep  # noqa: E402
 
 PREPARE = (
-    "RUN python3 -I /src/scripts/terraform_dependencies.py"
+    "RUN --mount=type=bind,from=module-archives,target=/module-archives"
+    " python3 -I /src/scripts/terraform_dependencies.py"
     " --manifest /src/manifest.json --output /prepared --provider-builds /provider-builds"
+    " --module-archives /module-archives"
 )
 
 
@@ -65,6 +70,10 @@ def test_only_source_build_and_preparation_reach_the_network():
         "provider-toolchain",
         "provider-build",
         "provider-packages",
+        "download-archives",
+        "avm-archives",
+        "empty-archives",
+        "module-archives",
         "prepare",
         "prepared",
         "unpack",
@@ -89,6 +98,28 @@ def test_later_stages_take_the_preparation_only_from_the_prepared_stage():
     assert copies and all(
         flags(tokens) in (["--from=prepared"], ["--from=unpack"]) for tokens in copies
     )
+
+
+def test_shared_archive_stage_matches_both_commit_url_and_digest(monkeypatch, tmp_path):
+    pins = {
+        "terraform": [("Repo/a", "1"), ("Repo/b", "2"), ("Repo/c", "3")],
+        "opentofu": [("repo/a", "1"), ("Repo/b", "4"), ("Other/c", "3")],
+    }
+
+    def load(data):
+        return {
+            "registry_modules": [
+                {"artifact": {"url": url, "sha256": digest}} for url, digest in pins[data.decode()]
+            ]
+        }
+
+    for name in pins:
+        (tmp_path / name).write_text(name)
+    monkeypatch.setattr(shared_avm_archives.prep, "load_manifest", load)
+    monkeypatch.setattr(shared_avm_archives.prep, "fetch", lambda *args, **kwargs: b"shared")
+    output = tmp_path / "archives"
+    shared_avm_archives.download(tmp_path / "terraform", tmp_path / "opentofu", output)
+    assert {p.name: p.read_bytes() for p in output.iterdir()} == {"1": b"shared"}
 
 
 def heredoc_step(marker: str) -> str:
@@ -173,3 +204,24 @@ def test_provider_probes_require_valid_schemas_but_module_probes_allow_missing_i
     assert namespace["probe_succeeded"]("providers rank 0", result) is False
     result["schemasValid"] = True
     assert namespace["probe_succeeded"]("providers rank 0", result) is True
+
+
+@pytest.mark.parametrize(
+    "engine,expected", [("opentofu", ["parent", "child"]), ("terraform", ["parent"])]
+)
+def test_catalogue_probes_include_callable_roots(engine, expected, tmp_path):
+    step = heredoc_step("def probe_succeeded")
+    plan = step[step.index("providers = receipt.get(") : step.index("def probe_succeeded")]
+    packages = [
+        {"name": "parent", "graph": {".": {"child": {"registry": "child"}}}},
+        {"name": "child", "graph": {".": {"leaf": {"registry": "leaf", "dir": "modules/leaf"}}}},
+        {"name": "leaf", "graph": {"modules/leaf": {}}},
+    ]
+    for package in packages:
+        package.update(source=f"Azure/{package['name']}/azurerm", version="1.0.0")
+    script = tmp_path / "probe_plan.py"
+    script.write_text(plan, encoding="utf-8")
+    result = runpy.run_path(
+        str(script), init_globals={"receipt": {"engine": engine, "registry_modules": packages}}
+    )
+    assert [label for label, _ in result["probes"]] == expected

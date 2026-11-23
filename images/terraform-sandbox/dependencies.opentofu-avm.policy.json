@@ -8,6 +8,10 @@
     },
     {
       "address": "registry.opentofu.org/azure/azapi",
+      "constraint": "= 2.12.0"
+    },
+    {
+      "address": "registry.opentofu.org/azure/azapi",
       "constraint": ">= 0.0.0"
     },
     {
@@ -24,7 +28,11 @@
     },
     {
       "address": "registry.opentofu.org/hashicorp/azurerm",
-      "constraint": ">= 0.0.0"
+      "constraint": ">= 0.0.0, < 5.11.0"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/azurerm",
+      "constraint": "~> 4.0"
     },
     {
       "address": "registry.opentofu.org/hashicorp/local",
@@ -36,11 +44,19 @@
     },
     {
       "address": "registry.opentofu.org/hashicorp/random",
+      "constraint": "= 3.7.2"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/random",
       "constraint": ">= 0.0.0"
     },
     {
       "address": "registry.opentofu.org/hashicorp/time",
       "constraint": ">= 0.0.0"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/tls",
+      "constraint": "= 4.4.1"
     },
     {
       "address": "registry.opentofu.org/hashicorp/tls",
@@ -83,6 +99,46 @@
       {
         "source": "registry.opentofu.org/Azure/avm-utl-resources-resourcegroup-azapi-replicator/azure",
         "reason": "the azapi-replicator family is outside this profile's supported catalog"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-avs-privatecloud/azurerm",
+        "version": "0.13.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.15.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachine/azurerm",
+        "version": "0.22.1",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-compute-virtualmachine/azurerm",
+        "version": "0.22.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-network-loadbalancer/azurerm",
+        "version": "0.6.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-network-privateendpoint/azurerm",
+        "version": "0.3.1",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-network-privateendpoint/azurerm",
+        "version": "0.3.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-operationalinsights-workspace/azurerm",
+        "version": "0.7.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
+      },
+      {
+        "source": "registry.opentofu.org/azure/avm-res-operationalinsights-workspace/azurerm",
+        "version": "0.6.0",
+        "reason": "OpenTofu 1.13.1 cannot initialize this release, which requires >= 1.16, < 2.0"
       }
     ]
   }

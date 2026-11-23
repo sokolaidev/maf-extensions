@@ -13,6 +13,7 @@ from terraform_dependencies import policy_contract, provider_digest
 CONTEXT = ROOT / "images/terraform-sandbox"
 CASES = ("pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock", "upstream-lock")
 AZURE_CASES = ("azure-root", "azure-root-invalid", "azure-root-uncached")
+CATALOGUE_CASES = ("workspace-and-identity", "terraform-host")
 FIELDS = {
     "providers": ("source", "version", "platform"),
     "modules": ("name", "revision", "graph"),
@@ -22,13 +23,17 @@ FIELDS = {
 
 def cases(engine: str, published: dict[str, Any] | None = None) -> tuple[str, ...]:
     """Replay the authenticated probe set for older published images."""
-    selected = CASES + AZURE_CASES if engine == "opentofu" else CASES
+    supported = (
+        (CASES, CASES + AZURE_CASES, CASES + AZURE_CASES + CATALOGUE_CASES)
+        if engine == "opentofu"
+        else (CASES,)
+    )
     if published is not None:
         retained = tuple(item["name"] for item in published["checks"])
-        if retained not in (CASES, selected):
+        if retained not in supported:
             raise ValueError("Unrecognized published AVM qualification cases")
         return retained
-    return selected
+    return supported[-1]
 
 
 def fingerprint(value: Any) -> str:
@@ -141,7 +146,23 @@ for case in CASES:
         project.mkdir()
         version = "~> 0.22" if case == "constraint" else "0.0.0" if case == "uncached-version" else "0.22.2"
         azure = case.startswith("azure-root")
-        if azure:
+        if case == "workspace-and-identity":
+            declarations = ['provider "azurerm" {\n  features {}\n}']
+            for label, module, pin in (
+                ("workspace", "avm-res-operationalinsights-workspace", "0.5.1"),
+                ("identity", "avm-res-managedidentity-userassignedidentity", "0.6.0"),
+            ):
+                declarations.append(
+                    f'module "{label}" {{\n  source = "Azure/{module}/azurerm"\n'
+                    f'  version = "{pin}"\n  name = "example-{label}"\n'
+                    '  location = "westeurope"\n  resource_group_name = "example"\n}'
+                )
+            (project / "main.tofu").write_text("\n".join(declarations))
+        elif case == "terraform-host":
+            (project / "main.tf").write_text(source.replace("VERSION", version).replace(
+                '"Azure/', '"registry.terraform.io/Azure/'
+            ))
+        elif azure:
             text = azure_source.replace("AZURERM_VERSION", "= 99.0.0" if case == "azure-root-uncached" else "~> 4.0")
             if case == "azure-root-invalid":
                 text = text.replace('  name = "example"\n', '')
@@ -198,6 +219,22 @@ for case in CASES:
                 "nestedModuleLoaded": any(item.get("Key") == "network.interfaces" for item in modules),
                 "expectedRefusal": expected_refusal(case, diagnostics),
             })
+            if case == "workspace-and-identity":
+                checks[-1]["catalogueModulesLoaded"] = {
+                    (item.get("Key"), item.get("Version")) for item in modules
+                    if item.get("Key") in {"workspace", "identity"}
+                    and Path(item["Dir"]).is_relative_to(install / "registry")
+                } == {("workspace", "0.5.1"), ("identity", "0.6.0")}
+            if case == "constraint" and "workspace-and-identity" in CASES:
+                checks[-1]["networkModules"] = {
+                    item["Key"]: item.get("Version") for item in modules
+                    if item.get("Key") in {"network", "network.interfaces"}
+                    and Path(item["Dir"]).is_relative_to(install / "registry")
+                }
+                checks[-1]["networkProviders"] = sorted(
+                    "/".join(path.resolve().relative_to(install / "mirror").parts[:3]) for path in links
+                    if path.resolve().is_relative_to(install / "mirror")
+                )
         finally:
             os.chdir("/tmp")
 print(json.dumps({"receipt": summary, "checks": checks}))
@@ -207,6 +244,8 @@ print(json.dumps({"receipt": summary, "checks": checks}))
 def expected_refusal(name: str, diagnostics: str) -> bool:
     """Match Terraform diagnostics independently of terminal line wrapping."""
     text = " ".join(diagnostics.split())
+    if name == "terraform-host":
+        return "remove the registry.terraform.io/ prefix from the module source" in text
     if name == "uncached-version":
         return "does not provide a modules service" in text
     if name == "azure-root-uncached":
@@ -236,11 +275,7 @@ def evidence(
     """Refuse receipt drift, incomplete checks and false-positive validation."""
     result = json.loads(output)
     selected = cases(engine, published)
-    manifest = (
-        "dependencies.terraform-avm.json"
-        if engine == "terraform"
-        else "dependencies.opentofu-avm-network.json"
-    )
+    manifest = f"dependencies.{engine}-avm.json"
     receipt = expected_receipt(manifest) if published is None else published["receipt"]
     if result["receipt"] != receipt:
         raise ValueError("Terraform AVM receipt differs from the selected release policy")
@@ -258,9 +293,19 @@ def evidence(
             "wrong-lock",
             "upstream-lock",
             "azure-root-uncached",
+            "terraform-host",
         }
         invalid = name == "azure-root-invalid"
         azure = name.startswith("azure-root")
+        catalogue = name == "workspace-and-identity"
+        catalogue_constraint = name == "constraint" and "workspace-and-identity" in selected
+        if catalogue_constraint and (
+            actual.get("networkModules") != {"network": "0.23.0", "network.interfaces": "0.10.0"}
+            or actual.get("networkProviders")
+            != ["registry.opentofu.org/azure/azapi", "registry.opentofu.org/hashicorp/random"]
+            or actual["providerLinks"] != 2
+        ):
+            raise ValueError(f"Terraform AVM consumer probe failed: {name}")
         if (
             actual["name"] != name
             or actual["version"] != version
@@ -273,10 +318,14 @@ def evidence(
                     or actual["validateExitCode"] != (1 if invalid else 0)
                     or actual["validationValid"] is not (not invalid)
                     or (invalid and actual.get("missingNameDiagnostic") is not True)
-                    or actual["providerLinks"] < (6 if azure else 3)
+                    or (
+                        not catalogue_constraint
+                        and actual["providerLinks"] < (6 if azure else 5 if catalogue else 3)
+                    )
                     or actual["providerCopies"] != 0
                     or actual["providersInMirror"] is not True
-                    or (not azure and actual["nestedModuleLoaded"] is not True)
+                    or (catalogue and actual.get("catalogueModulesLoaded") is not True)
+                    or (not azure and not catalogue and actual["nestedModuleLoaded"] is not True)
                 )
             )
             or (

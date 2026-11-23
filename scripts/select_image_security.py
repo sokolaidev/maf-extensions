@@ -258,7 +258,17 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
         '  provider_args+=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")\n'
         "fi\n\n"
     )
-    if not separator or prefix not in {header, header + provider_setup, header + configured_setup}:
+    archive_setup = (
+        'if [ -n "${MAF_AVM_ARCHIVES:-}" ]; then\n'
+        '  provider_args+=(--build-context "avm-archives=$MAF_AVM_ARCHIVES")\n'
+        "fi\n\n"
+    )
+    provider_prefixes = {
+        header + provider_setup,
+        header + configured_setup,
+        header + configured_setup.rstrip("\n") + "\n" + archive_setup,
+    }
+    if not separator or prefix not in {header, *provider_prefixes}:
         raise ValueError("Unknown build dispatcher")
     lines = rest.splitlines(keepends=True)
     branches: dict[str, str] = {}
@@ -286,7 +296,7 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
             command = lines[index].removesuffix("\n")
             heredoc = re.fullmatch(r"(    docker .*) <<'([A-Z]+)'", command)
             parsed = heredoc[1] if heredoc else command
-            if prefix in {header + provider_setup, header + configured_setup}:
+            if prefix in provider_prefixes:
                 parsed = parsed.replace('"${provider_args[@]}"', "")
             if not parsed.startswith(("    docker ", "    uv ")) or any(
                 token in parsed for token in ("`", "$(", "${", "\\", "#")

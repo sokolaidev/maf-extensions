@@ -61,6 +61,16 @@ def inventory(path: Path) -> list[str]:
         if reference == "${ENGINE}-image":
             if not {"terraform-image", "opentofu-image"} <= stages:
                 raise ValueError(f"Unknown engine stages: {path}")
+        elif reference == "${MODULE_ARCHIVES}":
+            if (
+                arguments.get("MODULE_ARCHIVES") != "empty-archives"
+                or not {
+                    "empty-archives",
+                    "avm-archives",
+                }
+                <= stages
+            ):
+                raise ValueError(f"Unknown module archive stages: {path}")
         elif reference not in stages and reference != "scratch":
             variable = re.fullmatch(r"\$\{(BASE|BASE_IMAGE)\}", reference)
             if variable:
