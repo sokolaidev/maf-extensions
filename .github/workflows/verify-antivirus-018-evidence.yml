@@ -54,6 +54,7 @@ jobs:
           print("IDENTITIES", image_id, manifest["config"]["digest"], metadata["imageID"], docker_info.get("RepoDigests"), flush=True)
           print("LAYERS", docker_info["RootFS"], [(l.get("digest"),l.get("mediaType")) for l in metadata.get("layers",[])], flush=True)
           assert image in docker_info["RepoDigests"]
+          assert docker_info["RootFS"]["Layers"] == [layer["digest"] for layer in metadata["layers"]]
           assert manifest["config"]["digest"] == metadata["imageID"]
           image_id = metadata["imageID"]
           lib = "usr/lib/libsqlite3.so.3.54.1"
@@ -82,3 +83,26 @@ jobs:
           print("PACKAGE", pkg["purl"], [f["path"] for f in pkg["metadata"]["files"]], flush=True)
           print("ACTUAL ASSESSMENT", scan_result(raw, image_id, os.environ["ASSESS_AT"], sbom=sbom), flush=True)
           PY
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from container_release import scan_result
+          root = Path(os.environ["RUNNER_TEMP"])
+          raw = json.loads((root / "grype.json").read_bytes())
+          sbom = json.loads((root / "sbom.syft.json").read_bytes())
+          image_id = sbom["source"]["metadata"]["imageID"]
+          def assess(at):
+              return scan_result(raw, image_id, at, sbom=sbom)
+          baseline = assess("2026-11-23T19:09:59Z")["findings"]
+          during = assess("2026-11-23T19:10:00Z")
+          assert len(baseline) == 12 and len(during["findings"]) == 11
+          assert during["findings"] == [x for x in baseline if x["id"] != "CVE-2026-119586"]
+          assert [x["id"] for x in during["notAffected"]] == ["CVE-2026-119586"]
+          assert assess("2026-12-04T00:00:00Z")["findings"] == baseline
+          print("Release replay passed: 12 before review, 11 plus SQLite decision during review, 12 at expiry.")
+          PY
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --frozen
+      - run: uv run --frozen pytest -q tests/test_sqlite_vulnerability.py
+      - run: uv run --frozen ruff check . && uv run --frozen ruff format --check .
+      - run: uv run --frozen python scripts/check_doc_paths.py
