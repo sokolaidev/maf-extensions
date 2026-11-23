@@ -157,8 +157,10 @@ __all__ = [
     "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MERGE_PROMPT",
     "DEFAULT_REWRITE_GAIN_FRACTION",
+    "RECORD_ANSWER_BUDGET_SHARE",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "harder_record_prompt",
+    "record_answer_budget",
 ]
 
 logger = logging.getLogger(__name__)
@@ -627,6 +629,39 @@ def harder_record_prompt(attempt: int) -> str:
     )
 
 
+#: Share of the output cap a record answer is asked to stay within. Reasoning spends part of the
+#: same allowance on providers that count it as output, and a model's sense of its own length is
+#: approximate.
+RECORD_ANSWER_BUDGET_SHARE: Final[float] = 0.8
+#: Words per token for stating the budget in words too: a model judges words better than tokens,
+#: and record text, dense with identifiers and numbers, runs below the prose rate of 0.75.
+_RECORD_WORDS_PER_TOKEN: Final[float] = 0.6
+
+
+def record_answer_budget(max_tokens: int) -> str:
+    """Return the sentence that tells the summarizer how long its record may be.
+
+    ``max_tokens`` is a hard stop the provider applies and never shows the model, so without
+    this a model writes the record its prompt asks for and is cut off; a cut-off record is
+    refused, since it would lose values. Told the budget, the model can fit the record to it,
+    and keeping most values is better than keeping none: an answer that keeps the coverage
+    share is accepted, and one that does not is split like a cut-off one.
+
+    Args:
+        max_tokens: The output cap the request is sent with.
+
+    Returns:
+        A sentence to append to a merge or rewrite prompt.
+    """
+    budget = int(max_tokens * RECORD_ANSWER_BUDGET_SHARE)
+    return (
+        f" Your reply is cut off after {max_tokens:,} tokens, and a reply that is cut off is "
+        f"discarded whole. Keep the record within about {budget:,} tokens, roughly "
+        f"{int(budget * _RECORD_WORDS_PER_TOKEN):,} words; if every value cannot fit, keep as "
+        "many as fit and cut everything else first, rather than run past it."
+    )
+
+
 def _meets_gain_floor(saved: int, replaced: int, fraction: float) -> bool:
     """Return whether ``saved`` of ``replaced`` tokens is at least ``fraction`` of them.
 
@@ -941,6 +976,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         merge_coverage_floor: Lowest merge coverage, defaulting to the starting bar (no
             relaxation). Smaller splits are tried before relaxing under record-share pressure.
         merge_coverage_step: Coverage decrement after an exhausted sweep, default 0.05.
+        state_record_budget: Tell the summarizer the output cap a merge or rewrite request is
+            sent with, by appending :func:`record_answer_budget` to its prompt. Default on: the
+            cap is a hard stop the model never sees, so without it a record longer than the cap
+            is cut off and refused. Requests sent without a cap are unchanged, a retry that
+            drops the options included, and so is one the sentence would take over
+            ``max_summary_input_tokens``.
         merge_answer_cache_bytes: Maximum serialized UTF-8 bytes of refused merge answers,
             default 1 MiB. Oldest answers are evicted first; zero disables retention.
 
@@ -985,6 +1026,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         merge_coverage_floor: float | None = None,
         merge_coverage_step: float = 0.05,
         merge_answer_cache_bytes: int = 1_048_576,
+        state_record_budget: bool = True,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -1051,6 +1093,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.run_past_limit_factor = run_past_limit_factor
         self.record_request_input_tokens = record_request_input_tokens
         self.merge_same_tool_first = merge_same_tool_first
+        self.state_record_budget = state_record_budget
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
@@ -3891,6 +3934,35 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return min(limit, self.record_request_input_tokens)
         if self.record_budget_share is None:
             return limit
+        cap = self._record_output_cap()
+        return limit if cap is None else min(limit, cap)
+
+    def _budgeted_prompt(self, prompt: str, request_tokens: int) -> str | None:
+        """``prompt`` with :func:`record_answer_budget` for the request's cap, or None for none.
+
+        None when the budget is switched off, the request has no cap, or the sentence would push
+        the request over ``max_summary_input_tokens``: the plain request, ``request_tokens``, was
+        checked against that ceiling, and it then goes out without the sentence rather than not
+        at all. A request counts the sum of its messages, so only the two prompts are measured
+        here, not the transcript again. Kept apart from the batch search, which sizes and
+        remembers batches by the plain prompt.
+        """
+        cap = self._record_output_cap()
+        if not self.state_record_budget or cap is None:
+            return None
+        budgeted = prompt + record_answer_budget(cap)
+        added = summary_input_tokens(budgeted, "", tokenizer=self.tokenizer) - summary_input_tokens(
+            prompt, "", tokenizer=self.tokenizer
+        )
+        fits = request_tokens + added <= self.user_turns.max_summary_input_tokens
+        return budgeted if fits else None
+
+    def _record_output_cap(self) -> int | None:
+        """The ``max_tokens`` a summarizer request is sent with now, or None when it has none.
+
+        None too once the options are retired after a failure, since the request then goes out
+        without them.
+        """
         options = (
             {}
             if self.user_turns._summary_options_disabled  # pyright: ignore[reportPrivateUsage]
@@ -3898,8 +3970,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         cap = options.get("max_tokens")
         if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
-            return limit
-        return min(limit, cap)
+            return None
+        return cap
 
     async def _merge_records(
         self, messages: list[Message], start: _ChainStart | None = None
@@ -4429,13 +4501,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The text, or None when the summarizer raised or said nothing.
         """
-        if not await off_loop(
-            fits_summary_input,
-            prompt,
-            transcript,
-            tokenizer=self.tokenizer,
-            limit=self.user_turns.max_summary_input_tokens,
-        ):
+        request_tokens = await off_loop(
+            summary_input_tokens, prompt, transcript, tokenizer=self.tokenizer
+        )
+        if request_tokens > self.user_turns.max_summary_input_tokens:
             logger.warning("Skipping record consolidation: summary input exceeds its token limit.")
             self._record_summary_failures += 1
             return None
@@ -4468,6 +4537,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 usage.get("reasoning_output_token_count"),
             )
 
+        capped_prompt = await off_loop(self._budgeted_prompt, prompt, request_tokens)
         try:
             text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
                 transcript,
@@ -4475,6 +4545,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 observe=observe,
                 allow_empty_on_length=True,
                 before_request=self._check_chain_deadline,
+                capped_prompt=capped_prompt,
             )
             return _RecordAnswer(text, incomplete)
         except asyncio.CancelledError:

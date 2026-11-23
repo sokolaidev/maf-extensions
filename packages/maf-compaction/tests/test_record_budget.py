@@ -193,6 +193,15 @@ def _included_record_calls(messages: list[Message]) -> list[str]:
     ]
 
 
+#: Where :func:`~maf_compaction._composed.record_answer_budget` starts in a request's prompt.
+_BUDGET_SENTENCE = re.compile(r" Your reply is cut off after [\d,]+ tokens.*\Z", re.DOTALL)
+
+
+def _base_prompt(prompt: str) -> str:
+    """``prompt`` without the output budget a capped record request appends to it."""
+    return _BUDGET_SENTENCE.sub("", prompt)
+
+
 class _Summarizer:
     """A summarizer with configurable merge and rewrite answers."""
 
@@ -203,14 +212,19 @@ class _Summarizer:
 
     @property
     def merges(self) -> list[str]:
-        return [body for prompt, body in self.requests if prompt == DEFAULT_RECORD_MERGE_PROMPT]
+        return [
+            body
+            for prompt, body in self.requests
+            if _base_prompt(prompt) == DEFAULT_RECORD_MERGE_PROMPT
+        ]
 
     async def get_response(
         self, messages: list[Message], *, stream: bool = False, **kwargs: Any
     ) -> ChatResponse:
         prompt, body = messages[0].text or "", messages[-1].text or ""
         self.requests.append((prompt, body))
-        text = self.merge(body) if prompt == DEFAULT_RECORD_MERGE_PROMPT else self.rewrite(body)
+        merge = _base_prompt(prompt) == DEFAULT_RECORD_MERGE_PROMPT
+        text = self.merge(body) if merge else self.rewrite(body)
         return ChatResponse(messages=[Message(role="assistant", contents=[text])])
 
 

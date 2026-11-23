@@ -14,7 +14,7 @@ import time
 
 import pytest
 from agent_framework._compaction import CharacterEstimatorTokenizer
-from test_record_budget import _history, _strategy, _Summarizer
+from test_record_budget import _CAP, _history, _strategy, _Summarizer
 
 from maf_compaction._offload import off_loop, steps_inline
 from maf_compaction._summary_input import async_bounded_prefix_extent
@@ -420,6 +420,26 @@ async def test_a_chunked_summary_counts_no_tokens_on_the_loop() -> None:
     assert counter.on_loop == 0
 
 
+async def test_a_capped_record_request_counts_no_tokens_on_the_loop() -> None:
+    """The output budget a capped merge or rewrite is told is measured off the loop, like the
+    request it is added to."""
+    from test_summary_prompt_boundary import record_attempt
+
+    from maf_compaction._composed import record_answer_budget
+
+    model = _Summarizer()
+    model.rewrite = model.merge
+    counter = _LoopThreadCounter(threading.get_ident())
+    for operation in ("merge", "rewrite"):
+        strategy = _strategy(model, budget=100_000, tokenizer=counter)
+        strategy.harder_attempts = 1
+        assert await record_attempt(strategy, _history(2), operation)
+    assert all(prompt.endswith(record_answer_budget(_CAP)) for prompt, _ in model.requests), (
+        "the premise: both requests carried the budget"
+    )
+    assert counter.on_loop == 0
+
+
 #: Synchronous helpers that walk a whole conversation, render it, or tokenize it.
 _HISTORY_WORK = frozenset(
     {
@@ -428,6 +448,8 @@ _HISTORY_WORK = frozenset(
         "bounded_prefix",
         "bounded_prefix_extent",
         "fits_summary_input",
+        "summary_input_tokens",
+        "_budgeted_prompt",
         "count_tokens",
         "_format_turns",
         "_smaller",
