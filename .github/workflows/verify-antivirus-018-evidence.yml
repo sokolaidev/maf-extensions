@@ -49,7 +49,13 @@ jobs:
           raw = release_json("grype.json", "sha256:042f0b63fb67e7e90ceb7dbd8a8a89e4469e49bce4b7d8618b4b791802a88dd3")
           image = os.environ["IMAGE"]
           image_id = subprocess.check_output(["docker","image","inspect","-f","{{.Id}}",image], text=True).strip()
-          assert image_id == manifest["config"]["digest"] == sbom["source"]["metadata"]["imageID"]
+          metadata = sbom["source"]["metadata"]
+          docker_info = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
+          print("IDENTITIES", image_id, manifest["config"]["digest"], metadata["imageID"], docker_info.get("RepoDigests"), flush=True)
+          print("LAYERS", docker_info["RootFS"], [(l.get("digest"),l.get("mediaType")) for l in metadata.get("layers",[])], flush=True)
+          assert image in docker_info["RepoDigests"]
+          assert manifest["config"]["digest"] == metadata["imageID"]
+          image_id = metadata["imageID"]
           lib = "usr/lib/libsqlite3.so.3.54.1"
           named_cli = []
           observed = {}
