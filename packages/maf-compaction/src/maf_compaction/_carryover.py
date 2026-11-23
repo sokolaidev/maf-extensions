@@ -312,9 +312,22 @@ class CarriedView:
             None when the list does not continue the one this view was built from, in which
             case nothing was changed.
         """
+        begins = self.begins(messages)
         if not self.matches_completed_view():
+            if begins:
+                current.portable = False
             return self._departed("the kept view changed after compaction")
-        if self.begins(messages):
+        if begins:
+            digests = {
+                id(message): digest
+                for message, digest in zip(self.view, current.digests, strict=False)
+            }
+            if any(
+                member is not None and digests[id(member)] != digest
+                for member, digest in zip(self.standing, self.digests, strict=True)
+            ):
+                current.portable = False
+                return self._departed("a source in the kept list was edited between calls")
             return Resumed(restored=False, changed=False)
         members = self._members
         stored = len(self.contents)

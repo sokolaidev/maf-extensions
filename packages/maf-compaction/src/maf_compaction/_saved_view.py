@@ -46,7 +46,7 @@ from ._usersummary import PRESERVE_REASON as USER_PRESERVE_REASON
 from ._view_digest import canonical_json, content_digest, json_digest
 
 _EXCLUSIONS = (EXCLUDED_KEY, EXCLUDE_REASON_KEY)
-_VERSION = 3
+_VERSION = 4
 _LINKS = (SUMMARIZED_BY_SUMMARY_ID_KEY, SUMMARY_OF_GROUP_IDS_KEY, SUMMARY_OF_MESSAGE_IDS_KEY)
 _OWN_EXCLUSIONS = {
     EXCLUDE_REASON,
@@ -130,7 +130,7 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
     try:
         for i, items in enumerate(carried.contents):
             digest = carried.digests[i]
-            if digest is None:
+            if digest is None or content_digest(items) != digest:
                 return None
             member = carried.standing[i]
             accepted = [carried.states[i]]

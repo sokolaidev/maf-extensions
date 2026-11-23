@@ -245,6 +245,29 @@ def test_visible_shared_edit_can_resume_live_but_cannot_certify_a_later_turn() -
         assert save_view(view, {}) is None
 
 
+async def test_a_pass_over_the_same_edited_objects_cannot_save_the_old_source_digests() -> None:
+    messages = user_history()
+    strategy = _strategy(_Summarizer(), budget=3000, policy="shed")
+    await _call(strategy, messages)
+    source = next(message for message in messages if message.message_id == "u1")
+    original = source.text
+    source.contents[0].text = "A changed requirement."
+    await _call(strategy, messages)
+    source.contents[0].text = original
+    assert strategy.take_saved_view() is None
+
+
+@pytest.mark.parametrize("retained", [True, False])
+def test_a_new_record_cannot_be_saved_under_a_source_edited_during_the_pass(retained: bool) -> None:
+    source = Message("user", ["Original text"], message_id="u")
+    handed = Handed.take([source])
+    source.contents[0].text = "Edited text"
+    record = build_record_message(source.text)
+    view = [source, record] if retained else [record]
+    saved = save_view(CarriedView(handed, view), {})
+    assert saved is None
+
+
 @pytest.mark.parametrize("original_tail", [True, False])
 def test_changed_following_message_replays_the_reply_note(original_tail: bool) -> None:
     sources = [
@@ -347,7 +370,7 @@ def test_unusable_layout_leaves_handed_messages_intact(change: str) -> None:
     if change == "damaged":
         saved["layout"] = saved["layout"][:-2]
     if change == "legacy":
-        saved["version"] = 2
+        saved["version"] = 3
     before = [m.to_dict() for m in messages]
     assert resume_saved_view(saved, decisions, messages, Handed.take(messages)) is None
     assert [m.to_dict() for m in messages] == before
@@ -446,7 +469,7 @@ async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> Non
         assert key not in session.state
         registry.release(session.session_id)
     saved = session.state[key]
-    assert saved["version"] == 3
+    assert saved["version"] == 4
     assert "layout" not in json.dumps(session.state[registry.state_key])
     registry.release(session.session_id)
     assert session.state[key] is saved
