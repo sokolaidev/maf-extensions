@@ -12,6 +12,8 @@ from agent_framework import Agent, AgentSession, Content, InMemoryHistoryProvide
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
+    SUMMARIZED_BY_SUMMARY_ID_KEY,
     apply_compaction,
     project_included_messages,
 )
@@ -82,6 +84,49 @@ async def test_first_call_with_a_fresh_strategy_matches_full_replay(durable: boo
     expected = await _call(control, _reload(handed))
     assert await _call(restored, _reload(handed), json.loads(json.dumps(saved))) == expected
     assert restored.calls_resumed == int(durable)
+
+
+#: Large enough for a full replay of the summarized history to fit, so the two can be compared.
+_FITS_A_FULL_REPLAY = 6000
+
+
+def _rebuilt_elsewhere(messages: list[Message]) -> list[Message]:
+    """The conversation as a host that keeps its own copy hands it: nothing a pass wrote."""
+    return [
+        Message(m.role, list(m.contents), message_id=m.message_id, author_name=m.author_name)
+        for m in messages
+    ]
+
+
+async def test_first_call_resumes_when_the_host_hands_back_messages_without_the_links() -> None:
+    first = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
+    host = _Rebuilding(_rebuilt_elsewhere(user_history()))
+    await _call(first, host.hand())
+    host.answered(1)
+    host.store[-1].message_id = "call-one"
+    host.carried_in[0].message_id = "result-one"
+    await _call(first, host.hand())
+    host.answered(2)
+    host.store[-1].message_id = "call-two"
+    host.carried_in[0].message_id = "result-two"
+    decisions = json.loads(json.dumps(first.session_state()))
+    saved = first.take_saved_view()
+    assert saved
+    handed = host.hand()
+    assert any(
+        SUMMARIZED_BY_SUMMARY_ID_KEY in m.additional_properties.get(GROUP_ANNOTATION_KEY, {})
+        for m in handed
+    ), "no stored message carries a link, so this proves nothing"
+    restored = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
+    control = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
+    for strategy in (control, restored):
+        strategy.restore_session_state(copy.deepcopy(decisions))
+
+    expected = await _call(control, _rebuilt_elsewhere(handed))
+    sent = await _call(restored, _rebuilt_elsewhere(handed), json.loads(json.dumps(saved)))
+
+    assert sent == expected
+    assert restored.calls_resumed == 1
 
 
 @pytest.mark.parametrize("stored_note", [False, True])
@@ -419,6 +464,27 @@ def test_only_the_exclusion_written_on_this_source_is_accepted() -> None:
     assert resume_saved_view(saved, {}, list(messages), Handed.take(messages))
     messages[0].additional_properties[EXCLUDE_REASON_KEY] = "user_turn_summarized"
     assert resume_saved_view(saved, {}, messages, Handed.take(messages)) is None
+
+
+def test_a_source_is_accepted_without_the_links_the_layout_restores_and_with_no_others() -> None:
+    def conversation(annotation: dict[str, Any] | None) -> list[Message]:
+        source = Message("user", ["requirement"], message_id="original")
+        if annotation is not None:
+            source.additional_properties[GROUP_ANNOTATION_KEY] = annotation
+        return [source, Message("user", ["tail"], message_id="tail")]
+
+    linked = {SUMMARIZED_BY_SUMMARY_ID_KEY: "summary"}
+    kept = conversation(linked)
+    saved = save_view(CarriedView(Handed.take(kept), kept), {})
+    assert saved
+    saved = json.loads(json.dumps(saved))
+
+    bare = conversation(None)
+    assert resume_saved_view(saved, {}, bare, Handed.take(bare))
+    assert bare[0].additional_properties[GROUP_ANNOTATION_KEY] == linked
+    for annotation in ({SUMMARIZED_BY_SUMMARY_ID_KEY: "another"}, {"host_note": 1}):
+        changed = conversation(annotation)
+        assert resume_saved_view(saved, {}, changed, Handed.take(changed)) is None
 
 
 def test_a_store_that_stripped_a_generated_records_identity_gets_full_replay() -> None:

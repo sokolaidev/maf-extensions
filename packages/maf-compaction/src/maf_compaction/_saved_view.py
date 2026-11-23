@@ -110,6 +110,11 @@ def _standing(message: Message, mid: str | None, overlay: dict[str, Any]) -> Mes
     return kept
 
 
+def _unlinked(links: Any) -> Any:
+    """Return a source's links without the ones a layout's overlay restores."""
+    return tuple(pair for pair in links if pair[0] not in _LINKS)
+
+
 def _generated(message: Message) -> bool:
     return _is_written_record(message) or _is_marker(message) or _is_summary(message)
 
@@ -157,6 +162,9 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
             flags = {_flags(dict(state[3])) for state in accepted}
             if any(reason in _OWN_EXCLUSIONS for _, reason in flags):
                 flags.add((False, None))
+            # A host that rebuilds its transcript hands a source back without the links a pass
+            # wrote on it, and the overlay puts them back.
+            known_links.extend([_unlinked(value) for value in known_links])
             sources.append(
                 [
                     digest,
