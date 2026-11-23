@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.17.0...maf-compaction-v0.18.0) (2026-11-23)
+
+
+### Features
+
+* **compaction:** cap how many records one merge batch may hold (record_merge_max_records) ([#2914](https://github.com/sokolaidev/maf-extensions/issues/2914)) ([2a97b4e](https://github.com/sokolaidev/maf-extensions/commit/2a97b4e91a02f78a1d15db7c1abd659363c245fe))
+
+
+### Fixes
+
+* **compaction:** recognise a forced record whose call was streamed in fragments, so one is not forced after every tool step ([#2915](https://github.com/sokolaidev/maf-extensions/issues/2915)) ([733acfd](https://github.com/sokolaidev/maf-extensions/commit/733acfd10f94a905c063e45047aa7bece9dd3c10))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.16.0...maf-compaction-v0.17.0) (2026-11-23)
 
 
