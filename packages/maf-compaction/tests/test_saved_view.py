@@ -81,6 +81,58 @@ async def test_first_call_with_a_fresh_strategy_matches_full_replay(durable: boo
     assert restored.calls_resumed == int(durable)
 
 
+@pytest.mark.parametrize("stored_note", [False, True])
+@pytest.mark.parametrize("change", ["unchanged", "following role", "mixed attribution"])
+async def test_first_call_matches_replay_after_insertions_shift_source_positions(
+    stored_note: bool, change: str
+) -> None:
+    record = build_record_message("Remember.")
+    record.message_id = "record"
+    history = [
+        record,
+        Message("user", ["First"], message_id="u0"),
+        Message("assistant", ["Earlier answer"], message_id="prefix"),
+        Message("user", ["Question"], message_id="u"),
+        Message(
+            "assistant", [Content.from_function_call("c", "fetch", arguments={})], message_id="call"
+        ),
+        Message("tool", [Content.from_function_result("c", result="ok")], message_id="result"),
+        Message("assistant", ["Answer"], message_id="reply"),
+        Message("user", ["Next"], message_id="tail"),
+    ]
+    first = _strategy(_Summarizer(), budget=6000, policy="shed")
+    decisions = first.session_state()
+    decisions["shed_ids"] = ["prefix", "call", "result", "reply"]
+    first.restore_session_state(decisions)
+    previous = _reload(history)
+    await _call(first, previous)
+    earlier_note = next(m for m in previous if m.message_id == "anchored_group_prefix")
+    saved = first.take_saved_view()
+    assert saved
+    decisions = first.session_state()
+
+    if change == "following role":
+        history[-1] = Message("tool", ["New result"], message_id="new")
+    elif change == "mixed attribution":
+        history[4].additional_properties["_attribution"] = "history"
+    if stored_note:
+        history.insert(2, earlier_note)
+    control = _strategy(_Summarizer(), budget=6000, policy="shed")
+    restored = _strategy(_Summarizer(), budget=6000, policy="shed")
+    for strategy in (control, restored):
+        strategy.restore_session_state(json.loads(json.dumps(decisions)))
+    expected = await _call(control, _reload(history))
+    assert await _call(restored, _reload(history), json.loads(json.dumps(saved))) == expected
+    assert [mid for mid, _, _ in expected].count(earlier_note.message_id) == 1
+    if change == "following role":
+        texts = next(contents for mid, _, contents in expected if mid == "anchored_group_reply")
+        assert texts[0]["text"] == "[compacted: an earlier assistant reply]"
+    elif change == "mixed attribution":
+        assert {"call", "result"} <= {mid for mid, _, _ in expected}
+    elif not stored_note:
+        assert restored.calls_resumed == 1
+
+
 def _layout() -> tuple[dict[str, Any], list[Message], Message]:
     source = Message("user", ["private transcript"], message_id="original")
     last = Message("user", ["tail"], message_id="tail")
