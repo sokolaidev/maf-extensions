@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.8.1...maf-cachebench-v0.8.2) (2026-11-23)
+
+
+### Fixes
+
+* require maf-compaction 0.18.0 in the dependents, and admit the 0.18 line ([#2918](https://github.com/sokolaidev/maf-extensions/issues/2918)) ([b157f9f](https://github.com/sokolaidev/maf-extensions/commit/b157f9f7edf83983fd9979938b2d6ba95e4b1f3c))
+
 ## [0.8.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.8.0...maf-cachebench-v0.8.1) (2026-11-23)
 
 
