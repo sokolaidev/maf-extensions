@@ -41,10 +41,11 @@ from agent_framework._compaction import (
     included_token_count,
     project_included_messages,
 )
-from test_pass_cost import _counting
+from test_pass_cost import _applied, _counting
 from test_record_budget import (
     TOKENIZER,
     _history,
+    _record_pair,
     _sent,
     _size,
     _strategy,
@@ -60,6 +61,7 @@ from maf_compaction import (
     SessionCompactionProvider,
     SessionCompactionRegistry,
     SessionToolResultRecallMiddleware,
+    ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     make_session_record_merge_middleware,
@@ -212,6 +214,89 @@ async def test_a_rebuilt_list_sends_what_a_kept_list_sends(
         if call > 1:
             assert not calls, f"call {call} rebuilt a record's window"
     assert strategy.calls_resumed == _CALLS - 1
+
+
+@pytest.mark.parametrize("trigger", [0.0001, 0.9])
+async def test_settled_tool_rounds_match_full_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: float,
+) -> None:
+    strategy, summarizer, _, handed = await _applied(9, 4)
+    strategy.tool_results.trigger_fraction = trigger
+    full = _strategy(_Summarizer(), budget=strategy.max_input_tokens, cap=None)
+    full.tool_results.trigger_fraction = trigger
+    full.restore_session_state(strategy.session_state())
+    monkeypatch.setattr(full, "_settled_tools", lambda *_: None)
+    host, reference = _Rebuilding(copy.deepcopy(handed)), _Rebuilding(copy.deepcopy(handed))
+    work: Counter[str] = Counter()
+    for owner, name in (
+        (strategy, "_replay_record_edits"),
+        (strategy, "_over"),
+        (strategy, "_annotate_messages"),
+        (strategy.tool_results, "_record_candidates"),
+        (strategy.tool_results, "_resume_record_phase"),
+    ):
+        _counting(monkeypatch, owner, name, work)
+    asked = len(summarizer.requests)
+    for call in range(1, 10):
+        work.clear()
+        actual, expected = host.hand(), reference.hand()
+        assert await _compact(strategy, actual) == await _compact(full, expected)
+        assert included_token_count(actual) == included_token_count(expected)
+        assert [m.to_dict() for m in actual] == [m.to_dict() for m in expected]
+        assert strategy.session_state() == full.session_state()
+        if call >= 3:
+            assert work["_resume_record_phase"] == 1
+            assert work["_over"] == work["_replay_record_edits"] == work["_annotate_messages"] == 0
+        if call >= 8:
+            assert work["_record_candidates"] == 0
+        for loop in (host, reference):
+            loop.answered(call)
+            loop.store[-1].contents.insert(0, Content.from_text_reasoning(text="checking"))
+            loop.carried_in[0].contents[0].result = f"delivery CODE-{call:05}"
+    assert strategy.calls_resumed == 8
+    assert len(summarizer.requests) == asked
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["new-record", "reused-call", "edited-result", "budget", "saved-edit", "trigger", "new-turn"],
+)
+async def test_settled_tool_round_rechecks_changed_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    strategy, _, _, handed = await _applied(9, 4)
+    full = _strategy(_Summarizer(), budget=strategy.max_input_tokens, cap=None)
+    full.restore_session_state(strategy.session_state())
+    monkeypatch.setattr(full, "_settled_tools", lambda *_: None)
+    work: Counter[str] = Counter()
+    _counting(monkeypatch, strategy.tool_results, "_resume_record_phase", work)
+    outcomes: list[Any] = []
+    for compactor in (strategy, full):
+        loop = _Rebuilding(copy.deepcopy(handed))
+        for call in (1, 2, 3):
+            await _compact(compactor, loop.hand())
+            loop.answered(call)
+        if change == "new-record":
+            loop.store[-1], loop.carried_in[0] = _record_pair(999)
+        elif change == "reused-call":
+            loop.store[-1].contents[0].call_id = loop.carried_in[0].contents[0].call_id = "run1"
+        elif change == "edited-result":
+            loop.store[-2].contents[0].result = "edited in place"
+        elif change == "budget":
+            compactor.max_input_tokens = 256
+        elif change == "trigger":
+            compactor.tool_results.trigger_fraction = 0.0001
+        elif change == "new-turn":
+            loop.carried_in.append(Message("user", ["Compare the results."]))
+        else:
+            compactor._shed_ids.add(loop.store[-1].message_id or "newly-shed")
+        messages = loop.hand()
+        sent = await _compact(compactor, messages)
+        outcomes.append((sent, included_token_count(messages), compactor.session_state()))
+    assert outcomes[0] == outcomes[1]
+    assert work["_resume_record_phase"] == 1
 
 
 def _own(message: Message) -> dict[str, Any]:
@@ -954,6 +1039,10 @@ async def test_a_harness_run_resumes_on_every_later_call(
 ) -> None:
     """Per-service-call persistence, as the framework's harness agent runs it."""
     with monkeypatch.context() as patch:
+        fast: Counter[str] = Counter()
+        _counting(
+            patch, ToolResultAnchoredSummarizationCompactionStrategy, "_resume_record_phase", fast
+        )
         sent, rebuilt, strategy = await _harness_run(patch, stream=stream)
     with monkeypatch.context() as patch:
         _without_carrying(patch)
@@ -961,6 +1050,7 @@ async def test_a_harness_run_resumes_on_every_later_call(
 
     assert len(sent) == _HARNESS_CALLS
     assert sent == control_sent
+    assert fast["_resume_record_phase"] > 0
     assert rebuilt == [0] * _HARNESS_CALLS
     assert strategy.calls_resumed == _HARNESS_CALLS - 1
     assert all(control_rebuilt[1:])
