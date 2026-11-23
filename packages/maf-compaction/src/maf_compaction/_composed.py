@@ -58,6 +58,7 @@ from ._anchored import (
     AnchoredCompactionStrategy,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
+from ._artifacts import exclude_compaction_echoes
 from ._background_records import BackgroundRecords, counted_history, has_records
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts, structural_counter
@@ -2012,9 +2013,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     async def _compact_annotated(
         self, messages: list[Message], *, steady: SettledTools | None = None, tokens: int = 0
     ) -> _PassResult:
+        echoes = steady is None and await off_loop(exclude_compaction_echoes, messages)
         refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
         with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
-            return await self._compact(messages, steady=steady, tokens=tokens)
+            changed, sources, entry_tokens = await self._compact(
+                messages, steady=steady, tokens=tokens
+            )
+        return changed or echoes, sources, entry_tokens
 
     async def _compact(
         self,

@@ -331,7 +331,7 @@ async def test_a_client_invented_record_is_not_trusted() -> None:
     assert "CODE-0 " in _rendered(messages), "nothing dropped on the strength of a bare result"
 
 
-async def test_quoting_a_written_record_does_not_authorize_deletion() -> None:
+async def test_echoing_a_written_record_excludes_only_the_echo() -> None:
     strategy = _strategy()
     messages = _conversation(tool_turns=8)
     record = build_record_message(_covering_record(8))
@@ -340,7 +340,7 @@ async def test_quoting_a_written_record_does_not_authorize_deletion() -> None:
 
     await strategy(messages)
 
-    assert _sent(messages) == before
+    assert _sent(messages) == before - {"quote"}
     assert strategy.records_found == 0
     assert find_record_index(messages) is None
     assert active_record_groups(messages) == []

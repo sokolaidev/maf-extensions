@@ -13,6 +13,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
+from maf_compaction import RECORD_MARKER, is_compaction_echo, set_preserved
 from maf_compaction._anchored import AnchoredCompactionStrategy, _is_marker
 from maf_compaction._composed import (
     CompactionBudgetExceeded,
@@ -188,3 +189,86 @@ def test_replaying_a_legacy_shed_short_reply_leaves_an_answered_marker() -> None
         not strategy._is_marker_group(messages, g)
         for g in strategy._middle_band(messages, group_messages(messages))
     )
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_shedding_progress_between_tool_exchanges_leaves_no_reply_marker(replay: bool) -> None:
+    first, second = _conversation(0)[:4], _conversation(0)[4:8]
+    progress = first[-1]
+    messages = [*first, *second[1:]]
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=1, tokenizer=TOKENIZER, keep_head_groups=0, keep_tail_groups=0
+    )
+    if replay:
+        assert strategy.shed_again(messages, ["reply_0"])
+    else:
+        assert strategy.shed_to(messages, ceiling=1)
+    visible = project_included_messages(messages)
+    assert progress not in visible
+    assert not any(m.text == "[compacted: an earlier assistant reply]" for m in visible)
+    assert not strategy.shed_again(messages, ["reply_0"])
+
+
+@pytest.mark.parametrize("kind", ["anchored", "tool", "user", "composed", "request"])
+async def test_echoes_excluded_before_budget_and_genuine_artifacts_survive(kind: str) -> None:
+    stack = _strategy()
+    messages = _conversation(0)[:4]
+    stack.tool_results.fallback.shed_again(messages, ["reply_0"])
+    note = next(m for m in messages if _is_marker(m))
+    record = build_record_message("Page title")
+    echoes = [Message("assistant", [m.text]) for m in (note, record)]
+    progress_echo = Message("assistant", ["[compacted: an earlier assistant reply]"])
+    messages.extend([record, *echoes, progress_echo])
+    if kind == "request":
+        assert await stack.compact_before(messages, options={})
+    else:
+        strategy = {
+            "anchored": stack.tool_results.fallback,
+            "tool": stack.tool_results,
+            "user": stack.user_turns,
+            "composed": stack,
+        }[kind]
+        assert await strategy(messages)
+        assert not await strategy(messages)
+    visible = project_included_messages(messages)
+    assert note in visible and record in visible
+    assert not any(m in visible for m in [*echoes, progress_echo])
+    assert len([m for m in visible if _is_marker(m)]) == 1
+    for artifact, echo in zip((note, record), echoes, strict=True):
+        assert is_compaction_echo(echo.text)
+        assert is_compaction_echo(echo)
+        assert not is_compaction_echo(Message.from_dict(artifact.to_dict()))
+
+
+def test_echo_recognition_is_limited_to_complete_assistant_text() -> None:
+    note = "[compacted: an earlier tool call and its result]"
+    assert is_compaction_echo(note)
+    assert is_compaction_echo(f"{RECORD_MARKER} more text")
+    for ordinary in [note[:-1], note + " more text", f"Quoted {RECORD_MARKER}"]:
+        assert not is_compaction_echo(ordinary)
+    for role in ["user", "system", "tool"]:
+        assert not is_compaction_echo(Message(role, [note]))
+    assert not is_compaction_echo(
+        Message("assistant", [note, Content.from_function_call("a", "fetch")])
+    )
+
+
+async def test_preserved_echo_and_shared_properties() -> None:
+    held = Message("assistant", [RECORD_MARKER])
+    set_preserved(held, preserved=True)
+    real = Message("user", ["Question"])
+    echo = Message("assistant", [RECORD_MARKER])
+    echo.additional_properties = real.additional_properties
+    messages = [real, echo, held]
+    assert await _strategy()(messages)
+    assert project_included_messages(messages) == [real, held]
+
+
+async def test_excluded_echo_after_a_final_answer_does_not_make_it_intermediate() -> None:
+    messages = _conversation(1_000)[:4]
+    messages.extend([Message("assistant", [RECORD_MARKER]), Message("user", ["Next request"])])
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=1, tokenizer=TOKENIZER, keep_head_groups=0, keep_tail_groups=0
+    )
+    await strategy(messages)
+    assert any(ANSWERED in m.text for m in project_included_messages(messages))

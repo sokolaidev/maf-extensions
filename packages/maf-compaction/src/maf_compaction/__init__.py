@@ -51,6 +51,7 @@ from ._anchored import (
     AnchoredCompactionStrategy,
     MinimumGainAnchoredCompactionStrategy,
 )
+from ._artifacts import is_compaction_echo
 from ._composed import (
     DEFAULT_CHAIN_GAIN_FRACTION,
     DEFAULT_CHAIN_SECONDS,
@@ -184,6 +185,7 @@ __all__ = [
     "any_preserved",
     "find_nested_strategy",
     "find_record_index",
+    "is_compaction_echo",
     "is_preserved",
     "make_recall_tool",
     "make_session_recall_tool",
