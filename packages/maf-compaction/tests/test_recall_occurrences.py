@@ -1,17 +1,30 @@
 """Recall authority follows local call occurrences across persisted histories."""
 
 import copy
+import json
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, Content, Message
+from agent_framework import (
+    AgentSession,
+    CharacterEstimatorTokenizer,
+    ChatResponse,
+    ChatResponseUpdate,
+    Content,
+    InMemoryHistoryProvider,
+    Message,
+    ResponseStream,
+)
 from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups, group_messages
+from test_session import Model, build_stack, harness
 
+from maf_compaction import SessionCompactionRegistry
 from maf_compaction._occurrences import function_result_candidates
 from maf_compaction._preserve import removable_whole
 from maf_compaction._toolsummary import (
     RECALL_TOOL_NAME,
     RECORD_MARKER,
     ToolResultAnchoredSummarizationCompactionStrategy,
+    _buffer_recall_stream,
     _is_recall_group,
     _newest_record_identity,
     active_record_groups,
@@ -417,3 +430,94 @@ def test_value_diagnostic_ignores_unrelated_marked_results_in_record_batch(reloa
     strategy._drop_before(messages, len(messages) - 1)
     assert strategy.records_without_values == 1
     assert not messages[1].additional_properties.get(EXCLUDED_KEY, False)
+
+
+RECORDED = "recorded fact123"
+
+
+def fragmented_call(name=RECALL_TOOL_NAME):
+    """A call as a client streams it in pieces: argument deltas, then the whole, none with an id."""
+    arguments = json.dumps({"values": RECORDED})
+    half = len(arguments) // 2
+    contents = [
+        Content.from_function_call(
+            call_id="recall", name=name, arguments=arguments[:half], merge_mode="append"
+        ),
+        Content.from_function_call(
+            call_id="recall", name=name, arguments=arguments[half:], merge_mode="append"
+        ),
+        Content.from_function_call(
+            call_id="recall", name=name, arguments=arguments, merge_mode="replace"
+        ),
+    ]
+
+    async def updates():
+        for content in contents:
+            yield ChatResponseUpdate(role="assistant", contents=[content], message_id="record")
+
+    return ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+
+
+def function_calls(response):
+    return [
+        content
+        for message in response.messages
+        for content in message.contents
+        if content.type == "function_call"
+    ]
+
+
+@pytest.mark.anyio
+async def test_an_id_given_to_a_replayed_forced_call_reaches_the_response_history_saves():
+    replay, response = await _buffer_recall_stream(fragmented_call(), lambda _: False)
+
+    [executed] = function_calls(ChatResponse.from_updates([update async for update in replay]))
+    executed.id = "occurrence"
+
+    assert [content.id for content in function_calls(response)] == ["occurrence"]
+
+
+@pytest.mark.anyio
+async def test_a_forced_call_streamed_whole_is_replayed_as_it_was_streamed():
+    streamed = ChatResponseUpdate(
+        role="assistant",
+        contents=[Content.from_function_call(call_id="recall", name=RECALL_TOOL_NAME)],
+    )
+
+    async def updates():
+        yield streamed
+
+    source = ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+    replay, _ = await _buffer_recall_stream(source, lambda _: False)
+
+    [replayed] = [update async for update in replay]
+    assert replayed is streamed
+
+
+class FragmentedRecall(Model):
+    def _inner_get_response(self, *, messages, stream, options, **kwargs):
+        choice = options.get("tool_choice")
+        required = choice.get("required_function_name") if isinstance(choice, dict) else None
+        if stream and required:
+            return fragmented_call(required)
+        return super()._inner_get_response(
+            messages=messages, stream=stream, options=options, **kwargs
+        )
+
+
+@pytest.mark.anyio
+async def test_a_forced_record_streamed_in_fragments_is_saved_as_a_record():
+    registry = SessionCompactionRegistry(lambda: build_stack(budget=100_000))
+    session = AgentSession(session_id="a")
+    with registry.activate(session) as stack:
+        stack.middleware._force_next = True
+    history = InMemoryHistoryProvider()
+    agent = harness(registry, FragmentedRecall(), history_provider=history)
+
+    async for _ in agent.run("Recall SKU-123.", session=session, stream=True):
+        pass
+
+    saved = session.state[history.source_id]["messages"]
+    index = find_record_index(saved)
+    assert index is not None
+    assert RECORDED in record_text(saved[index], history=saved)
