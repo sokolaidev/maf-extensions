@@ -3078,16 +3078,37 @@ async def _buffer_recall_stream(
         await source.close()
     if any(_has_refusal(update.contents) for update in buffered):
         raise _RecallRefused
-    observe(response)
+    if observe(response) or _holds_reassembled_call(response, buffered):
+        # Executors and history providers can assemble calls from updates independently.
+        buffered = response.to_updates()
 
     async def updates():
-        # Executors and history providers assemble calls from updates independently. Replayed
-        # whole, the call each of them holds is the response's own, so an occurrence id an
-        # executor assigns reaches the declaration that history saves.
-        for update in response.to_updates():
+        for update in buffered:
             yield update
 
     return ResponseStream(updates(), finalizer=lambda _: response), response
+
+
+def _holds_reassembled_call(
+    response: ChatResponse[Any], buffered: Sequence[ChatResponseUpdate]
+) -> bool:
+    """Return whether the response holds a call it put together from streamed fragments.
+
+    Whoever reads those fragments again puts together a call of its own, and an occurrence id an
+    executor gives that copy never reaches the response's, which is the one history saves.
+    """
+    streamed: dict[str, set[int]] = {}
+    for update in buffered:
+        for content in update.contents:
+            if content.type == "function_call" and content.call_id:
+                streamed.setdefault(content.call_id, set()).add(id(content))
+    return any(
+        content.type == "function_call"
+        and content.call_id in streamed
+        and id(content) not in streamed[content.call_id]
+        for message in response.messages
+        for content in message.contents
+    )
 
 
 def _is_recall_tool(tool: Any) -> bool:

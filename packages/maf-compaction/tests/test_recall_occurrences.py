@@ -477,6 +477,23 @@ async def test_an_id_given_to_a_replayed_forced_call_reaches_the_response_histor
     assert [content.id for content in function_calls(response)] == ["occurrence"]
 
 
+@pytest.mark.anyio
+async def test_a_forced_call_streamed_whole_is_replayed_as_it_was_streamed():
+    streamed = ChatResponseUpdate(
+        role="assistant",
+        contents=[Content.from_function_call(call_id="recall", name=RECALL_TOOL_NAME)],
+    )
+
+    async def updates():
+        yield streamed
+
+    source = ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+    replay, _ = await _buffer_recall_stream(source, lambda _: False)
+
+    [replayed] = [update async for update in replay]
+    assert replayed is streamed
+
+
 class FragmentedRecall(Model):
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
         choice = options.get("tool_choice")
