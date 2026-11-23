@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -384,3 +385,43 @@ async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> Non
         assert key not in loaded.state
         sent.append(client.sent)
     assert sent[0] == sent[1]
+
+
+@pytest.mark.parametrize("save_fails", [False, True])
+async def test_record_merge_run_keeps_ownership_until_turn_cleanup_finishes(
+    monkeypatch: pytest.MonkeyPatch, save_fails: bool
+) -> None:
+    registry = _registry(6000, [], saved_view_key="turn_view")
+    session = AgentSession()
+    agent = Agent(
+        client=_Layered(),
+        middleware=[
+            make_session_record_merge_middleware(registry),
+            SessionToolResultRecallMiddleware(registry, compact_before=True),
+        ],
+    )
+    entered, finish = asyncio.Event(), asyncio.Event()
+    end_turn = registry._end_turn
+
+    async def delayed_save(session_id: str) -> None:
+        if not entered.is_set():
+            entered.set()
+            await finish.wait()
+            if save_fails:
+                raise ValueError("save failed")
+        await end_turn(session_id)
+
+    monkeypatch.setattr(registry, "_end_turn", delayed_save)
+    first = asyncio.ensure_future(agent.run("first", session=session))
+    await asyncio.wait_for(entered.wait(), 5)
+    try:
+        with pytest.raises(RuntimeError, match="Overlapping agent runs"):
+            await agent.run("overlap", session=session)
+    finally:
+        finish.set()
+        if save_fails:
+            with pytest.raises(ValueError, match="save failed"):
+                await first
+        else:
+            await first
+    await agent.run("next", session=session)

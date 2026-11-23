@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Generator
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
@@ -323,19 +324,23 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
         session = context.session
         if session is None:
             raise RuntimeError("Background record merging requires an AgentSession.")
-        if session.session_id in self.registry._merge_work:  # pyright: ignore[reportPrivateUsage]
+        workers = self.registry._merge_work  # pyright: ignore[reportPrivateUsage]
+        if session.session_id in workers:
             raise RuntimeError("Overlapping agent runs for one compaction session are unsupported.")
         work = _RecordMergeWork()
         entry = session, work
-        self.registry._merge_work[session.session_id] = entry  # pyright: ignore[reportPrivateUsage]
+        workers[session.session_id] = entry
+        close_lock = asyncio.Lock()
 
         async def close() -> None:
-            if self.registry._merge_work.get(session.session_id) is entry:  # pyright: ignore[reportPrivateUsage]
-                del self.registry._merge_work[session.session_id]  # pyright: ignore[reportPrivateUsage]
-                try:
+            async with close_lock:
+                if workers.get(session.session_id) is not entry:
+                    return
+                async with AsyncExitStack() as cleanup:
+                    # The next run may bind this strategy only after its previous worker detaches.
+                    cleanup.callback(workers.pop, session.session_id)
+                    cleanup.push_async_callback(work.close)
                     await self.registry._end_turn(session.session_id)  # pyright: ignore[reportPrivateUsage]
-                finally:
-                    await work.close()
 
         if context.stream:
             context.stream_cleanup_hooks.append(close)
