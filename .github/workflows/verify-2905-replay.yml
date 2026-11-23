@@ -1,0 +1,56 @@
+name: Verify released antivirus SQLite evidence
+on:
+  push:
+    branches: [ci/2905-antivirus-sqlite-assessment]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Replay released scan and inventory
+        env:
+          PYTHONPATH: scripts
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/antivirus"
+          for file in grype.json sbom.syft.json; do
+            curl --fail --silent --show-error --location --retry 3 "https://github.com/sokolaidev/maf-extensions/releases/download/image-antivirus-v0.1.7/$file" -o "$RUNNER_TEMP/antivirus/$file"
+          done
+          python3 - <<'PY'
+          import hashlib, json, os, sys
+          from collections import Counter
+          from pathlib import Path
+          from container_release import scan_result
+          from sqlite_vulnerability import ANTIVIRUS_IMAGE_ID, CVE, EXPIRES
+          root = Path(os.environ["RUNNER_TEMP"]) / "antivirus"
+          report, sbom = (json.loads((root / file).read_bytes()) for file in ("grype.json", "sbom.syft.json"))
+          def run(at):
+              return scan_result(report, ANTIVIRUS_IMAGE_ID, at, sbom=sbom)
+          baseline = run("2026-11-23T05:09:32Z")
+          assessed = run("2026-11-23T14:00:00Z")
+          print("Baseline", Counter(x["id"] for x in baseline["findings"]))
+          print("Reviewed", Counter(x["id"] for x in assessed["findings"]), assessed.get("notAffected"))
+          assert len(baseline["findings"]) == 12
+          if not assessed.get("notAffected"):
+              match = next(m for m in report["matches"] if m["vulnerability"]["id"] == CVE)
+              from sqlite_vulnerability import _reviewed
+              def trace(frame, event, arg):
+                  if frame.f_code.co_name == "_reviewed" and event in ("return", "exception"):
+                      print("Evidence check", frame.f_lineno, event, arg)
+                  return trace
+              sys.settrace(trace)
+              _reviewed(match, sbom, ANTIVIRUS_IMAGE_ID, "2026-11-23T14:00:00Z")
+              sys.settrace(None)
+          assert [x["id"] for x in assessed["notAffected"]] == [CVE]
+          assert assessed["findings"] == [row for row in baseline["findings"] if row["id"] != CVE]
+          assert run(EXPIRES)["findings"] == baseline["findings"]
+          PY
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --frozen
+      - run: uv run pytest tests/test_sqlite_vulnerability.py -q
+      - run: uv run poe gate
