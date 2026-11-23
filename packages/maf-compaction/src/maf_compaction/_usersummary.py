@@ -43,6 +43,7 @@ from agent_framework._compaction import (
     set_excluded,
 )
 
+from ._artifacts import exclude_compaction_echoes
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._offload import off_loop
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
@@ -1054,11 +1055,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        await off_loop(_annotate_for_pass, messages, self.tokenizer)
-        return await self.compact_against(
-            messages,
-            prompt_tokens=included_token_count(messages),
-            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+        echoes = await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        return (
+            await self.compact_against(
+                messages,
+                prompt_tokens=included_token_count(messages),
+                trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            )
+            or echoes
         )
 
     async def compact_against(
@@ -2573,10 +2577,12 @@ def _band_transcript(selected: list[Message], bodies: dict[int, str]) -> tuple[s
     return transcript, source_key
 
 
-def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
-    """Group and count the conversation before a standalone pass, off the loop."""
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> bool:
+    """Exclude echoes before measuring the standalone strategy trigger."""
+    echoes = exclude_compaction_echoes(messages)
     annotate_message_groups(messages)
     annotate_token_counts(messages, tokenizer=tokenizer)
+    return echoes
 
 
 def _no_shorter(tokenizer: TokenizerProtocol, answer: str, transcript: str) -> bool:

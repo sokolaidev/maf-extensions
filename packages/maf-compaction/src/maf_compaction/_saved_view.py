@@ -20,6 +20,7 @@ from agent_framework._compaction import (
 )
 
 from ._anchored import EXCLUDE_REASON, _is_marker  # pyright: ignore[reportPrivateUsage]
+from ._artifacts import ECHO_EXCLUDE_REASON
 from ._carryover import (
     CarriedView,
     Handed,
@@ -50,6 +51,7 @@ _EXCLUSIONS = (EXCLUDED_KEY, EXCLUDE_REASON_KEY)
 _VERSION = 5
 _LINKS = (SUMMARIZED_BY_SUMMARY_ID_KEY, SUMMARY_OF_GROUP_IDS_KEY, SUMMARY_OF_MESSAGE_IDS_KEY)
 _OWN_EXCLUSIONS = {
+    ECHO_EXCLUDE_REASON,
     EXCLUDE_REASON,
     CONSOLIDATE_EXCLUDE_REASON,
     USER_EXCLUDE_REASON,

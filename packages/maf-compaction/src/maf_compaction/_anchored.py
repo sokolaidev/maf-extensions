@@ -67,11 +67,20 @@ from agent_framework._compaction import (
     set_excluded,
 )
 
+from ._artifacts import (
+    ANSWERED_NOTE,
+    ASSISTANT_TEXT,
+    ECHO_EXCLUDE_REASON,
+    MARKER_ID_PREFIX,
+    SHED_NOTES,
+    TOOL_CALL,
+    exclude_compaction_echoes,
+    is_marker,
+)
 from ._media import annotate_token_counts
 from ._offload import off_loop
 from ._preserve import any_preserved, is_preserved, removable_spans, stands_in
 from ._request import RECALL_PROMPT_KEY
-from ._summary_links import has_summary_links
 from ._tool_result import (
     ResultTextRewriter,
     can_shorten_result,
@@ -132,19 +141,9 @@ REMOVAL_MARKER: Final[str] = "... removed by compaction"
 #: merely quotes :data:`REMOVAL_MARKER` is not mistaken for one already shortened.
 _SHORTENED = re.compile(rf"\n\[{re.escape(REMOVAL_MARKER)}: [\d,]+ characters\]\n")
 
-#: Prefix of the ``message_id`` given to every note this strategy leaves behind.
-MARKER_ID_PREFIX: Final[str] = "anchored_"
-
-#: The two group kinds the shed step removes, and the note each leaves in its place.
-_TOOL_CALL: Final[str] = "tool_call"
-_ASSISTANT_TEXT: Final[str] = "assistant_text"
-_NOTES: Final[dict[str, str]] = {
-    _TOOL_CALL: "[compacted: an earlier tool call and its result]",
-    _ASSISTANT_TEXT: "[compacted: an earlier assistant reply]",
-}
-_ANSWERED_NOTE: Final[str] = (
-    "[compacted: the preceding user request was already answered; the assistant reply was removed]"
-)
+_ANSWERED_NOTE = ANSWERED_NOTE
+_NOTES = SHED_NOTES
+_is_marker = is_marker
 _SHORT_REPLY_TOKENS: Final[int] = 64
 
 #: Share of the tokens *behind* a collapse that the collapse must remove before it is worth
@@ -194,20 +193,6 @@ def _shares_exclusion_state(messages: list[Message]) -> bool:
     their own tokens when either is excluded.
     """
     return len({id(message.additional_properties) for message in messages}) != len(messages)
-
-
-def _is_marker(message: Message) -> bool:
-    """Return whether ``message`` is a note this strategy left in place of a dropped group.
-
-    Source links distinguish generated notes from ordinary messages with matching text and ids.
-    """
-    return bool(
-        message.role == "assistant"
-        and has_summary_links(message)
-        and message.message_id
-        and message.message_id.startswith(MARKER_ID_PREFIX)
-        and message.text in (*_NOTES.values(), _ANSWERED_NOTE)
-    )
 
 
 def _noted_group_ids(note: Message) -> list[str]:
@@ -354,6 +339,7 @@ class AnchoredCompactionStrategy:
         """
         if not messages:
             return False
+        echoes = exclude_compaction_echoes(messages)
         repaired = repair_compacted_items(
             messages, lambda text: _SHORTENED.search(text) is not None
         )
@@ -363,7 +349,7 @@ class AnchoredCompactionStrategy:
         groups = group_messages(messages)
         band = self._middle_band(messages, groups)
         if not band:
-            return repaired
+            return repaired or echoes
 
         # Shortening results first is what keeps the conversation legible: the model still
         # sees that each call happened and roughly what it returned. Only when that is not
@@ -375,7 +361,7 @@ class AnchoredCompactionStrategy:
             # exists. Without this the ceiling check below reads the original sizes and sheds
             # groups that were already small enough.
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
-        return self.shed_to(messages, ceiling=ceiling) or changed
+        return self.shed_to(messages, ceiling=ceiling) or changed or echoes
 
     def shed_to(self, messages: list[Message], *, ceiling: int) -> bool:
         """Remove whole band groups to fit ``ceiling``, preserving anchors and marked messages.
@@ -385,7 +371,7 @@ class AnchoredCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = False
+        changed = exclude_compaction_echoes(messages)
         # Shedding is repeated because each pass adds notes of its own, which can leave the
         # prompt over the ceiling it just tried to meet. It ends: a pass that sheds excludes at
         # least one more group, excluded groups and notes are never shed, and the loop stops at
@@ -393,9 +379,9 @@ class AnchoredCompactionStrategy:
         while True:
             if included_token_count(messages) <= ceiling:
                 break
-            shed = self._shed(messages, _TOOL_CALL, ceiling=ceiling)
+            shed = self._shed(messages, TOOL_CALL, ceiling=ceiling)
             if self.collapse_assistant_text and included_token_count(messages) > ceiling:
-                shed = self._shed(messages, _ASSISTANT_TEXT, ceiling=ceiling) or shed
+                shed = self._shed(messages, ASSISTANT_TEXT, ceiling=ceiling) or shed
             changed = shed or changed
             if not shed:
                 break
@@ -670,7 +656,8 @@ class AnchoredCompactionStrategy:
         spans = group_messages(messages)
         band = self._middle_band(messages, spans)
         removable = removable_spans(messages, spans)
-        dropped: list[dict[str, Any]] = []
+        notes: list[tuple[dict[str, Any], str]] = []
+        changed = False
         # Nothing in this loop changes a token annotation or adds a message, so the total is
         # counted once and each drop subtracts what it took out. That holds only while one
         # exclusion flag belongs to one list entry; a list that shares a message or its
@@ -694,8 +681,9 @@ class AnchoredCompactionStrategy:
                 included = included_token_count(messages)
             if included <= ceiling:
                 break
+            note = self._note_for(messages, group)
             if (
-                self._note_for(messages, group) == _ANSWERED_NOTE
+                note == _ANSWERED_NOTE
                 and all(c.type == "text" for m in members for c in m.contents)
                 and sum(self.tokenizer.count_tokens(m.text) for m in members) <= _SHORT_REPLY_TOKENS
             ):
@@ -717,43 +705,52 @@ class AnchoredCompactionStrategy:
             included -= included_token_count(members)
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
-            dropped.append(group)
+            changed = True
+            if note is not None:
+                notes.append((group, note))
 
-        self._insert_notes(
-            messages, [(group, self._note_for(messages, group)) for group in reversed(dropped)]
-        )
-        if dropped:
+        self._insert_notes(messages, list(reversed(notes)))
+        if notes:
             # Each note is itself a message with a cost. Counting it only on the next call
             # would let this one stop just above its ceiling and look as though it had met
             # it -- and on the following turn the strategy would shed one more group,
             # changing a decision it had already made.
             annotate_token_counts(messages, tokenizer=self.tokenizer)
-        return bool(dropped)
+        return changed
 
     @staticmethod
-    def _note_for(messages: list[Message], group: dict[str, Any]) -> str:
+    def _note_for(messages: list[Message], group: dict[str, Any]) -> str | None:
         """Mark a textual reply ending a user turn as answered, without inferring tool success."""
         kind = str(group["kind"])
-        if kind != _ASSISTANT_TEXT:
+        if kind != ASSISTANT_TEXT:
             return _NOTES[kind]
         start, end = group["start_index"], group["end_index"]
-        members = messages[start : end + 1]
-        if not any(m.text.strip() and not _is_marker(m) for m in members) or not any(
-            messages[index].role == "user" for index in range(start)
+
+        def neighbor(indices: range) -> Message | None:
+            for index in indices:
+                m = messages[index]
+                if (
+                    m.role not in {"system", "developer"}
+                    and not _is_marker(m)
+                    and m.additional_properties.get(EXCLUDE_REASON_KEY) != ECHO_EXCLUDE_REASON
+                    and not m.additional_properties.get(RECALL_PROMPT_KEY, False)
+                ):
+                    return m
+            return None
+
+        # Excluded sources still tell us which exchanges surrounded the narration.
+        following = neighbor(range(end + 1, len(messages)))
+        if following is not None and any(c.type == "function_call" for c in following.contents):
+            previous = neighbor(range(start - 1, -1, -1))
+            if previous is not None and any(c.type == "function_result" for c in previous.contents):
+                return None
+        if (
+            (following is None or following.role == "user")
+            and any(m.text.strip() and not _is_marker(m) for m in messages[start : end + 1])
+            and any(messages[i].role == "user" for i in range(start))
         ):
-            return _NOTES[kind]
-        # Excluded source messages still distinguish narration from the final reply.
-        following = next(
-            (
-                m
-                for index in range(end + 1, len(messages))
-                if (m := messages[index]).role not in {"system", "developer"}
-                and not _is_marker(m)
-                and not m.additional_properties.get(RECALL_PROMPT_KEY, False)
-            ),
-            None,
-        )
-        return _ANSWERED_NOTE if following is None or following.role == "user" else _NOTES[kind]
+            return _ANSWERED_NOTE
+        return _NOTES[kind]
 
     def shed_again(self, messages: list[Message], message_ids: Collection[str]) -> bool:
         """Shed again every group an earlier pass shed, found by its messages' ids.
@@ -791,7 +788,8 @@ class AnchoredCompactionStrategy:
             if _is_marker(message)
             for group_id in _noted_group_ids(message)
         }
-        dropped: list[dict[str, Any]] = []
+        notes: list[tuple[dict[str, Any], str]] = []
+        changed = False
         for group in spans:
             kind = group.get("kind")
             if kind not in _NOTES:
@@ -800,11 +798,16 @@ class AnchoredCompactionStrategy:
             if not all(message.message_id in message_ids for message in members):
                 continue
             if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
-                if group["group_id"] not in noted and all(
-                    message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
-                    for message in members
+                if (
+                    group["group_id"] not in noted
+                    and (note := self._note_for(messages, group)) is not None
+                    and all(
+                        message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+                        for message in members
+                    )
                 ):
-                    dropped.append(group)
+                    notes.append((group, note))
+                    changed = True
                 continue
             if (
                 any_preserved(members)
@@ -813,14 +816,14 @@ class AnchoredCompactionStrategy:
                 continue
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
-            dropped.append(group)
-        self._insert_notes(
-            messages, [(group, self._note_for(messages, group)) for group in reversed(dropped)]
-        )
-        if dropped:
+            changed = True
+            if (note := self._note_for(messages, group)) is not None:
+                notes.append((group, note))
+        self._insert_notes(messages, list(reversed(notes)))
+        if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
-        return bool(dropped)
+        return changed
 
     def _insert_note(self, messages: list[Message], group: dict[str, Any], note: str) -> None:
         """Leave one deterministic marker in place of a dropped group."""

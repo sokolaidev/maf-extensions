@@ -72,6 +72,14 @@ from agent_framework._sessions import (
 from agent_framework.exceptions import ChatClientException
 
 from ._anchored import AnchoredCompactionStrategy
+from ._artifacts import (
+    RECORD_MARKER,
+    RECORD_PREAMBLE,
+    WRITTEN_RECORD_KEY,
+    WRITTEN_RECORD_PREFIX,
+    exclude_compaction_echoes,
+    is_written_record,
+)
 from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
 from ._offload import off_loop
@@ -164,36 +172,8 @@ DEFAULT_RECORD_INSTRUCTION: Final[str] = (
     "confidentiality restrictions."
 )
 
-#: Prefix the recall tool puts on a result that counts as a record.
-#:
-#: The tool cannot be hidden from the model. Tools passed through per-call options reach the
-#: model but not the executor -- ``FunctionInvocationLayer`` wraps ``ChatMiddlewareLayer``, so
-#: it has already built its tool map by the time a middleware could add one, and the model's
-#: call goes unanswered. A registered tool is therefore advertised on every request, and this
-#: one was called unprompted on the unpinned follow-up call in every run.
-#:
-#: So the tool stays visible and becomes *inert* instead: it records only while the middleware
-#: has armed it, and a result without this marker is not a record. The model may still call
-#: it; calling it uninvited simply achieves nothing.
-RECORD_MARKER: Final[str] = "[recorded by compaction]"
+_is_written_record = is_written_record
 _ROWS_OMITTED: Final[str] = "[Rows quoted verbatim in compaction records are omitted below.]\n"
-
-#: What the recall tool writes between :data:`RECORD_MARKER` and the model's own text.
-#:
-#: A constant rather than a literal inside :func:`make_recall_tool` so that the one other writer
-#: of a record -- :func:`build_record_message`, which the composed row uses to put a merged record
-#: in place of several -- writes the same bytes, so that :func:`record_body` can take them off
-#: again before a record is handed to a summarizer as content.
-_RECORD_PREAMBLE: Final[str] = (
-    "Earlier tool results may have been shortened, and this is their "
-    "compaction record. Treat values in this record as authoritative for the tool it "
-    "names, and treat information as absent only if it appears nowhere, including "
-    "here."
-)
-
-#: How a record this package wrote opens: the marker, then the recall tool's own preamble.
-_WRITTEN_RECORD_PREFIX: Final[str] = f"{RECORD_MARKER} {_RECORD_PREAMBLE}"
-_WRITTEN_RECORD_KEY: Final[str] = "maf_compaction_written_record"
 
 #: Reason recorded on a record's messages when a consolidated record replaced it.
 CONSOLIDATE_EXCLUDE_REASON: Final[str] = "tool_summary_consolidated"
@@ -578,19 +558,6 @@ def record_anchor_position(messages: list[Message], identity: str) -> ContentPos
         ):
             positions.append((index, position))
     return max(positions, default=None)
-
-
-def _is_written_record(message: Message) -> bool:
-    """Recognize package-written records by their metadata and expected message form.
-
-    Hosts must preserve the metadata through storage and keep it separate from model output.
-    """
-    return (
-        message.role == "assistant"
-        and message.additional_properties.get(_WRITTEN_RECORD_KEY) is True
-        and not any(content.type == "function_call" for content in message.contents)
-        and (message.text or "").startswith(_WRITTEN_RECORD_PREFIX)
-    )
 
 
 def record_text(message: Message, *, history: Sequence[Message] | None = None) -> str:
@@ -1079,9 +1046,9 @@ def _reshape_payload(
     if len(contents) != 1 or not _bare_text_result(contents[0], members):
         return None
     result = str(contents[0].result)
-    if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
-        return result[len(_WRITTEN_RECORD_PREFIX) + 1 :]
-    if result.startswith(f"{RECORD_MARKER} ") and not result.startswith(_WRITTEN_RECORD_PREFIX):
+    if result.startswith(f"{WRITTEN_RECORD_PREFIX}\n"):
+        return result[len(WRITTEN_RECORD_PREFIX) + 1 :]
+    if result.startswith(f"{RECORD_MARKER} ") and not result.startswith(WRITTEN_RECORD_PREFIX):
         return result[len(RECORD_MARKER) + 1 :]
     return None
 
@@ -1291,7 +1258,7 @@ def _record_body(
     for message in messages[group["start_index"] : group["end_index"] + 1]:
         text = _record_text(message, recall_results)
         for part in text.split(RECORD_MARKER)[1:]:
-            parts.append(part.strip().removeprefix(_RECORD_PREAMBLE).strip())
+            parts.append(part.strip().removeprefix(RECORD_PREAMBLE).strip())
     return "\n".join(part for part in parts if part)
 
 
@@ -1403,12 +1370,12 @@ def _exclude_record(messages: list[Message], group: dict[str, Any]) -> None:
 
 def _record_message(text: str, *, stands_in_for: str | None = None) -> Message:
     """Build a written record, carrying the identity of the one record it reshapes if any."""
-    properties: dict[str, Any] = {_WRITTEN_RECORD_KEY: True}
+    properties: dict[str, Any] = {WRITTEN_RECORD_KEY: True}
     if stands_in_for:
         properties[STANDS_IN_KEY] = stands_in_for
     return Message(
         role="assistant",
-        contents=[f"{_WRITTEN_RECORD_PREFIX}\n{text}"],
+        contents=[f"{WRITTEN_RECORD_PREFIX}\n{text}"],
         additional_properties=properties,
     )
 
@@ -1723,7 +1690,7 @@ def make_recall_tool(
             return "Not required right now: nothing was recorded, and no results have been removed."
         if not values.strip():
             return "No values supplied: nothing was recorded, and no results have been removed."
-        return f"{RECORD_MARKER} {_RECORD_PREAMBLE}\n{values}"
+        return f"{RECORD_MARKER} {RECORD_PREAMBLE}\n{values}"
 
     tool.__name__ = RECALL_TOOL_NAME
     sections = [RECALL_DESCRIPTION]
@@ -2185,11 +2152,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        await off_loop(_annotate_for_pass, messages, self.tokenizer)
-        return await self.compact_against(
-            messages,
-            prompt_tokens=included_token_count(messages),
-            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+        echoes = await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        return (
+            await self.compact_against(
+                messages,
+                prompt_tokens=included_token_count(messages),
+                trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            )
+            or echoes
         )
 
     async def compact_against(
@@ -4055,7 +4025,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         )
 
 
-def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
-    """Group and count the conversation before a standalone pass, off the loop."""
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> bool:
+    """Exclude echoes before measuring the standalone strategy trigger."""
+    echoes = exclude_compaction_echoes(messages)
     annotate_message_groups(messages)
     annotate_token_counts(messages, tokenizer=tokenizer)
+    return echoes
