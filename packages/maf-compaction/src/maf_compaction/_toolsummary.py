@@ -78,9 +78,7 @@ from ._artifacts import (
     WRITTEN_RECORD_KEY,
     WRITTEN_RECORD_PREFIX,
     exclude_compaction_echoes,
-)
-from ._artifacts import (
-    is_written_record as _is_written_record,
+    is_written_record,
 )
 from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
@@ -174,6 +172,7 @@ DEFAULT_RECORD_INSTRUCTION: Final[str] = (
     "confidentiality restrictions."
 )
 
+_is_written_record = is_written_record
 _ROWS_OMITTED: Final[str] = "[Rows quoted verbatim in compaction records are omitted below.]\n"
 
 #: Reason recorded on a record's messages when a consolidated record replaced it.

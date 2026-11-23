@@ -68,20 +68,14 @@ from agent_framework._compaction import (
 )
 
 from ._artifacts import (
-    ANSWERED_NOTE as _ANSWERED_NOTE,
-)
-from ._artifacts import (
+    ANSWERED_NOTE,
     ASSISTANT_TEXT,
     ECHO_EXCLUDE_REASON,
     MARKER_ID_PREFIX,
+    SHED_NOTES,
     TOOL_CALL,
     exclude_compaction_echoes,
-)
-from ._artifacts import (
-    SHED_NOTES as _NOTES,
-)
-from ._artifacts import (
-    is_marker as _is_marker,
+    is_marker,
 )
 from ._media import annotate_token_counts
 from ._offload import off_loop
@@ -147,6 +141,9 @@ REMOVAL_MARKER: Final[str] = "... removed by compaction"
 #: merely quotes :data:`REMOVAL_MARKER` is not mistaken for one already shortened.
 _SHORTENED = re.compile(rf"\n\[{re.escape(REMOVAL_MARKER)}: [\d,]+ characters\]\n")
 
+_ANSWERED_NOTE = ANSWERED_NOTE
+_NOTES = SHED_NOTES
+_is_marker = is_marker
 _SHORT_REPLY_TOKENS: Final[int] = 64
 
 #: Share of the tokens *behind* a collapse that the collapse must remove before it is worth
