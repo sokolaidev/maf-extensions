@@ -3078,12 +3078,13 @@ async def _buffer_recall_stream(
         await source.close()
     if any(_has_refusal(update.contents) for update in buffered):
         raise _RecallRefused
-    if observe(response):
-        # Executors and history providers can assemble calls from updates independently.
-        buffered = response.to_updates()
+    observe(response)
 
     async def updates():
-        for update in buffered:
+        # Executors and history providers assemble calls from updates independently. Replayed
+        # whole, the call each of them holds is the response's own, so an occurrence id an
+        # executor assigns reaches the declaration that history saves.
+        for update in response.to_updates():
             yield update
 
     return ResponseStream(updates(), finalizer=lambda _: response), response
