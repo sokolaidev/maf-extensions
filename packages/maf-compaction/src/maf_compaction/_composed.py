@@ -1889,12 +1889,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         except CompactionBudgetExceeded:
             # The closing budget check refuses a list every phase has already worked on.
             if self._settled:
-                self._carried = CarriedView(handed, messages, continuing=continuing)
+                self._carried = await off_loop(CarriedView, handed, messages, continuing=continuing)
             raise
         finally:
             self._request_budget.reset(token)
         if changed or resumed is not None:
-            self._carried = CarriedView(handed, messages, continuing=continuing)
+            self._carried = await off_loop(CarriedView, handed, messages, continuing=continuing)
             if len(self._carried.view) == len(messages):
                 self._carried.settled_tools = steady
         return changed or (resumed is not None and resumed.changed)

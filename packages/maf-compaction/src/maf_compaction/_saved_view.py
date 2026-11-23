@@ -46,7 +46,7 @@ from ._usersummary import PRESERVE_REASON as USER_PRESERVE_REASON
 from ._view_digest import canonical_json, content_digest, json_digest
 
 _EXCLUSIONS = (EXCLUDED_KEY, EXCLUDE_REASON_KEY)
-_VERSION = 2
+_VERSION = 3
 _LINKS = (SUMMARIZED_BY_SUMMARY_ID_KEY, SUMMARY_OF_GROUP_IDS_KEY, SUMMARY_OF_MESSAGE_IDS_KEY)
 _OWN_EXCLUSIONS = {
     EXCLUDE_REASON,
@@ -55,13 +55,13 @@ _OWN_EXCLUSIONS = {
     FOLD_EXCLUDE_REASON,
     "tool_summary_anchored",
 }
-_OWN_HOLDS = {
+_OWN_HOLDS = (
     PRESERVE_REASON,
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
     USER_PRESERVE_REASON,
     "user_media",
-}
+)
 
 
 def _layout_digest(decisions: dict[str, Any], layout: str) -> str:
@@ -119,7 +119,7 @@ def _insertable(message: Message) -> bool:
 
 def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any] | None:
     """Detach a cache from its messages and bind it to the decisions that produced it."""
-    if not carried.portable:
+    if not carried.portable or not carried.matches_completed_view():
         return None
     positions = {id(m): i for i, m in enumerate(carried.standing) if m is not None}
     if len(positions) != sum(m is not None for m in carried.standing):
@@ -205,6 +205,13 @@ def resume_saved_view(
         return None
     view, paired, consumed = match
     omitted = set(range(consumed)).difference(index for _, _, index in paired)
+    hidden = omitted.union(
+        at for kept, _, at in paired if kept.additional_properties.get(EXCLUDED_KEY)
+    )
+    for at in hidden:
+        properties = messages[at].additional_properties
+        if properties.get(PRESERVED_KEY) and properties.get(PRESERVE_REASON_KEY) not in _OWN_HOLDS:
+            return None
     return apply_view(view, messages, current, paired, consumed, omitted=omitted)
 
 

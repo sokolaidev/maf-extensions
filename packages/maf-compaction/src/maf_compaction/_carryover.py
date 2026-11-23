@@ -257,6 +257,19 @@ class CarriedView:
             self.states.append(handed.states[index])
             self.links.append(handed.links[index])
             self.standing.append(self._member(handed.stood[index], by_contents))
+        self._inserted = self._members.difference(id(m) for m in self.standing if m is not None)
+        self._completed = [self._member_state(message) for message in self.view]
+
+    def _member_state(self, message: Message) -> tuple[Any, ...]:
+        inserted = content_digest(message.contents) if id(message) in self._inserted else None
+        return message.message_id, _host_state(message), _links(message), inserted
+
+    def matches_completed_view(self) -> bool:
+        """Return whether the kept messages still carry the layout the pass produced."""
+        return len(self.view) == len(self._completed) and all(
+            self._member_state(message) == state
+            for message, state in zip(self.view, self._completed, strict=True)
+        )
 
     def _member(self, standing: Message | None, by_contents: dict[int, Message]) -> Message | None:
         if standing is None or id(standing) in self._members:
@@ -299,6 +312,8 @@ class CarriedView:
             None when the list does not continue the one this view was built from, in which
             case nothing was changed.
         """
+        if not self.matches_completed_view():
+            return self._departed("the kept view changed after compaction")
         if self.begins(messages):
             return Resumed(restored=False, changed=False)
         members = self._members

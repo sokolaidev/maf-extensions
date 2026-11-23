@@ -27,6 +27,7 @@ from maf_compaction import (
 )
 from maf_compaction._anchored import AnchoredCompactionStrategy
 from maf_compaction._carryover import CarriedView, Handed
+from maf_compaction._preserve import set_preserved
 from maf_compaction._saved_view import _match, resume_saved_view, save_view
 from maf_compaction._toolsummary import build_record_message
 
@@ -173,6 +174,53 @@ def _layout() -> tuple[dict[str, Any], list[Message], Message]:
     return json.loads(json.dumps(saved)), [source, last], record
 
 
+@pytest.mark.parametrize("before_save", [True, False])
+async def test_a_late_host_hold_retains_the_entire_tool_group(before_save: bool) -> None:
+    original = [
+        Message(
+            "assistant", [Content.from_function_call("c", "fetch", arguments={})], message_id="call"
+        ),
+        Message("tool", [Content.from_function_result("c", result="ok")], message_id="result"),
+    ]
+    first = _strategy(_Summarizer(), budget=6000, policy="shed")
+    seed = first.session_state()
+    seed["shed_ids"] = ["call", "result"]
+    first.restore_session_state(seed)
+    previous = _reload(original)
+    initial = await _call(first, previous)
+    assert [mid for mid, _, _ in initial] == ["anchored_group_call"]
+    if before_save:
+        result = next(m for m in previous if m.message_id == "result")
+        set_preserved(result, preserved=True, reason="host")
+    saved = first.take_saved_view()
+    set_preserved(original[1], preserved=True, reason="host")
+    control = _strategy(_Summarizer(), budget=6000, policy="shed")
+    restored = _strategy(_Summarizer(), budget=6000, policy="shed")
+    for strategy in (control, restored):
+        strategy.restore_session_state(json.loads(json.dumps(first.session_state())))
+    expected = await _call(control, _reload(original))
+    assert [mid for mid, _, _ in expected] == ["call", "result"]
+    assert await _call(restored, _reload(original), saved) == expected
+    assert restored.calls_resumed == 0
+
+
+@pytest.mark.parametrize("change", ["source properties", "record text", "record id"])
+def test_live_and_saved_views_reject_edits_to_the_completed_layout(change: str) -> None:
+    source = Message("user", ["Question"], message_id="u")
+    source.additional_properties["host"] = {"revision": 1}
+    record = build_record_message("Original record.")
+    carried = CarriedView(Handed.take([source]), [source, record])
+    if change == "source properties":
+        source.additional_properties["host"]["revision"] = 2
+    elif change == "record text":
+        record.contents[0].text = "Edited record."
+    else:
+        record.message_id = "new-record"
+    assert save_view(carried, {}) is None
+    for messages in ([source, record], _reload([source])):
+        assert carried.resume(messages, Handed.take(messages)) is None
+
+
 def test_changed_tail_resumes_only_after_every_replacement() -> None:
     saved, messages, record = _layout()
     messages[-1] = Message("user", ["edited tail"])
@@ -299,7 +347,7 @@ def test_unusable_layout_leaves_handed_messages_intact(change: str) -> None:
     if change == "damaged":
         saved["layout"] = saved["layout"][:-2]
     if change == "legacy":
-        saved["version"] = 1
+        saved["version"] = 2
     before = [m.to_dict() for m in messages]
     assert resume_saved_view(saved, decisions, messages, Handed.take(messages)) is None
     assert [m.to_dict() for m in messages] == before
@@ -398,7 +446,7 @@ async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> Non
         assert key not in session.state
         registry.release(session.session_id)
     saved = session.state[key]
-    assert saved["version"] == 2
+    assert saved["version"] == 3
     assert "layout" not in json.dumps(session.state[registry.state_key])
     registry.release(session.session_id)
     assert session.state[key] is saved
