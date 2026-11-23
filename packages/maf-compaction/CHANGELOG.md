@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.18.0...maf-compaction-v0.19.0) (2026-11-23)
+
+
+### Features
+
+* **compaction:** tell the summarizer the output cap a record merge or rewrite request is sent with ([#2930](https://github.com/sokolaidev/maf-extensions/issues/2930)) ([7e984ed](https://github.com/sokolaidev/maf-extensions/commit/7e984ed03ac84b88d6041f2a432fad183cd2657b))
+
+
+### Fixes
+
+* **compaction:** keep echoed shed notes and records out of future model requests ([#2928](https://github.com/sokolaidev/maf-extensions/issues/2928)) ([b13562e](https://github.com/sokolaidev/maf-extensions/commit/b13562ed5fea8381547d01ed8aaaa7580be923cf))
+* **compaction:** start a turn from its saved layout when the host hands messages back without the links a pass wrote ([#2926](https://github.com/sokolaidev/maf-extensions/issues/2926)) ([9a3ada5](https://github.com/sokolaidev/maf-extensions/commit/9a3ada55defb4bb2b251e38bb7640886377948bf))
+
 ## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.17.0...maf-compaction-v0.18.0) (2026-11-23)
 
 
