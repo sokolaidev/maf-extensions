@@ -17,6 +17,7 @@ from agent_framework._compaction import (
 )
 from test_call_carryover import _budget, _Composed, _Layered, _Rebuilding, _registry, _transcript
 from test_record_budget import TOKENIZER, _strategy, _Summarizer
+from test_user_summary_replay import history as user_history
 
 from maf_compaction import (
     CompactionBudgetExceeded,
@@ -134,6 +135,27 @@ async def test_first_call_matches_replay_after_insertions_shift_source_positions
         assert restored.calls_resumed == 1
 
 
+async def test_edit_to_a_shared_source_before_turn_end_cannot_reuse_its_old_summary() -> None:
+    history = user_history()
+    first = _strategy(_Summarizer(), budget=3000, policy="shed")
+    handed = [copy.copy(message) for message in history]
+    for message in handed:
+        message.additional_properties = {}
+    initial = await _call(first, handed)
+    assert "u1" not in {mid for mid, _, _ in initial}
+    assert any(mid == "user_summary_0" for mid, _, _ in initial)
+    history[1].contents[0].text = "Edited requirement."
+    decisions = first.session_state()
+    saved = first.take_saved_view()
+    control = _strategy(_Summarizer(), budget=3000, policy="shed")
+    restored = _strategy(_Summarizer(), budget=3000, policy="shed")
+    for strategy in (control, restored):
+        strategy.restore_session_state(json.loads(json.dumps(decisions)))
+    expected = await _call(control, _reload(history))
+    assert await _call(restored, _reload(history), saved) == expected
+    assert restored.calls_resumed == 0
+
+
 def _layout() -> tuple[dict[str, Any], list[Message], Message]:
     source = Message("user", ["private transcript"], message_id="original")
     last = Message("user", ["tail"], message_id="tail")
@@ -160,6 +182,19 @@ def test_changed_tail_resumes_only_after_every_replacement() -> None:
     assert [m.text for m in loaded] == ["private transcript", record.text, "edited tail"]
     assert loaded[0].additional_properties[EXCLUDED_KEY]
     assert "_preserved" not in loaded[0].additional_properties
+
+
+def test_visible_shared_edit_can_resume_live_but_cannot_certify_a_later_turn() -> None:
+    source = Message("user", ["Before"])
+    view = CarriedView(Handed.take([source]), [source])
+    source.contents[0].text = "After"
+    for _ in range(2):
+        loaded = [copy.copy(source)]
+        handed = Handed.take(loaded)
+        assert view.resume(loaded, handed)
+        assert loaded[0].text == "After"
+        view = CarriedView(handed, loaded)
+        assert save_view(view, {}) is None
 
 
 @pytest.mark.parametrize("original_tail", [True, False])
@@ -248,7 +283,7 @@ def test_saved_record_cannot_remove_a_mixed_attribution_group(omitted: bool) -> 
 
 
 @pytest.mark.parametrize(
-    "change", ["source", "host-hold", "host-exclusion", "decisions", "damaged"]
+    "change", ["source", "host-hold", "host-exclusion", "decisions", "damaged", "legacy"]
 )
 def test_unusable_layout_leaves_handed_messages_intact(change: str) -> None:
     saved, messages, _ = _layout()
@@ -263,6 +298,8 @@ def test_unusable_layout_leaves_handed_messages_intact(change: str) -> None:
         decisions["new"] = True
     if change == "damaged":
         saved["layout"] = saved["layout"][:-2]
+    if change == "legacy":
+        saved["version"] = 1
     before = [m.to_dict() for m in messages]
     assert resume_saved_view(saved, decisions, messages, Handed.take(messages)) is None
     assert [m.to_dict() for m in messages] == before
@@ -361,7 +398,7 @@ async def test_session_writes_one_separate_cache_at_turn_end(ending: str) -> Non
         assert key not in session.state
         registry.release(session.session_id)
     saved = session.state[key]
-    assert saved["version"] == 1
+    assert saved["version"] == 2
     assert "layout" not in json.dumps(session.state[registry.state_key])
     registry.release(session.session_id)
     assert session.state[key] is saved

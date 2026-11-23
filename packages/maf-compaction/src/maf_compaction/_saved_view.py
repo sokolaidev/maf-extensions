@@ -5,11 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Sequence
 from copy import copy
 from typing import Any, cast
 
-from agent_framework import Content, Message
+from agent_framework import Message
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
@@ -44,8 +43,10 @@ from ._usersummary import (
     _is_summary,  # pyright: ignore[reportPrivateUsage]
 )
 from ._usersummary import PRESERVE_REASON as USER_PRESERVE_REASON
+from ._view_digest import canonical_json, content_digest, json_digest
 
 _EXCLUSIONS = (EXCLUDED_KEY, EXCLUDE_REASON_KEY)
+_VERSION = 2
 _LINKS = (SUMMARIZED_BY_SUMMARY_ID_KEY, SUMMARY_OF_GROUP_IDS_KEY, SUMMARY_OF_MESSAGE_IDS_KEY)
 _OWN_EXCLUSIONS = {
     EXCLUDE_REASON,
@@ -63,23 +64,11 @@ _OWN_HOLDS = {
 }
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(_json(value).encode()).hexdigest()
-
-
 def _layout_digest(decisions: dict[str, Any], layout: str) -> str:
-    checksum = hashlib.sha256(_json(decisions).encode())
+    checksum = hashlib.sha256(canonical_json(decisions).encode())
     checksum.update(b"\0")
     checksum.update(layout.encode())
     return checksum.hexdigest()
-
-
-def _contents(items: Sequence[Content]) -> str:
-    return _digest([item.to_dict() for item in items])
 
 
 def _state(state: tuple[Any, ...]) -> str:
@@ -92,7 +81,7 @@ def _state(state: tuple[Any, ...]) -> str:
     if props.get(EXCLUDE_REASON_KEY) in _OWN_EXCLUSIONS:
         for key in _EXCLUSIONS:
             props.pop(key, None)
-    return _digest([role, author, durable_id, props])
+    return json_digest([role, author, durable_id, props])
 
 
 def _overlay(message: Message) -> dict[str, Any]:
@@ -130,6 +119,8 @@ def _insertable(message: Message) -> bool:
 
 def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any] | None:
     """Detach a cache from its messages and bind it to the decisions that produced it."""
+    if not carried.portable:
+        return None
     positions = {id(m): i for i, m in enumerate(carried.standing) if m is not None}
     if len(positions) != sum(m is not None for m in carried.standing):
         return None
@@ -138,7 +129,9 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
     required = max(carried.replaced, default=-1) + 1
     try:
         for i, items in enumerate(carried.contents):
-            digest = _contents(items)
+            digest = carried.digests[i]
+            if digest is None:
+                return None
             member = carried.standing[i]
             accepted = [carried.states[i]]
             known_links = [carried.links[i]]
@@ -167,8 +160,8 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
                 [
                     digest,
                     sorted({_state(s) for s in accepted}),
-                    sorted(flags, key=_json),
-                    sorted({_digest(value) for value in known_links}),
+                    sorted(flags, key=canonical_json),
+                    sorted({json_digest(value) for value in known_links}),
                 ]
             )
         previous = -1
@@ -187,8 +180,8 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
                     {"source": position, "id": message.message_id, "overlay": _overlay(message)}
                 )
         # JSON detaches the layout from live annotations and lets a store carry it opaquely.
-        layout = _json({"sources": sources, "order": order, "required": required})
-        return {"version": 1, "layout": layout, "digest": _layout_digest(decisions, layout)}
+        layout = canonical_json({"sources": sources, "order": order, "required": required})
+        return {"version": _VERSION, "layout": layout, "digest": _layout_digest(decisions, layout)}
     except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
         return None
 
@@ -201,7 +194,9 @@ def resume_saved_view(
 ) -> Resumed | None:
     """Fit the layout to this turn without mutating the caller's list on a cache miss."""
     try:
-        if saved["version"] != 1 or saved["digest"] != _layout_digest(decisions, saved["layout"]):
+        if saved["version"] != _VERSION or saved["digest"] != _layout_digest(
+            decisions, saved["layout"]
+        ):
             return None
         match = _match(json.loads(saved["layout"]), current)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, RecursionError):
@@ -233,7 +228,10 @@ def _match(
             if not _insertable(message):
                 return None
             inserted[index] = message
-            by_digest[_contents(message.contents)].append(index)
+            digest = content_digest(message.contents)
+            if digest is None:
+                return None
+            by_digest[digest].append(index)
         else:
             source_slots[entry["source"]] = index
     matched: list[int] = []
@@ -242,14 +240,16 @@ def _match(
     last_slot = -1
     for index, message in enumerate(messages):
         position = len(matched)
-        digest = _contents(message.contents)
+        digest = current.digests[index]
+        if digest is None:
+            return None
         if position < len(sources) and digest == sources[position][0]:
             _, accepted, flags, known_links = sources[position]
             props = message.additional_properties
             if (
                 _state(current.states[index]) not in accepted
                 or list(_flags(props)) not in flags
-                or _digest(current.links[index]) not in known_links
+                or json_digest(current.links[index]) not in known_links
             ):
                 return None
             matched.append(index)
@@ -281,8 +281,8 @@ def _match(
     if len({id(message) for message in messages}) != len(messages):
         return None
     if any(
-        _generated(message) or (by_digest and _contents(message.contents) in by_digest)
-        for message in messages[consumed:]
+        _generated(messages[at]) or current.digests[at] in by_digest
+        for at in range(consumed, len(messages))
     ):
         return None
     rebuilt: list[Message] = []

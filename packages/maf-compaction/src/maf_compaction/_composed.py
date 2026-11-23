@@ -1856,7 +1856,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     exc.tokens, exc.budget, pending
                 ) from exc
             raise
-        handed = Handed.take(messages)
+        handed = await off_loop(Handed.take, messages)
         carried, self._carried = self._carried, None
         resumed = await off_loop(carried.resume, messages, handed) if carried is not None else None
         if carried is None and saved_view is not None:

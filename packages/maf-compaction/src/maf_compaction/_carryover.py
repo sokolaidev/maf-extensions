@@ -34,6 +34,7 @@ from agent_framework._compaction import (
     GROUP_KIND_KEY,
     GROUP_TOKEN_COUNT_BASIS_KEY,
     GROUP_TOKEN_COUNT_KEY,
+    SUMMARIZED_BY_SUMMARY_ID_KEY,
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     group_messages,
@@ -44,6 +45,7 @@ from ._media import MESSAGE_COUNTED
 from ._preserve import _ATTRIBUTION_KEY, removable_spans  # pyright: ignore[reportPrivateUsage]
 from ._request import RECALL_PROMPT_KEY
 from ._shed import durable_message_id
+from ._view_digest import content_digest
 
 if TYPE_CHECKING:
     from ._tool_rounds import SettledTools
@@ -174,16 +176,19 @@ class Handed:
     messages: list[Message]
     #: Each message's items as handed: a list edited in place afterwards no longer matches.
     contents: list[tuple[Content, ...]]
+    digests: list[str | None]
     states: list[tuple[Any, ...]]
     links: list[Any]
     #: The message put in the list for each one handed: itself, unless a kept one stood in.
     stood: list[Message]
+    portable: bool = True
 
     @classmethod
     def take(cls, messages: list[Message]) -> Handed:
         return cls(
             list(messages),
             [tuple(message.contents) for message in messages],
+            [content_digest(message.contents) for message in messages],
             [_host_state(message) for message in messages],
             [_links(message) for message in messages],
             list(messages),
@@ -217,12 +222,14 @@ class CarriedView:
         """
         self.view = [message for message in view if not _is_transient(message)]
         self.settled_tools: SettledTools | None = None
+        self.portable = handed.portable and (continuing is None or continuing.portable)
         self.decisions_before_storage: dict[str, Any] | None = None
         self._members = {id(message) for message in self.view}
         # A pass puts a shallow copy in a message's place and never rebinds a contents list, so
         # the copy is found by the list it shares.
         by_contents = {id(message.contents): message for message in self.view}
         self.contents: list[tuple[Content, ...]] = []
+        self.digests: list[str | None] = []
         self.states: list[tuple[Any, ...]] = []
         self.links: list[Any] = []
         self.standing: list[Message | None] = []
@@ -232,6 +239,7 @@ class CarriedView:
         start = 0
         if continuing is not None:
             self.contents.extend(continuing.contents)
+            self.digests.extend(continuing.digests)
             self.states.extend(continuing.states)
             self.links.extend(continuing.links)
             self.replaced.update(continuing.replaced)
@@ -245,6 +253,7 @@ class CarriedView:
             if id(message) not in self._members:
                 self.replaced[len(self.contents)] = _host_state(message)
             self.contents.append(handed.contents[index])
+            self.digests.append(handed.digests[index])
             self.states.append(handed.states[index])
             self.links.append(handed.links[index])
             self.standing.append(self._member(handed.stood[index], by_contents))
@@ -297,6 +306,7 @@ class CarriedView:
         position = 0
         tail_start = len(messages)
         paired: list[tuple[Message, Message, int]] = []
+        portable = self.portable
         for index, message in enumerate(messages):
             if position < stored and _same_contents(message.contents, self.contents[position]):
                 if not self._unchanged(position, current.states[index]):
@@ -304,6 +314,14 @@ class CarriedView:
                         f"stored message {position} of {stored} changed between calls"
                     )
                 standing = self.standing[position]
+                if self.digests[position] != current.digests[index]:
+                    if standing is None or (_annotation(standing) or {}).get(
+                        SUMMARIZED_BY_SUMMARY_ID_KEY
+                    ):
+                        return self._departed(f"summary source {position} changed between calls")
+                    # A shared edit can still be visible in this live view. A later turn
+                    # must rebuild decisions whose sources no longer match the original pass.
+                    portable = False
                 if standing is not None:
                     # A copy kept under an earlier list shows nothing a host wrote into this one.
                     if not _same_contents(message.contents, standing.contents):
@@ -322,7 +340,10 @@ class CarriedView:
                 return self._departed(f"the list departs at stored message {position} of {stored}")
         if position < stored:
             return self._departed(f"{position} of the last call's {stored} messages were handed")
-        return apply_view(self.view, messages, current, paired, tail_start)
+        resumed = apply_view(self.view, messages, current, paired, tail_start)
+        if resumed is not None:
+            current.portable = portable
+        return resumed
 
     @staticmethod
     def _departed(reason: str) -> None:
