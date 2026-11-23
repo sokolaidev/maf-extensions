@@ -4537,7 +4537,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 usage.get("reasoning_output_token_count"),
             )
 
-        capped_prompt = self._budgeted_prompt(prompt, request_tokens)
+        capped_prompt = await off_loop(self._budgeted_prompt, prompt, request_tokens)
         try:
             text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
                 transcript,
