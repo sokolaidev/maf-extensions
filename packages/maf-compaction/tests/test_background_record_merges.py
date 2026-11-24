@@ -556,13 +556,18 @@ async def test_snapshot_failure_reaches_run_observer_from_reader_task(monkeypatc
     await work.close()
 
 
-async def test_a_worker_stopped_at_its_deadline_says_so(caplog):
-    strategy, work, _ = await prepared()
-    strategy.chain_seconds = 1e-9
+async def test_a_worker_stopped_at_its_deadline_says_so(caplog, monkeypatch):
+    events = []
+    with observe_record_merges(lambda phase, event, details: events.append((phase, event))):
+        strategy, work, _ = await prepared()
+    strategy.chain_seconds = 1.0
+    clock = iter([0.0])
+    monkeypatch.setattr(composed_module, "monotonic", lambda: next(clock, 2.0))
     with caplog.at_level(logging.INFO, logger="maf_compaction"):
         await work.start(tool_reply())
         await running(work)
     assert "Background record merge stopped at its" in caplog.text
+    assert ("background", "deadline") in events
     await work.close()
 
 
@@ -660,6 +665,9 @@ async def test_streamed_worker_uses_run_context(caplog, monkeypatch, early_close
 
     def build():
         stack = build_stack(Summarizer(), budget=100_000)
+        assert isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
         stack.strategy.record_budget_share = 0.001
         return stack
 
