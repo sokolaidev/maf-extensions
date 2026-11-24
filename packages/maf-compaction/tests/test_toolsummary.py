@@ -1196,6 +1196,91 @@ async def test_a_partial_record_asks_for_another_record_and_holds_what_it_missed
     assert strategy.take_reforce() is False, "and asked once"
 
 
+@pytest.mark.parametrize("already_queued", [False, True])
+@pytest.mark.parametrize("overhead_exhausted", [False, True])
+async def test_coverage_ask_survives_full_budget_passes_and_restore(
+    already_queued, overhead_exhausted
+):
+    from copy import deepcopy
+
+    from maf_compaction import CompactionBudgetExceeded
+
+    history = _conversation(tool_turns=6, record=_covering_record(2))
+    roomy = 100_000
+    budget = roomy if already_queued else 1
+    gate = RecallGate()
+    options = {"tools": [make_recall_tool(gate)]}
+    sent = []
+
+    def stack():
+        strategy = _chained()
+        middleware = ToolResultRecallMiddleware(
+            max_input_tokens=roomy,
+            tokenizer=TOKENIZER,
+            arm=gate.arm,
+            disarm=gate.disarm,
+            repeat_records=False,
+            reforce=strategy.take_reforce,
+        )
+        return strategy, middleware
+
+    strategy, middleware = stack()
+
+    def sending_budget():
+        if overhead_exhausted and budget == 1:
+            raise CompactionBudgetExceeded(2, 1)
+        return budget
+
+    async def run() -> None:
+        context = ChatContext(
+            None, deepcopy(history), options, kwargs={"compaction_strategy": strategy}
+        )
+
+        async def send():
+            await context.kwargs["compaction_strategy"](context.messages)
+            forced = context.options is not options
+            sent.append(forced)
+            contents = (
+                [
+                    Content.from_function_call(
+                        call_id="retry", name=RECALL_TOOL_NAME, arguments={"values": "CODE-2"}
+                    )
+                ]
+                if forced
+                else [Content.from_text("answer")]
+            )
+            context.result = ChatResponse(messages=Message("assistant", contents))
+
+        await middleware.process(context, send, request_budget=sending_budget)
+
+    await run()
+    budget = 1
+    for _ in range(4):
+        await run()
+    assert sent == ([False, True] if already_queued else [False]) + [False] * 4
+    saved_strategy = strategy.decision_state().to_dict()
+    saved_middleware = middleware.session_state()
+    strategy, middleware = stack()
+    strategy.restore_decisions(RecordDecisions.from_dict(json.loads(json.dumps(saved_strategy))))
+    middleware.restore_session_state(json.loads(json.dumps(saved_middleware)))
+    await run()
+    assert not sent[-1]
+    budget = roomy
+    await run()
+    await run()
+    assert sent[-2:] == [False, True]
+    assert middleware.reforced_calls == 1
+    assert middleware.session_state()["awaiting_record"]
+
+
+async def test_deferred_coverage_ask_expires_when_its_targets_disappear():
+    strategy = _chained()
+    await strategy(_conversation(tool_turns=6, record=_covering_record(2)))
+    strategy._defer_reforce(False)
+    await strategy(_conversation(tool_turns=6, record=_covering_record(6)))
+    assert not strategy.take_reforce()
+
+
 async def test_the_middleware_pins_the_call_after_the_strategys_ask_and_counts_it_apart() -> None:
     """The ask crosses to the middleware on a call exit and pins the next call, whatever else is true.
 

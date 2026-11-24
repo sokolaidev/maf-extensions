@@ -1499,6 +1499,7 @@ class _Reforce:
     records: int
     passes: int = 0
     taken: bool = False
+    budget_deferred: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return the outstanding ask as JSON-safe values."""
@@ -1507,12 +1508,19 @@ class _Reforce:
             "records": self.records,
             "passes": self.passes,
             "taken": self.taken,
+            "budget_deferred": self.budget_deferred,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> _Reforce:
         """Restore an ask serialized by :meth:`to_dict`."""
-        return cls(frozenset(data["targets"]), data["records"], data["passes"], data["taken"])
+        return cls(
+            frozenset(data["targets"]),
+            data["records"],
+            data["passes"],
+            data["taken"],
+            data.get("budget_deferred", False),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2101,7 +2109,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if request is None or request.taken:
             return False
         request.taken = True
+        request.budget_deferred = False
         return True
+
+    def _defer_reforce(self, retry_taken: bool) -> None:
+        """Preserve the coverage targets until there is room to send their ask."""
+        request = self._reforce
+        if request is not None and (not request.taken or retry_taken):
+            request.budget_deferred = True
+            request.taken = False
+            request.passes = 0
 
     def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
         """Bind value observation and, when enabled, this conversation's re-force hooks."""
@@ -2114,6 +2131,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         middleware.reforce_feedback = (
             self.recall_feedback if middleware.reforce is not None else None
         )
+        middleware._defer_reforce = self._defer_reforce if middleware.reforce is not None else None  # pyright: ignore[reportPrivateUsage]
         middleware._capture_value_targets = self._capture_value_targets  # pyright: ignore[reportPrivateUsage]
 
     def record_pending(
@@ -2955,6 +2973,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         uncovered = self._uncovered
         request = self._reforce
+        if (
+            request is not None
+            and request.budget_deferred
+            and request.targets.isdisjoint(uncovered)
+        ):
+            self._reforce = request = None
         if request is not None:
             # A re-force chain only retries the batch its first ask targeted.
             self._settled |= uncovered - request.targets
@@ -2963,7 +2987,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if not request.targets - uncovered:
                     self._settled |= request.targets & uncovered
                 self._reforce = None
-            else:
+            elif not request.budget_deferred or self._recall_due is None or self._recall_disabled():
                 request.passes += 1
                 if request.passes >= _REFORCE_ARRIVAL_PASSES:
                     # Nothing came by the pass that could have seen it: the model ignored the
@@ -3317,6 +3341,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.repeat_records = repeat_records
         self.reforce = reforce
         self.reforce_feedback: Callable[[list[Message]], str] | None = None
+        self._defer_reforce: Callable[[bool], None] | None = None
         self._capture_value_targets: Callable[[list[Message]], None] | None = None
         self._force_next = False
         self._reforce_next = False
@@ -3723,8 +3748,33 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
                 request_budget = sending_budget
 
+        def check_record_budget(additions: list[Message]) -> None:
+            if request_budget is None or outgoing is None:
+                return
+            history = _without_recall_prompt(outgoing)
+            projected = history + additions
+            annotate_token_counts(projected, tokenizer=self.tokenizer)
+            forced_options = context.options
+            try:
+                context.options = original_options
+                budget = request_budget()
+            except CompactionBudgetExceeded:
+                raise _RecallPromptFull from None
+            finally:
+                context.options = forced_options
+            if additions and included_token_count(projected) <= budget:
+                return
+            if included_token_count(history) >= budget:
+                raise _RecallPromptFull
+            if additions:
+                raise _RecallTooLarge
+
         def observe(response: ChatResponse[Any]) -> bool:
-            normalized = self._observe_forced(response)
+            try:
+                normalized = self._observe_forced(response)
+            except _RecallTruncated:
+                check_record_budget([])
+                raise
             if request_budget is None or outgoing is None:
                 return normalized
             results: list[Content] = []
@@ -3743,21 +3793,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                             call_id=content.call_id, result=make_recall_tool()(values)
                         )
                     )
-            if not results:
-                return normalized
-            history = _without_recall_prompt(outgoing)
-            projected = history + list(response.messages) + [Message("tool", results)]
-            annotate_token_counts(projected, tokenizer=self.tokenizer)
-            forced_options = context.options
-            try:
-                context.options = original_options
-                budget = request_budget()
-            finally:
-                context.options = forced_options
-            if included_token_count(projected) > budget:
-                if included_token_count(history) >= budget:
-                    raise _RecallPromptFull
-                raise _RecallTooLarge
+            if results:
+                check_record_budget([*response.messages, Message("tool", results)])
             return normalized
 
         def restore_request() -> None:
@@ -3877,6 +3914,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if isinstance(exc, _RecallRefused):
                 self._failed_forced_calls += 1
                 self._observe_record_values(None, False)
+            elif self._defer_reforce is not None:
+                self._defer_reforce(reforced_this_call)
             if self.disarm is not None:
                 self.disarm()
             restore_request()
@@ -3937,8 +3976,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             budget = request_budget() if request_budget is not None else None
         except CompactionBudgetExceeded:
             # A post-call estimate must not discard a delivered response.
-            self._force_next = False
-            return
+            budget = 0
         self._force_next = self._record_due(messages, record_index, max_input_tokens=budget)
         self._feedback = ""
         if self._reforce_next and self.reforce_feedback is not None:
@@ -3993,9 +4031,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Returns:
             True when the next call should be forced.
         """
-        if self.recall_disabled or (
-            max_input_tokens is not None and included_token_count(messages) >= max_input_tokens
-        ):
+        if self.recall_disabled:
+            return False
+        if max_input_tokens is not None and included_token_count(messages) >= max_input_tokens:
+            if self._defer_reforce is not None:
+                self._defer_reforce(False)
             return False
         if self.reforce is not None and self.reforce():
             self._reforce_next = True

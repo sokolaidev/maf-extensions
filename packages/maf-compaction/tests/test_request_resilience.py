@@ -325,7 +325,9 @@ async def test_post_call_budget_callback_does_not_hide_unrelated_errors():
 
 
 @pytest.mark.parametrize("remaining", [0, -1])
-async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining):
+@pytest.mark.parametrize("truncated", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, truncated, stream):
     reasks = []
 
     def reforce():
@@ -340,7 +342,7 @@ async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining):
 
     async def run() -> ChatResponse:
         options = {"tools": [make_recall_tool(gate)]}
-        context = ChatContext(None, [Message("user", ["continue"])], options)
+        context = ChatContext(None, [Message("user", ["continue"])], options, stream=stream)
 
         async def send():
             await context.kwargs["compaction_strategy"](deepcopy(history))
@@ -357,14 +359,31 @@ async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining):
                 if forced
                 else [Content.from_text("answer")]
             )
-            context.result = ChatResponse(messages=Message("assistant", contents))
+            cut_off = forced and truncated and len(sent) == 1
+            if cut_off:
+                contents[0].arguments = "{"
+            response = ChatResponse(
+                messages=Message("assistant", contents), finish_reason="length" if cut_off else None
+            )
+            if stream:
+
+                async def updates():
+                    for update in response.to_updates():
+                        yield update
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
 
         await middleware.process(context, send, request_budget=lambda: budget)
+        if isinstance(context.result, ResponseStream):
+            return await context.result.get_final_response()
         assert isinstance(context.result, ChatResponse)
         return context.result
 
     assert (await run()).text == "answer"
     assert sent == [True, False]
+    assert middleware.records_truncated == int(truncated)
     state = middleware.session_state()
     assert not state["force_next"] and not state["reforce_next"] and not state["feedback"]
     assert not state["awaiting_record"] and not middleware.recall_disabled
