@@ -165,11 +165,9 @@ async def test_truncated_recall_retries_later_and_survives_restore(stream, mode,
     context = ChatContext(None, [question], {"tools": [make_recall_tool(gate)]})
 
     async def succeed():
-        if mode == "prompt_cache":
-            assert "1,000 tokens" in context.messages[-1].text
-        else:
-            assert context.options is not None
-            assert "1,000 tokens" in context.options["tools"][0].description
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert "1,000 tokens" in context.messages[-1].text
+        assert context.messages[-1].additional_properties[RECALL_PROMPT_KEY]
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
 
     await middleware.process(context, succeed)
@@ -867,20 +865,11 @@ async def test_prompt_advertises_only_recall_without_mutating_registered_tools(
         assert context.options["max_tokens"] == 4000
         advertised = context.options["tools"]
         assert len(advertised) == 1
-        selected = advertised[0]
-        spec = selected.get("function", selected) if isinstance(selected, dict) else None
-        if spec is not None:
-            assert spec["name"] == RECALL_TOOL_NAME
-            description = spec.get("description", "")
-        else:
-            assert (
-                getattr(selected, "name", getattr(selected, "__name__", None)) == RECALL_TOOL_NAME
-            )
-            description = getattr(selected, "description", "")
-        if feedback:
-            assert description.endswith(feedback)
+        assert advertised[0] is tool
         assert list(context.messages[:-1]) == messages
-        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        assert context.messages[-1].text == (
+            f"{_RECALL_INSTRUCTION}\n\n{feedback}" if feedback else _RECALL_INSTRUCTION
+        )
         if replace_messages:
             context.messages = list(context.messages)
         retained.append(context.messages)

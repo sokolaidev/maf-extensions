@@ -52,10 +52,15 @@ def record(arguments=None):
 
 
 @pytest.mark.parametrize("instruction", [None, DEFAULT_RECORD_INSTRUCTION, "Keep exact values."])
+@pytest.mark.parametrize("feedback", ["", "Write a shorter record."])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("tail_role", ["user", "tool"])
-async def test_instruction_is_last_on_the_pinned_request_only(instruction, stream, tail_role):
+async def test_instruction_is_last_on_the_pinned_request_only(
+    instruction, feedback, stream, tail_role
+):
     middleware, gate = recall(record_instruction=instruction)
+    middleware._feedback = feedback
+    expected = "\n\n".join(filter(None, (instruction, feedback)))
     messages = [Message("system", ["instructions"]), Message(tail_role, ["earlier content"])]
     options = {"tools": [make_recall_tool(gate)], "max_tokens": 9000}
     before = json.dumps([m.to_dict() for m in messages])
@@ -69,20 +74,20 @@ async def test_instruction_is_last_on_the_pinned_request_only(instruction, strea
             "tool_choice": {"mode": "required", "required_function_name": RECALL_TOOL_NAME},
             "max_tokens": 4000,
         }
-        prefix = list(context.messages) if instruction is None else list(context.messages[:-1])
+        prefix = list(context.messages[:-1] if expected else context.messages)
         assert json.dumps([m.to_dict() for m in prefix]) == before
         assert all(left is right for left, right in zip(prefix, messages, strict=True))
-        if instruction is None:
+        if not expected:
             assert context.messages is messages
         else:
             assert context.messages[-1].role == "user"
-            assert context.messages[-1].text == instruction
+            assert context.messages[-1].text == expected
             assert context.messages[-1].additional_properties[RECALL_PROMPT_KEY]
         retained.append(context.messages)
         context.messages = list(context.messages)
 
         async def updates():
-            assert context.messages[-1].text == (instruction or "earlier content")
+            assert context.messages[-1].text == (expected or "earlier content")
             yield ChatResponseUpdate(role="assistant", contents=[record()])
 
         response = ChatResponse(messages=Message("assistant", [record()]))
@@ -210,7 +215,10 @@ async def test_failed_record_cleans_instruction_and_logs_cause(stream, failure, 
 
 
 @pytest.mark.parametrize("disabled", [False, True])
-async def test_history_reload_removes_stale_instructions_and_appends_one_last(disabled):
+@pytest.mark.parametrize("replace_context", [True, False])
+async def test_history_reload_removes_stale_instructions_and_appends_one_last(
+    disabled, replace_context
+):
     middleware, gate = recall(record_instruction=DEFAULT_RECORD_INSTRUCTION)
     if disabled:
         middleware._disable_pin("failed")
@@ -218,17 +226,21 @@ async def test_history_reload_removes_stale_instructions_and_appends_one_last(di
     question = Message("user", ["The current question."])
     result = Message("tool", ["new result"])
     context = ChatContext(None, [deepcopy(stale), question], {"tools": [make_recall_tool(gate)]})
+    loaded = []
 
     async def send():
-        context.messages = [deepcopy(stale), *context.messages, result]
-        await context.kwargs["compaction_strategy"](context.messages)
-        assert context.messages[:2] == [question, result]
-        prompts = [m for m in context.messages if m.additional_properties.get(RECALL_PROMPT_KEY)]
+        loaded.extend([deepcopy(stale), *context.messages, result])
+        if replace_context:
+            context.messages = loaded
+        await context.kwargs["compaction_strategy"](loaded)
+        assert loaded[:2] == [question, result]
+        prompts = [m for m in loaded if m.additional_properties.get(RECALL_PROMPT_KEY)]
         assert len(prompts) == int(not disabled)
         if prompts:
-            assert context.messages[-1] is prompts[0]
+            assert loaded[-1] is prompts[0]
             assert prompts[0].text == DEFAULT_RECORD_INSTRUCTION
         context.result = ChatResponse(messages=Message("assistant", [record()]))
 
     await middleware.process(context, send)
+    assert loaded == [question, result]
     assert all(not m.additional_properties.get(RECALL_PROMPT_KEY) for m in context.messages)

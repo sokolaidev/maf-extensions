@@ -34,7 +34,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import copy, deepcopy
+from copy import copy
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from math import ceil, isfinite
@@ -53,9 +53,6 @@ from agent_framework import (
     MiddlewareTermination,
     ResponseStream,
     get_namespaced_value,
-)
-from agent_framework import (
-    tool as function_tool,
 )
 from agent_framework._compaction import (
     EXCLUDED_KEY,
@@ -3020,6 +3017,10 @@ class _RecallTooLarge(Exception):
     """A recall call and its result cannot fit the next request together."""
 
 
+class _RecallPromptFull(Exception):
+    """The ordinary request has no room even before adding a record."""
+
+
 def _has_refusal(contents: Sequence[Content]) -> bool:
     return any(
         content.type == "text"
@@ -3090,31 +3091,10 @@ def _is_recall_tool(tool: Any) -> bool:
     return callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME
 
 
-def _recall_tools_with_feedback(
-    options: Mapping[str, Any], feedback: str, *, only_recall: bool = False
-) -> list[Any]:
-    tools: list[Any] = []
-    for original in request_tools(options):
-        if only_recall and not _is_recall_tool(original):
-            continue
-        if not feedback:
-            tools.append(original)
-            continue
-        tool = original
-        if isinstance(tool, FunctionTool) and tool.name == RECALL_TOOL_NAME:
-            tool = copy(tool)
-            tool.description = f"{tool.description}\n\n{feedback}"
-        elif isinstance(tool, dict):
-            spec: dict[str, Any] = cast(dict[str, Any], tool).get("function", tool)
-            if spec.get("name") == RECALL_TOOL_NAME:
-                tool = deepcopy(cast(dict[str, Any], tool))
-                spec = tool.get("function", tool)
-                spec["description"] = f"{spec.get('description', '')}\n\n{feedback}"
-        elif callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME:
-            tool = function_tool(tool)
-            tool.description = f"{tool.description}\n\n{feedback}"
-        tools.append(tool)
-    return tools
+def _without_recall_prompt(messages: Sequence[Message]) -> list[Message]:
+    return [
+        message for message in messages if not message.additional_properties.get(RECALL_PROMPT_KEY)
+    ]
 
 
 def _mentions_tool_choice(error: BaseException) -> bool:
@@ -3184,17 +3164,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             Use ``DEFAULT_RECORD_INSTRUCTION`` or custom text. It is removed after the request
             and excluded from session state. Value-bearing records may need a much larger
             ``record_max_tokens`` and matching tool/strategy targets; no budget is scaled
-            automatically. ``None`` leaves requests unchanged.
+            automatically. With ``None``, only retry feedback adds a message to a pinned call.
         supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
             temporary trailing message with only the recall tool advertised. A tool_choice
             client rejection also selects this mode for the rest of the session.
         preserve_prompt_cache: Ask for a record without changing the request prefix. The
-            forced call is never pinned: the ask is the same temporary trailing message, but the
-            call keeps the agent's own ``tools`` and ``tool_choice``, and re-force feedback goes
-            into that message instead of the recall tool's description. Providers that cache by
-            exact prefix, such as Anthropic, drop every cached message block when
-            ``tool_choice`` or thinking changes and match nothing when ``tools`` does, so a
-            pinned or recall-only ask rewrites the whole conversation at the cache-write price.
+            call keeps the agent's own ``tools`` and ``tool_choice``, including on a re-ask.
+            This lets providers with automatic or explicitly enabled prefix caching reuse
+            the same tools and history. All recall modes put feedback in a trailing message.
             With every tool on offer the model may answer with another tool instead; the
             prompted mode's two-ignored-asks rule bounds that. Takes precedence over
             ``supports_tool_choice``.
@@ -3518,11 +3495,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.disarm is not None:
             self.disarm()
 
-    def _ask_text(self) -> str:
-        """The trailing ask, carrying re-force feedback when the tool description cannot."""
-        if self.preserve_prompt_cache and self._feedback:
-            return f"{_RECALL_INSTRUCTION}\n\n{self._feedback}"
-        return _RECALL_INSTRUCTION
+    def _ask_text(self) -> str | None:
+        """Keep instructions and retry feedback in a single request-only message."""
+        instruction = _RECALL_INSTRUCTION if self._pin_disabled else self.record_instruction
+        if self._feedback:
+            return f"{instruction}\n\n{self._feedback}" if instruction else self._feedback
+        return instruction
 
     def _forced_options(self, original: Mapping[str, Any]) -> dict[str, Any]:
         options = dict(original)
@@ -3533,6 +3511,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             return options
         if self._pin_disabled:
             options["tool_choice"] = "auto"
+            options["tools"] = [tool for tool in request_tools(original) if _is_recall_tool(tool)]
         else:
             options["tool_choice"] = {
                 "mode": "required",
@@ -3540,10 +3519,6 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             }
         if self.record_max_tokens is not None:
             options["max_tokens"] = self.record_max_tokens
-        if self._feedback or self._pin_disabled:
-            options["tools"] = _recall_tools_with_feedback(
-                original, self._feedback, only_recall=self._pin_disabled
-            )
         return options
 
     def _observe_forced(self, response: ChatResponse[Any]) -> bool:
@@ -3628,11 +3603,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
-        cleaned = [
-            message
-            for message in context.messages
-            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-        ]
+        cleaned = _without_recall_prompt(context.messages)
         if isinstance(context.messages, list):
             context.messages[:] = cleaned
         else:
@@ -3689,11 +3660,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call and self._capture_value_targets is not None:
                 self._capture_value_targets(messages)
             # History providers can load retained asks after middleware entry.
-            messages[:] = [
-                message
-                for message in messages
-                if not message.additional_properties.get(RECALL_PROMPT_KEY)
-            ]
+            messages[:] = _without_recall_prompt(messages)
             if prompt is not None:
                 messages.append(prompt)
             if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
@@ -3733,15 +3700,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     )
             if not results:
                 return normalized
-            projected = (
-                [
-                    message
-                    for message in outgoing
-                    if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                ]
-                + list(response.messages)
-                + [Message("tool", results)]
-            )
+            history = _without_recall_prompt(outgoing)
+            projected = history + list(response.messages) + [Message("tool", results)]
             annotate_token_counts(projected, tokenizer=self.tokenizer)
             forced_options = context.options
             try:
@@ -3750,6 +3710,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             finally:
                 context.options = forced_options
             if included_token_count(projected) > budget:
+                if included_token_count(history) >= budget:
+                    raise _RecallPromptFull
                 raise _RecallTooLarge
             return normalized
 
@@ -3761,7 +3723,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         async def attempt() -> None:
             nonlocal prompt
-            instruction = self._ask_text() if self._pin_disabled else self.record_instruction
+            instruction = self._ask_text()
             prompt = (
                 Message("user", [instruction], additional_properties={RECALL_PROMPT_KEY: True})
                 if forced_this_call and instruction is not None
@@ -3783,22 +3745,19 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             finally:
                 if prompt is not None:
                     # Downstream reconciliation can retain the sent list after this call.
-                    if isinstance(sent_messages, list):
-                        sent_messages[:] = [
-                            message
-                            for message in sent_messages
-                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                        ]
-                    if context.messages is not sent_messages:
-                        cleaned = [
-                            message
-                            for message in context.messages
-                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                        ]
-                        if isinstance(context.messages, list):
-                            context.messages[:] = cleaned
-                        else:
-                            context.messages = cleaned
+                    if (
+                        outgoing is not None
+                        and outgoing is not sent_messages
+                        and outgoing is not context.messages
+                    ):
+                        outgoing[:] = _without_recall_prompt(outgoing)
+                    if isinstance(sent_messages, list) and sent_messages is not context.messages:
+                        sent_messages[:] = _without_recall_prompt(sent_messages)
+                    cleaned = _without_recall_prompt(context.messages)
+                    if isinstance(context.messages, list):
+                        context.messages[:] = cleaned
+                    else:
+                        context.messages = cleaned
                 prompt = None
 
         async def validated_attempt() -> None:
@@ -3866,11 +3825,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self.disarm()
             restore_request()
             await call_next()
-        except _RecallRefused:
+        except (_RecallRefused, _RecallPromptFull) as exc:
             refused_this_call = True
-            self._failed_forced_calls += 1
             self._ignored_streak = 0
-            self._observe_record_values(None, False)
+            self._feedback = ""
+            if isinstance(exc, _RecallRefused):
+                self._failed_forced_calls += 1
+                self._observe_record_values(None, False)
             if self.disarm is not None:
                 self.disarm()
             restore_request()
@@ -3895,7 +3856,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 else:
                     context.kwargs.pop("compaction_strategy")
 
-        messages = list(context.messages)
+        messages = list(
+            outgoing if request_budget is not None and outgoing is not None else context.messages
+        )
         record_index = find_record_index(messages) if messages else None
         # Each record is counted once, when its identity first appears as the newest, so a
         # record that stays visible for many calls counts once and a repeat counts again. Read
@@ -3957,7 +3920,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         **The rule, written once so nobody has to derive it from three booleans.** Write
         *pending* for the droppable tool work no record accounts for: the non-recall tool-call
-        groups after the newest record, or all of them when there is no record yet. Then
+        groups after the newest record, or all of them when there is no record yet. When
+        the ordinary sending budget leaves room for a record:
 
         - the strategy's own ask for another record, ``reforce``, pins whenever one is
           outstanding, whatever else is true: it is made on a measured shortfall and bounded
@@ -3984,7 +3948,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Returns:
             True when the next call should be forced.
         """
-        if self.recall_disabled:
+        if self.recall_disabled or (
+            max_input_tokens is not None and included_token_count(messages) >= max_input_tokens
+        ):
             return False
         if self.reforce is not None and self.reforce():
             self._reforce_next = True

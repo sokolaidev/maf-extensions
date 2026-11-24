@@ -2955,8 +2955,9 @@ async def test_partial_row_release_leaves_non_text_results_unchanged(
 @pytest.mark.parametrize("tool_form", ["callable", "function", "nested_dict", "flat_dict"])
 @pytest.mark.parametrize("wrapped", [False, True])
 async def test_value_free_records_receive_targeted_private_reask(tool_form, wrapped):
-    from agent_framework import FunctionTool
     from agent_framework import tool as function_tool
+
+    from maf_compaction._request import RECALL_PROMPT_KEY, tool_spec
 
     strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
     messages = _conversation(3, record="Only the page titles were requested.")
@@ -2981,13 +2982,19 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
             tool = tool.to_json_schema_spec()
             if tool_form == "flat_dict":
                 tool = tool["function"]
-    original = str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    original = json.dumps(tool_spec(tool), sort_keys=True)
     options = {"tools": [tool]}
     context = ChatContext(None, messages, options)
     seen = []
 
     async def respond():
-        seen.append(dict(context.options or {}))
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert context.options is not None
+        assert context.options["tools"] is options["tools"]
+        assert json.dumps(tool_spec(tool), sort_keys=True) == original
+        seen.append(
+            [m.text for m in context.messages if m.additional_properties.get(RECALL_PROMPT_KEY)]
+        )
         context.result = ChatResponse(messages=Message("assistant", ["answer"]))
 
     await middleware.process(context, respond)
@@ -2995,18 +3002,17 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
     assert saved["feedback"]
     middleware.restore_session_state(saved)
     await middleware.process(context, respond)
-    advertised = seen[-1]["tools"][0]
-    spec = advertised.to_json_schema_spec() if isinstance(advertised, FunctionTool) else advertised
+    spec = tool_spec(tool)
     description = spec.get("function", spec)["description"]
     assert "not a reply shown to the user" in description
     assert "not earlier assistant text" in description
     assert "do not apply to this record" not in description
-    assert "lookup_0" in description and "lookup_1" in description and "lookup_2" in description
-    assert "distinctive values verbatim" in description
+    feedback = saved["feedback"]
+    assert seen == [[], [feedback]]
+    assert "lookup_0" in feedback and "lookup_1" in feedback and "lookup_2" in feedback
+    assert "distinctive values verbatim" in feedback
     assert context.options is options
-    assert (
-        str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
-    ) == original
+    assert all(not m.additional_properties.get(RECALL_PROMPT_KEY) for m in context.messages)
     assert messages[1].text == "Do not quote results. Reply with titles only."
 
 
