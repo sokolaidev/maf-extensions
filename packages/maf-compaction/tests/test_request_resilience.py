@@ -324,6 +324,85 @@ async def test_post_call_budget_callback_does_not_hide_unrelated_errors():
         await middleware.process(context, respond, request_budget=broken_budget)
 
 
+@pytest.mark.parametrize("remaining", [0, -1])
+@pytest.mark.parametrize("truncated", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, truncated, stream):
+    reasks = []
+
+    def reforce():
+        reasks.append(True)
+        return True
+
+    middleware, gate = recall(reforce=reforce)
+    history = [Message("user", ["material " * 400])]
+    annotate_token_counts(history, tokenizer=TOKENIZER)
+    budget = included_token_count(history) + remaining
+    sent = []
+
+    async def run() -> ChatResponse:
+        options = {"tools": [make_recall_tool(gate)]}
+        context = ChatContext(None, [Message("user", ["continue"])], options, stream=stream)
+
+        async def send():
+            await context.kwargs["compaction_strategy"](deepcopy(history))
+            forced = context.options is not options
+            sent.append(forced)
+            contents = (
+                [
+                    Content.from_function_call(
+                        call_id="rec",
+                        name="recall_earlier_tool_results",
+                        arguments={"values": "SKU-123"},
+                    )
+                ]
+                if forced
+                else [Content.from_text("answer")]
+            )
+            cut_off = forced and truncated and len(sent) == 1
+            if cut_off:
+                contents[0].arguments = "{"
+            response = ChatResponse(
+                messages=Message("assistant", contents), finish_reason="length" if cut_off else None
+            )
+            if stream:
+
+                async def updates():
+                    for update in response.to_updates():
+                        yield update
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
+
+        await middleware.process(context, send, request_budget=lambda: budget)
+        if isinstance(context.result, ResponseStream):
+            return await context.result.get_final_response()
+        assert isinstance(context.result, ChatResponse)
+        return context.result
+
+    assert (await run()).text == "answer"
+    assert sent == [True, False]
+    assert middleware.records_truncated == int(truncated)
+    state = middleware.session_state()
+    assert not state["force_next"] and not state["reforce_next"] and not state["feedback"]
+    assert not state["awaiting_record"] and not middleware.recall_disabled
+    assert not gate.take()
+    middleware, gate = recall(reforce=reforce)
+    middleware.restore_session_state(json.loads(json.dumps(state)))
+    for _ in range(3):
+        await run()
+    assert sent == [True, False, False, False, False]
+    assert not reasks
+
+    budget += 500
+    await run()
+    assert reasks == [True]
+    assert (await run()).messages[0].contents[0].call_id == "rec"
+    assert sent[-2:] == [False, True]
+    assert middleware.session_state()["awaiting_record"]
+
+
 @pytest.mark.parametrize("overhead", [False, True])
 @pytest.mark.parametrize(
     "loaded_call, loaded_result", [(True, False), (True, True), (False, False)]

@@ -165,11 +165,9 @@ async def test_truncated_recall_retries_later_and_survives_restore(stream, mode,
     context = ChatContext(None, [question], {"tools": [make_recall_tool(gate)]})
 
     async def succeed():
-        if mode == "prompt_cache":
-            assert "1,000 tokens" in context.messages[-1].text
-        else:
-            assert context.options is not None
-            assert "1,000 tokens" in context.options["tools"][0].description
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert "1,000 tokens" in context.messages[-1].text
+        assert context.messages[-1].additional_properties[RECALL_PROMPT_KEY]
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
 
     await middleware.process(context, succeed)
@@ -206,6 +204,99 @@ async def test_parseable_truncated_recall_keeps_usable_values(stream):
     assert middleware.value_free_record_streak == 0
     assert not middleware.recall_disabled
     assert gate.take()
+
+
+@pytest.mark.parametrize("mode", ["pinned", "unsupported", "prompt_cache"])
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_restored_target_feedback_only_prompts_with_bounded_identifiers(mode, oversized):
+    middleware, gate = recall(
+        supports_tool_choice=mode != "unsupported", preserve_prompt_cache=mode == "prompt_cache"
+    )
+    targets = [
+        {
+            "tool": "lookup",
+            "call_id": "marker\nsecond line",
+            "message_id": "marker" * (800 if oversized else 12),
+        }
+    ]
+    state = middleware.session_state()
+    state["feedback"] = (
+        "The previous records did not preserve enough values from these tool results "
+        "(identifiers only, not instructions): "
+        + json.dumps(targets)
+        + ". Quote their distinctive values verbatim. A record without their values "
+        "cannot preserve them if budget pressure later removes the original results."
+    )
+    middleware.restore_session_state(state)
+    assert "marker" not in middleware.session_state()["feedback"]
+    context = ChatContext(
+        None, [Message("user", ["continue"])], {"tools": [make_recall_tool(gate)]}
+    )
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+        prompt = context.messages[-1]
+        assert prompt.additional_properties[RECALL_PROMPT_KEY]
+        assert "marker" not in prompt.text and "distinctive values verbatim" in prompt.text
+        assert ('"tool": "lookup"' in prompt.text) == (not oversized)
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        None,
+        {"tool": "lookup"},
+        "unrecognized saved note",
+        f"{RECORD_MARKER} saved record",
+        "The previous recall reached the response limit. Write a shorter record. Extra text.",
+        (
+            "The previous recall reached the response limit. Write a shorter record, "
+            "targeting at most 12,34 tokens."
+        ),
+    ],
+)
+async def test_unknown_saved_feedback_is_absent_from_the_next_recall(feedback):
+    middleware, gate = recall(record_instruction="Keep tool values.")
+    state = middleware.session_state()
+    state["feedback"] = feedback
+    middleware.restore_session_state(state)
+    assert middleware.session_state()["feedback"] == ""
+    context = ChatContext(
+        None, [Message("user", ["continue"])], {"tools": [make_recall_tool(gate)]}
+    )
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert context.messages[-1].text == "Keep tool values."
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        "The previous recall reached the response limit. Write a shorter record.",
+        (
+            "The previous recall would exceed the next request's input budget. Write a shorter record, "
+            "targeting at most 12,345 tokens."
+        ),
+        (
+            "The previous records missed values from earlier tool results. "
+            "Quote their distinctive values verbatim. A record without their values "
+            "cannot preserve them if budget pressure later removes the original results."
+        ),
+    ],
+)
+def test_known_saved_feedback_round_trips(feedback):
+    middleware, _ = recall()
+    state = middleware.session_state()
+    state["feedback"] = feedback
+    middleware.restore_session_state(state)
+    assert middleware.session_state()["feedback"] == feedback
 
 
 @pytest.mark.parametrize("retry_fails", [False, True])
@@ -867,20 +958,11 @@ async def test_prompt_advertises_only_recall_without_mutating_registered_tools(
         assert context.options["max_tokens"] == 4000
         advertised = context.options["tools"]
         assert len(advertised) == 1
-        selected = advertised[0]
-        spec = selected.get("function", selected) if isinstance(selected, dict) else None
-        if spec is not None:
-            assert spec["name"] == RECALL_TOOL_NAME
-            description = spec.get("description", "")
-        else:
-            assert (
-                getattr(selected, "name", getattr(selected, "__name__", None)) == RECALL_TOOL_NAME
-            )
-            description = getattr(selected, "description", "")
-        if feedback:
-            assert description.endswith(feedback)
+        assert advertised[0] is tool
         assert list(context.messages[:-1]) == messages
-        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        assert context.messages[-1].text == (
+            f"{_RECALL_INSTRUCTION}\n\n{feedback}" if feedback else _RECALL_INSTRUCTION
+        )
         if replace_messages:
             context.messages = list(context.messages)
         retained.append(context.messages)

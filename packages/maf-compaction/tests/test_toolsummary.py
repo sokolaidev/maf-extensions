@@ -1196,6 +1196,91 @@ async def test_a_partial_record_asks_for_another_record_and_holds_what_it_missed
     assert strategy.take_reforce() is False, "and asked once"
 
 
+@pytest.mark.parametrize("already_queued", [False, True])
+@pytest.mark.parametrize("overhead_exhausted", [False, True])
+async def test_coverage_ask_survives_full_budget_passes_and_restore(
+    already_queued, overhead_exhausted
+):
+    from copy import deepcopy
+
+    from maf_compaction import CompactionBudgetExceeded
+
+    history = _conversation(tool_turns=6, record=_covering_record(2))
+    roomy = 100_000
+    budget = roomy if already_queued else 1
+    gate = RecallGate()
+    options = {"tools": [make_recall_tool(gate)]}
+    sent = []
+
+    def stack():
+        strategy = _chained()
+        middleware = ToolResultRecallMiddleware(
+            max_input_tokens=roomy,
+            tokenizer=TOKENIZER,
+            arm=gate.arm,
+            disarm=gate.disarm,
+            repeat_records=False,
+            reforce=strategy.take_reforce,
+        )
+        return strategy, middleware
+
+    strategy, middleware = stack()
+
+    def sending_budget():
+        if overhead_exhausted and budget == 1:
+            raise CompactionBudgetExceeded(2, 1)
+        return budget
+
+    async def run() -> None:
+        context = ChatContext(
+            None, deepcopy(history), options, kwargs={"compaction_strategy": strategy}
+        )
+
+        async def send():
+            await context.kwargs["compaction_strategy"](context.messages)
+            forced = context.options is not options
+            sent.append(forced)
+            contents = (
+                [
+                    Content.from_function_call(
+                        call_id="retry", name=RECALL_TOOL_NAME, arguments={"values": "CODE-2"}
+                    )
+                ]
+                if forced
+                else [Content.from_text("answer")]
+            )
+            context.result = ChatResponse(messages=Message("assistant", contents))
+
+        await middleware.process(context, send, request_budget=sending_budget)
+
+    await run()
+    budget = 1
+    for _ in range(4):
+        await run()
+    assert sent == ([False, True] if already_queued else [False]) + [False] * 4
+    saved_strategy = strategy.decision_state().to_dict()
+    saved_middleware = middleware.session_state()
+    strategy, middleware = stack()
+    strategy.restore_decisions(RecordDecisions.from_dict(json.loads(json.dumps(saved_strategy))))
+    middleware.restore_session_state(json.loads(json.dumps(saved_middleware)))
+    await run()
+    assert not sent[-1]
+    budget = roomy
+    await run()
+    await run()
+    assert sent[-2:] == [False, True]
+    assert middleware.reforced_calls == 1
+    assert middleware.session_state()["awaiting_record"]
+
+
+async def test_deferred_coverage_ask_expires_when_its_targets_disappear():
+    strategy = _chained()
+    await strategy(_conversation(tool_turns=6, record=_covering_record(2)))
+    strategy._defer_reforce(False)
+    await strategy(_conversation(tool_turns=6, record=_covering_record(6)))
+    assert not strategy.take_reforce()
+
+
 async def test_the_middleware_pins_the_call_after_the_strategys_ask_and_counts_it_apart() -> None:
     """The ask crosses to the middleware on a call exit and pins the next call, whatever else is true.
 
@@ -2955,8 +3040,9 @@ async def test_partial_row_release_leaves_non_text_results_unchanged(
 @pytest.mark.parametrize("tool_form", ["callable", "function", "nested_dict", "flat_dict"])
 @pytest.mark.parametrize("wrapped", [False, True])
 async def test_value_free_records_receive_targeted_private_reask(tool_form, wrapped):
-    from agent_framework import FunctionTool
     from agent_framework import tool as function_tool
+
+    from maf_compaction._request import RECALL_PROMPT_KEY, tool_spec
 
     strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
     messages = _conversation(3, record="Only the page titles were requested.")
@@ -2981,13 +3067,19 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
             tool = tool.to_json_schema_spec()
             if tool_form == "flat_dict":
                 tool = tool["function"]
-    original = str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    original = json.dumps(tool_spec(tool), sort_keys=True)
     options = {"tools": [tool]}
     context = ChatContext(None, messages, options)
     seen = []
 
     async def respond():
-        seen.append(dict(context.options or {}))
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert context.options is not None
+        assert context.options["tools"] is options["tools"]
+        assert json.dumps(tool_spec(tool), sort_keys=True) == original
+        seen.append(
+            [m.text for m in context.messages if m.additional_properties.get(RECALL_PROMPT_KEY)]
+        )
         context.result = ChatResponse(messages=Message("assistant", ["answer"]))
 
     await middleware.process(context, respond)
@@ -2995,19 +3087,36 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
     assert saved["feedback"]
     middleware.restore_session_state(saved)
     await middleware.process(context, respond)
-    advertised = seen[-1]["tools"][0]
-    spec = advertised.to_json_schema_spec() if isinstance(advertised, FunctionTool) else advertised
+    spec = tool_spec(tool)
     description = spec.get("function", spec)["description"]
     assert "not a reply shown to the user" in description
     assert "not earlier assistant text" in description
     assert "do not apply to this record" not in description
-    assert "lookup_0" in description and "lookup_1" in description and "lookup_2" in description
-    assert "distinctive values verbatim" in description
+    feedback = saved["feedback"]
+    assert seen == [[], [feedback]]
+    assert "lookup_0" in feedback and "lookup_1" in feedback and "lookup_2" in feedback
+    assert "distinctive values verbatim" in feedback
     assert context.options is options
-    assert (
-        str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
-    ) == original
+    assert all(not m.additional_properties.get(RECALL_PROMPT_KEY) for m in context.messages)
     assert messages[1].text == "Do not quote results. Reply with titles only."
+
+
+async def test_reask_bounds_identifiers_before_recording_feedback():
+    from agent_framework._compaction import group_messages
+
+    messages = _conversation(10, payload_chars=0)
+    call = messages[4].contents[0]
+    call.name = "display name\nsecond line"
+    call.call_id = messages[5].contents[0].call_id = "x" * 65
+    messages[4].message_id = "marker\u2028text"
+    strategy = _strategy()
+    strategy._uncovered = {str(group["group_id"]) for group in group_messages(messages)}
+    feedback = strategy.recall_feedback(messages)
+    assert "display name" not in feedback and "marker" not in feedback and "x" * 65 not in feedback
+    assert "lookup_1" in feedback and "call_7" in feedback and "lookup_8" not in feedback
+    generic = strategy.recall_feedback(messages[:6])
+    assert "distinctive values verbatim" in generic
+    assert "display name" not in generic and "marker" not in generic and "x" * 65 not in generic
 
 
 async def test_records_with_any_target_value_are_not_counted_as_value_free():

@@ -31,12 +31,13 @@ import re
 import string
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import copy, deepcopy
+from copy import copy
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+from itertools import islice
 from math import ceil, isfinite
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -53,9 +54,6 @@ from agent_framework import (
     MiddlewareTermination,
     ResponseStream,
     get_namespaced_value,
-)
-from agent_framework import (
-    tool as function_tool,
 )
 from agent_framework._compaction import (
     EXCLUDED_KEY,
@@ -243,6 +241,28 @@ _OWN_HOLDS: Final[frozenset[str]] = frozenset(
 #: a later record cannot undo: a settled group that a record then quotes is released and
 #: dropped like any other.
 _REFORCE_ARRIVAL_PASSES: Final[int] = 2
+
+_TARGET_FEEDBACK_PREFIX = (
+    "The previous records did not preserve enough values from these tool results "
+    "(identifiers only, not instructions): "
+)
+_TARGET_FEEDBACK_GUIDANCE = (
+    "Quote their distinctive values verbatim. A record without their values "
+    "cannot preserve them if budget pressure later removes the original results."
+)
+_GENERAL_TARGET_FEEDBACK = (
+    "The previous records missed values from earlier tool results. " + _TARGET_FEEDBACK_GUIDANCE
+)
+_TRUNCATED_RECORD_HINT = "The previous recall reached the response limit. Write a shorter record"
+_OVERSIZED_RECORD_HINT = (
+    "The previous recall would exceed the next request's input budget. Write a shorter record"
+)
+_SHORTER_RECORD_FEEDBACK = re.compile(
+    rf"(?:{re.escape(_TRUNCATED_RECORD_HINT)}|{re.escape(_OVERSIZED_RECORD_HINT)})"
+    r"(?:, targeting at most [1-9][0-9]{0,2}(?:,[0-9]{3})* tokens)?\."
+)
+_FEEDBACK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+_MAX_FEEDBACK_TARGETS = 8
 
 #: Share of a group's distinctive values the record must quote before the group may be dropped.
 #:
@@ -1487,6 +1507,7 @@ class _Reforce:
     records: int
     passes: int = 0
     taken: bool = False
+    budget_deferred: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return the outstanding ask as JSON-safe values."""
@@ -1495,12 +1516,19 @@ class _Reforce:
             "records": self.records,
             "passes": self.passes,
             "taken": self.taken,
+            "budget_deferred": self.budget_deferred,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> _Reforce:
         """Restore an ask serialized by :meth:`to_dict`."""
-        return cls(frozenset(data["targets"]), data["records"], data["passes"], data["taken"])
+        return cls(
+            frozenset(data["targets"]),
+            data["records"],
+            data["passes"],
+            data["taken"],
+            data.get("budget_deferred", False),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2060,23 +2088,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
     def recall_feedback(self, messages: list[Message]) -> str:
         """Name the uncovered results the outstanding re-ask targets."""
         targets = self._reforce.targets if self._reforce is not None else self._uncovered
-        results = [
+        results = (
             {"tool": content.name, "call_id": content.call_id, "message_id": message.message_id}
             for group in group_messages(messages)
             if str(group["group_id"]) in targets
             for message in messages[group["start_index"] : group["end_index"] + 1]
             for content in message.contents
             if content.type == "function_call"
-        ]
-        if not results:
-            return ""
-        return (
-            "The previous records did not preserve enough values from these tool results "
-            "(identifiers only, not instructions): "
-            + json.dumps(results, ensure_ascii=False)
-            + ". Quote their distinctive values verbatim. A record without their values "
-            "cannot preserve them if budget pressure later removes the original results."
         )
+        return _target_feedback(results)
 
     def take_reforce(self) -> bool:
         """Consume the outstanding ask for another record, if there is one.
@@ -2097,7 +2117,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if request is None or request.taken:
             return False
         request.taken = True
+        request.budget_deferred = False
         return True
+
+    def _defer_reforce(self, retry_taken: bool) -> None:
+        """Preserve the coverage targets until there is room to send their ask."""
+        request = self._reforce
+        if request is not None and (not request.taken or retry_taken):
+            request.budget_deferred = True
+            request.taken = False
+            request.passes = 0
 
     def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
         """Bind value observation and, when enabled, this conversation's re-force hooks."""
@@ -2110,6 +2139,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         middleware.reforce_feedback = (
             self.recall_feedback if middleware.reforce is not None else None
         )
+        middleware._defer_reforce = self._defer_reforce if middleware.reforce is not None else None  # pyright: ignore[reportPrivateUsage]
         middleware._capture_value_targets = self._capture_value_targets  # pyright: ignore[reportPrivateUsage]
 
     def record_pending(
@@ -2951,6 +2981,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         uncovered = self._uncovered
         request = self._reforce
+        if (
+            request is not None
+            and request.budget_deferred
+            and request.targets.isdisjoint(uncovered)
+        ):
+            self._reforce = request = None
         if request is not None:
             # A re-force chain only retries the batch its first ask targeted.
             self._settled |= uncovered - request.targets
@@ -2959,7 +2995,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if not request.targets - uncovered:
                     self._settled |= request.targets & uncovered
                 self._reforce = None
-            else:
+            elif not request.budget_deferred or self._recall_due is None or self._recall_disabled():
                 request.passes += 1
                 if request.passes >= _REFORCE_ARRIVAL_PASSES:
                     # Nothing came by the pass that could have seen it: the model ignored the
@@ -3018,6 +3054,10 @@ class _RecallTruncated(Exception):
 
 class _RecallTooLarge(Exception):
     """A recall call and its result cannot fit the next request together."""
+
+
+class _RecallPromptFull(Exception):
+    """The ordinary request has no room even before adding a record."""
 
 
 def _has_refusal(contents: Sequence[Content]) -> bool:
@@ -3090,31 +3130,54 @@ def _is_recall_tool(tool: Any) -> bool:
     return callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME
 
 
-def _recall_tools_with_feedback(
-    options: Mapping[str, Any], feedback: str, *, only_recall: bool = False
-) -> list[Any]:
-    tools: list[Any] = []
-    for original in request_tools(options):
-        if only_recall and not _is_recall_tool(original):
-            continue
-        if not feedback:
-            tools.append(original)
-            continue
-        tool = original
-        if isinstance(tool, FunctionTool) and tool.name == RECALL_TOOL_NAME:
-            tool = copy(tool)
-            tool.description = f"{tool.description}\n\n{feedback}"
-        elif isinstance(tool, dict):
-            spec: dict[str, Any] = cast(dict[str, Any], tool).get("function", tool)
-            if spec.get("name") == RECALL_TOOL_NAME:
-                tool = deepcopy(cast(dict[str, Any], tool))
-                spec = tool.get("function", tool)
-                spec["description"] = f"{spec.get('description', '')}\n\n{feedback}"
-        elif callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME:
-            tool = function_tool(tool)
-            tool.description = f"{tool.description}\n\n{feedback}"
-        tools.append(tool)
-    return tools
+def _target_feedback(results: Iterable[Mapping[str, object]]) -> str:
+    """Keep only bounded identifier fields when history contributes to a user-role message."""
+    limited = list(islice(results, _MAX_FEEDBACK_TARGETS))
+    if not limited:
+        return ""
+    targets: list[dict[str, str]] = []
+    for result in limited:
+        fields: dict[str, str] = {}
+        for key in ("tool", "call_id", "message_id"):
+            value = result.get(key)
+            if isinstance(value, str) and _FEEDBACK_ID.fullmatch(value):
+                fields[key] = value
+        if fields:
+            targets.append(fields)
+    if not targets:
+        return _GENERAL_TARGET_FEEDBACK
+    return _TARGET_FEEDBACK_PREFIX + json.dumps(targets) + ". " + _TARGET_FEEDBACK_GUIDANCE
+
+
+def _restore_feedback(feedback: object) -> str:
+    """Restore only package-generated retry guidance and validate saved target identifiers."""
+    if not isinstance(feedback, str):
+        return ""
+    if not feedback.startswith(_TARGET_FEEDBACK_PREFIX):
+        if feedback == _GENERAL_TARGET_FEEDBACK or (
+            len(feedback) <= 4_096 and _SHORTER_RECORD_FEEDBACK.fullmatch(feedback)
+        ):
+            return feedback
+        return ""
+    suffix = ". " + _TARGET_FEEDBACK_GUIDANCE
+    if len(feedback) <= 4_096 and feedback.endswith(suffix):
+        try:
+            targets = json.loads(
+                feedback.removeprefix(_TARGET_FEEDBACK_PREFIX).removesuffix(suffix)
+            )
+        except (ValueError, RecursionError):
+            return _GENERAL_TARGET_FEEDBACK
+        if isinstance(targets, list) and all(
+            isinstance(item, dict) for item in cast(list[object], targets)
+        ):
+            return _target_feedback(cast(list[dict[str, object]], targets))
+    return _GENERAL_TARGET_FEEDBACK
+
+
+def _without_recall_prompt(messages: Sequence[Message]) -> list[Message]:
+    return [
+        message for message in messages if not message.additional_properties.get(RECALL_PROMPT_KEY)
+    ]
 
 
 def _mentions_tool_choice(error: BaseException) -> bool:
@@ -3184,17 +3247,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             Use ``DEFAULT_RECORD_INSTRUCTION`` or custom text. It is removed after the request
             and excluded from session state. Value-bearing records may need a much larger
             ``record_max_tokens`` and matching tool/strategy targets; no budget is scaled
-            automatically. ``None`` leaves requests unchanged.
+            automatically. With ``None``, only retry feedback adds a message to a pinned call.
         supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
             temporary trailing message with only the recall tool advertised. A tool_choice
             client rejection also selects this mode for the rest of the session.
         preserve_prompt_cache: Ask for a record without changing the request prefix. The
-            forced call is never pinned: the ask is the same temporary trailing message, but the
-            call keeps the agent's own ``tools`` and ``tool_choice``, and re-force feedback goes
-            into that message instead of the recall tool's description. Providers that cache by
-            exact prefix, such as Anthropic, drop every cached message block when
-            ``tool_choice`` or thinking changes and match nothing when ``tools`` does, so a
-            pinned or recall-only ask rewrites the whole conversation at the cache-write price.
+            call keeps the agent's own ``tools`` and ``tool_choice``, including on a re-ask.
+            This lets providers with automatic or explicitly enabled prefix caching reuse
+            the same tools and history. All recall modes put feedback in a trailing message.
             With every tool on offer the model may answer with another tool instead; the
             prompted mode's two-ignored-asks rule bounds that. Takes precedence over
             ``supports_tool_choice``.
@@ -3295,6 +3355,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.repeat_records = repeat_records
         self.reforce = reforce
         self.reforce_feedback: Callable[[list[Message]], str] | None = None
+        self._defer_reforce: Callable[[bool], None] | None = None
         self._capture_value_targets: Callable[[list[Message]], None] | None = None
         self._force_next = False
         self._reforce_next = False
@@ -3344,7 +3405,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._value_free_streak = data.get("value_free_streak", 0)
         self._value_records = set(data.get("value_records", []))
         self._pin_disabled_reason = data.get("pin_disabled_reason")
-        self._feedback = data.get("feedback", "")
+        self._feedback = _restore_feedback(data.get("feedback", ""))
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
@@ -3518,11 +3579,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.disarm is not None:
             self.disarm()
 
-    def _ask_text(self) -> str:
-        """The trailing ask, carrying re-force feedback when the tool description cannot."""
-        if self.preserve_prompt_cache and self._feedback:
-            return f"{_RECALL_INSTRUCTION}\n\n{self._feedback}"
-        return _RECALL_INSTRUCTION
+    def _ask_text(self) -> str | None:
+        """Keep instructions and retry feedback in a single request-only message."""
+        instruction = _RECALL_INSTRUCTION if self._pin_disabled else self.record_instruction
+        if self._feedback:
+            return f"{instruction}\n\n{self._feedback}" if instruction else self._feedback
+        return instruction
 
     def _forced_options(self, original: Mapping[str, Any]) -> dict[str, Any]:
         options = dict(original)
@@ -3533,6 +3595,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             return options
         if self._pin_disabled:
             options["tool_choice"] = "auto"
+            options["tools"] = [tool for tool in request_tools(original) if _is_recall_tool(tool)]
         else:
             options["tool_choice"] = {
                 "mode": "required",
@@ -3540,10 +3603,6 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             }
         if self.record_max_tokens is not None:
             options["max_tokens"] = self.record_max_tokens
-        if self._feedback or self._pin_disabled:
-            options["tools"] = _recall_tools_with_feedback(
-                original, self._feedback, only_recall=self._pin_disabled
-            )
         return options
 
     def _observe_forced(self, response: ChatResponse[Any]) -> bool:
@@ -3628,11 +3687,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
-        cleaned = [
-            message
-            for message in context.messages
-            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-        ]
+        cleaned = _without_recall_prompt(context.messages)
         if isinstance(context.messages, list):
             context.messages[:] = cleaned
         else:
@@ -3689,11 +3744,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call and self._capture_value_targets is not None:
                 self._capture_value_targets(messages)
             # History providers can load retained asks after middleware entry.
-            messages[:] = [
-                message
-                for message in messages
-                if not message.additional_properties.get(RECALL_PROMPT_KEY)
-            ]
+            messages[:] = _without_recall_prompt(messages)
             if prompt is not None:
                 messages.append(prompt)
             if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
@@ -3711,8 +3762,33 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
                 request_budget = sending_budget
 
+        def check_record_budget(additions: list[Message]) -> None:
+            if request_budget is None or outgoing is None:
+                return
+            history = _without_recall_prompt(outgoing)
+            projected = history + additions
+            annotate_token_counts(projected, tokenizer=self.tokenizer)
+            forced_options = context.options
+            try:
+                context.options = original_options
+                budget = request_budget()
+            except CompactionBudgetExceeded:
+                raise _RecallPromptFull from None
+            finally:
+                context.options = forced_options
+            if additions and included_token_count(projected) <= budget:
+                return
+            if included_token_count(history) >= budget:
+                raise _RecallPromptFull
+            if additions:
+                raise _RecallTooLarge
+
         def observe(response: ChatResponse[Any]) -> bool:
-            normalized = self._observe_forced(response)
+            try:
+                normalized = self._observe_forced(response)
+            except _RecallTruncated:
+                check_record_budget([])
+                raise
             if request_budget is None or outgoing is None:
                 return normalized
             results: list[Content] = []
@@ -3731,26 +3807,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                             call_id=content.call_id, result=make_recall_tool()(values)
                         )
                     )
-            if not results:
-                return normalized
-            projected = (
-                [
-                    message
-                    for message in outgoing
-                    if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                ]
-                + list(response.messages)
-                + [Message("tool", results)]
-            )
-            annotate_token_counts(projected, tokenizer=self.tokenizer)
-            forced_options = context.options
-            try:
-                context.options = original_options
-                budget = request_budget()
-            finally:
-                context.options = forced_options
-            if included_token_count(projected) > budget:
-                raise _RecallTooLarge
+            if results:
+                check_record_budget([*response.messages, Message("tool", results)])
             return normalized
 
         def restore_request() -> None:
@@ -3761,7 +3819,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         async def attempt() -> None:
             nonlocal prompt
-            instruction = self._ask_text() if self._pin_disabled else self.record_instruction
+            instruction = self._ask_text()
             prompt = (
                 Message("user", [instruction], additional_properties={RECALL_PROMPT_KEY: True})
                 if forced_this_call and instruction is not None
@@ -3783,22 +3841,19 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             finally:
                 if prompt is not None:
                     # Downstream reconciliation can retain the sent list after this call.
-                    if isinstance(sent_messages, list):
-                        sent_messages[:] = [
-                            message
-                            for message in sent_messages
-                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                        ]
-                    if context.messages is not sent_messages:
-                        cleaned = [
-                            message
-                            for message in context.messages
-                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
-                        ]
-                        if isinstance(context.messages, list):
-                            context.messages[:] = cleaned
-                        else:
-                            context.messages = cleaned
+                    if (
+                        outgoing is not None
+                        and outgoing is not sent_messages
+                        and outgoing is not context.messages
+                    ):
+                        outgoing[:] = _without_recall_prompt(outgoing)
+                    if isinstance(sent_messages, list) and sent_messages is not context.messages:
+                        sent_messages[:] = _without_recall_prompt(sent_messages)
+                    cleaned = _without_recall_prompt(context.messages)
+                    if isinstance(context.messages, list):
+                        context.messages[:] = cleaned
+                    else:
+                        context.messages = cleaned
                 prompt = None
 
         async def validated_attempt() -> None:
@@ -3850,27 +3905,27 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._awaiting_record = False
             self._ignored_streak = 0
             self._feedback = (
-                (
-                    "The previous recall would exceed the next request's input budget."
-                    if isinstance(exc, _RecallTooLarge)
-                    else "The previous recall reached the response limit."
-                )
-                + " Write a shorter record"
-                + (
-                    f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
-                    if self.record_max_tokens is not None
-                    else "."
-                )
+                _OVERSIZED_RECORD_HINT
+                if isinstance(exc, _RecallTooLarge)
+                else _TRUNCATED_RECORD_HINT
+            ) + (
+                f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
+                if self.record_max_tokens is not None
+                else "."
             )
             if self.disarm is not None:
                 self.disarm()
             restore_request()
             await call_next()
-        except _RecallRefused:
+        except (_RecallRefused, _RecallPromptFull) as exc:
             refused_this_call = True
-            self._failed_forced_calls += 1
             self._ignored_streak = 0
-            self._observe_record_values(None, False)
+            self._feedback = ""
+            if isinstance(exc, _RecallRefused):
+                self._failed_forced_calls += 1
+                self._observe_record_values(None, False)
+            elif self._defer_reforce is not None:
+                self._defer_reforce(reforced_this_call)
             if self.disarm is not None:
                 self.disarm()
             restore_request()
@@ -3895,7 +3950,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 else:
                     context.kwargs.pop("compaction_strategy")
 
-        messages = list(context.messages)
+        messages = list(
+            outgoing if request_budget is not None and outgoing is not None else context.messages
+        )
         record_index = find_record_index(messages) if messages else None
         # Each record is counted once, when its identity first appears as the newest, so a
         # record that stays visible for many calls counts once and a repeat counts again. Read
@@ -3929,8 +3986,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             budget = request_budget() if request_budget is not None else None
         except CompactionBudgetExceeded:
             # A post-call estimate must not discard a delivered response.
-            self._force_next = False
-            return
+            budget = 0
         self._force_next = self._record_due(messages, record_index, max_input_tokens=budget)
         self._feedback = ""
         if self._reforce_next and self.reforce_feedback is not None:
@@ -3957,7 +4013,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         **The rule, written once so nobody has to derive it from three booleans.** Write
         *pending* for the droppable tool work no record accounts for: the non-recall tool-call
-        groups after the newest record, or all of them when there is no record yet. Then
+        groups after the newest record, or all of them when there is no record yet. When
+        the ordinary sending budget leaves room for a record:
 
         - the strategy's own ask for another record, ``reforce``, pins whenever one is
           outstanding, whatever else is true: it is made on a measured shortfall and bounded
@@ -3985,6 +4042,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             True when the next call should be forced.
         """
         if self.recall_disabled:
+            return False
+        if max_input_tokens is not None and included_token_count(messages) >= max_input_tokens:
+            if self._defer_reforce is not None:
+                self._defer_reforce(False)
             return False
         if self.reforce is not None and self.reforce():
             self._reforce_next = True
