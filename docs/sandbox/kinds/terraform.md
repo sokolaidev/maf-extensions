@@ -44,12 +44,12 @@ Formatting checks use `fmt -check -recursive` across the staged project. Validat
 Both validation tools emit a `terraform_diagnostics` JSON item after completed validation:
 
 ```json
-{"type":"terraform_diagnostics","diagnostics":[{"file":"files[0]","severity":"error"}],"unattributed_diagnostics":false}
+{"type":"terraform_diagnostics","diagnostics":[{"file":"files[0] 'root/main.tf'","severity":"error"}],"unattributed_diagnostics":false}
 ```
 
 The [Terraform validation format](https://developer.hashicorp.com/terraform/cli/commands/validate#json-output-format) and [OpenTofu validation format](https://opentofu.org/docs/cli/commands/validate/#json-output-format) provide severity and optional source ranges without stable rule IDs. The kind selects only diagnostic presence for an input and severity. It does not derive categories or IDs from summary or detail text. Provider messages, expressions, addresses, snippets, source positions and raw counts stay in workload output, subject to the file-read checks below.
 
-Each `file` is one of the fixed references `files[0]` through `files[63]`, preserving manifest order. A diagnostic filename must exactly match a successfully staged path expressed relative to `root_module`, the CLI's working directory. This includes sibling-module paths such as `../modules/child/main.tf`. There is no basename, suffix, URI or absolute-path inference. Hidden file and root names are never emitted.
+Each `file` starts with its manifest position, from `files[0]` through `files[63]`. When the arguments are trusted, the reference includes the caller's spelling if it is visible and within the echo limit. Paths that would reveal a hidden root directory retain only their position. A diagnostic filename must exactly match a successfully staged path expressed relative to `root_module`, the CLI's working directory. For example, a finding at `../modules/child/main.tf` can select the caller's `files[1] './modules/child/main.tf'`. There is no basename, suffix, URI or absolute-path inference.
 
 Duplicate input/severity pairs collapse. At most 128 pairs are possible, ordered by input position and then `error`, `warning`. Missing, malformed or unmatched locations set `unattributed_diagnostics` to `true` without exposing their values. An unfamiliar message still contributes its checked severity and location; no message taxonomy is claimed. An unknown severity or malformed required diagnostic field makes the report incomplete. Future additive JSON fields are ignored for summary selection.
 
@@ -144,4 +144,5 @@ All four combinations also passed in the [all-sample published-package dispatch]
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
 | Trusted diagnostic summaries for repair loops | Implemented for Terraform and OpenTofu | [#1390](https://github.com/sokolaidev/maf-extensions/issues/1390) (closed) by [#1394](https://github.com/sokolaidev/maf-extensions/pull/1394) (merged) |
+| Caller filenames in trusted diagnostic summaries | Implemented for Terraform and OpenTofu | [#2955](https://github.com/sokolaidev/maf-extensions/issues/2955) (closed) by [#2959](https://github.com/sokolaidev/maf-extensions/pull/2959) (merged) |
 | Published-package random-profile samples on Docker and ACAS | Implemented and measured for both engines | [#1296](https://github.com/sokolaidev/maf-extensions/issues/1296) (closed) by [#1378](https://github.com/sokolaidev/maf-extensions/pull/1378) (merged) |

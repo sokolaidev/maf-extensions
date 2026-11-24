@@ -9,7 +9,8 @@ from agent_framework.security import (
     LabelTrackingFunctionMiddleware,
     PolicyEnforcementFunctionMiddleware,
 )
-from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
+from maf_sandbox import MAX_ECHOED_NAME_CHARACTERS, SourceIntegrity
+from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT, SandboxToolSession
 from test_terraform_workload import RecordingSandbox, _verdict, attach, envelope
 
 import maf_sandbox_terraform._tool as workload
@@ -56,16 +57,22 @@ def summary_item(items):
     )
 
 
-def invoke(engine, diagnostics, *, data=None, root="."):
+def invoke(engine, diagnostics, *, data=None, root=".", files=None, **kwargs):
     sandbox = RecordingSandbox(default_stdout=json.dumps(report(engine, diagnostics)))
-    validator, backend, store = attach(data, sandbox=sandbox, engine=engine)
-    items = asyncio.run(validator.func(files=list(store.files), root_module=root))
+    validator, backend, store = attach(data, sandbox=sandbox, engine=engine, **kwargs)
+    items = asyncio.run(
+        validator.func(files=list(store.files) if files is None else files, root_module=root)
+    )
     assert len(backend.disposed) == 1
     return items
 
 
-def test_summary_contains_only_presence_and_fixed_vocabulary(engine):
-    items = invoke(engine, [diagnostic(), diagnostic(), diagnostic(severity="warning")])
+def test_untrusted_arguments_keep_the_fixed_reference_vocabulary(engine):
+    items = invoke(
+        engine,
+        [diagnostic(), diagnostic(), diagnostic(severity="warning")],
+        argument_integrity=SourceIntegrity.UNTRUSTED,
+    )
     summary = summary_item(items)
     assert json.loads(summary.text) == {
         "type": "terraform_diagnostics",
@@ -89,18 +96,60 @@ def test_empty_or_warning_summary_preserves_verdict(engine, severity):
     assert bool(json.loads(summary_item(items).text)["diagnostics"]) is (severity is not None)
 
 
-def test_nested_root_and_sibling_module_match_exact_engine_relative_paths(engine):
+@pytest.mark.parametrize(
+    "case", ["trusted", "untrusted", "rewritten", "hidden-root", "closed", "overlong"]
+)
+def test_nested_root_and_sibling_findings_use_only_visible_caller_names(engine, case, monkeypatch):
     data = {"root/main.tf": "", "modules/child/main.tf": ""}
+    sibling = "./modules/child/main.tf"
+    if case == "overlong":
+        sibling = "./" * (MAX_ECHOED_NAME_CHARACTERS // 2) + sibling
+    if case == "rewritten":
+        monkeypatch.setattr(
+            workload,
+            "positions_holding_hidden_content",
+            lambda *a, argument: {1} if argument == "files" else set(),
+        )
+    if case == "hidden-root":
+        monkeypatch.setattr(
+            workload,
+            "positions_holding_hidden_content",
+            lambda *a, argument: {0} if argument == "root_module" else set(),
+        )
+    if case == "closed":
+        monkeypatch.setattr(SandboxToolSession, "argument_integrity", property(lambda _: None))
     items = invoke(
         engine,
-        [diagnostic("../modules/child/main.tf"), diagnostic("main.tf", "warning")],
+        [
+            diagnostic("../modules/child/main.tf"),
+            diagnostic("main.tf", "warning"),
+            diagnostic("PRIVATE.tf"),
+        ],
         data=data,
         root="root",
+        files=["./root/main.tf", sibling],
+        argument_integrity=SourceIntegrity.UNTRUSTED
+        if case == "untrusted"
+        else SourceIntegrity.TRUSTED,
     )
-    assert json.loads(summary_item(items).text)["diagnostics"] == [
-        {"file": "files[0]", "severity": "warning"},
-        {"file": "files[1]", "severity": "error"},
-    ]
+    assert json.loads(summary_item(items).text) == {
+        "type": "terraform_diagnostics",
+        "diagnostics": [
+            {
+                "file": "files[0]"
+                if case in {"untrusted", "closed", "hidden-root"}
+                else "files[0] './root/main.tf'",
+                "severity": "warning",
+            },
+            {
+                "file": f"files[1] '{sibling}'"
+                if case in {"trusted", "hidden-root"}
+                else "files[1]",
+                "severity": "error",
+            },
+        ],
+        "unattributed_diagnostics": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -134,7 +183,7 @@ def test_unattributed_findings_never_become_a_clean_verdict(engine, location):
 def test_known_and_unattributed_findings_remain_distinct(engine):
     items = invoke(engine, [diagnostic(), diagnostic("outside.tf")])
     summary = json.loads(summary_item(items).text)
-    assert summary["diagnostics"] == [{"file": "files[0]", "severity": "error"}]
+    assert summary["diagnostics"] == [{"file": "files[0] 'main.tf'", "severity": "error"}]
     assert summary["unattributed_diagnostics"] is True
 
 
@@ -162,7 +211,12 @@ def test_hidden_names_keep_only_input_references(engine, argument, monkeypatch):
 def test_duplicates_and_raw_counts_cannot_expand_the_summary(engine):
     data = {f"input{i}.tf": "" for i in range(64)}
     records = [diagnostic(path, severity) for path in data for severity in ("error", "warning")]
-    items = invoke(engine, records * 3 + [diagnostic("outside.tf")] * 20, data=data)
+    items = invoke(
+        engine,
+        records * 3 + [diagnostic("outside.tf")] * 20,
+        data=data,
+        argument_integrity=SourceIntegrity.UNTRUSTED,
+    )
     summary = json.loads(summary_item(items).text)
     assert len(summary["diagnostics"]) == 128
     assert summary["diagnostics"][-1] == {"file": "files[63]", "severity": "warning"}

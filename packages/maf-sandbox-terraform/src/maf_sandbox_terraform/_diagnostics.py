@@ -6,8 +6,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-FILE_REFERENCES = tuple(f"files[{index}]" for index in range(64))
-
 
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
@@ -17,14 +15,12 @@ class Diagnostic:
     filename: str | None
 
 
-def diagnostic_summary(diagnostics: Sequence[Diagnostic], staged: Sequence[str], root: str) -> str:
+def diagnostic_summary(diagnostics: Sequence[Diagnostic], staged: dict[str, str], root: str) -> str:
     """Report presence per staged input and severity, with at most 128 distinct pairs."""
-    if len(staged) > len(FILE_REFERENCES):
+    if len(staged) > 64:
         raise ValueError("manifest exceeds the diagnostic reference vocabulary")
     # The CLI runs in the root module; sibling modules can legitimately begin with ../.
-    references = {
-        posixpath.relpath(path, root): FILE_REFERENCES[index] for index, path in enumerate(staged)
-    }
+    references = {posixpath.relpath(path, root): reference for path, reference in staged.items()}
     found: set[tuple[str, str]] = set()
     unattributed = False
     for diagnostic in diagnostics:
@@ -38,7 +34,7 @@ def diagnostic_summary(diagnostics: Sequence[Diagnostic], staged: Sequence[str],
             "type": "terraform_diagnostics",
             "diagnostics": [
                 {"file": reference, "severity": severity}
-                for reference in FILE_REFERENCES
+                for reference in staged.values()
                 for severity in ("error", "warning")
                 if (reference, severity) in found
             ],

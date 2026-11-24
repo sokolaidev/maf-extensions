@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 from maf_sandbox import (
+    MAX_ECHOED_NAME_CHARACTERS,
     CallerContext,
     Cleanup,
     Egress,
@@ -14,8 +15,9 @@ from maf_sandbox import (
     IsolationScope,
     OsFamily,
     SandboxRouter,
+    SourceIntegrity,
 )
-from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
+from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT, SandboxToolSession
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -72,7 +74,7 @@ def outcome(data, *, policy=ShellPolicy(), hidden=False):
     return report_outcome(
         json.dumps(data).encode(),
         ShellFlavor(data["flavor"]),
-        [item["path"] for item in data["files"]],
+        {item["path"]: f"files[{i}]" for i, item in enumerate(data["files"])},
         policy,
         hidden=hidden,
     )
@@ -111,17 +113,6 @@ def attach(data=None, flavor=ShellFlavor.BASH, report=None, sandbox=None, **kwar
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     tools = make_shell_tools(router, store, "agent", context, flavor=flavor, **kwargs)
     return tools[0], backend, store
-
-
-def verdict(result):
-    return next(
-        (
-            item.additional_properties["sandbox_verdict"]
-            for item in result
-            if item.additional_properties and "sandbox_verdict" in item.additional_properties
-        ),
-        None,
-    )
 
 
 @pytest.mark.parametrize("flavor", list(ShellFlavor))
@@ -274,7 +265,7 @@ def test_malformed_envelopes_are_refused(mutation):
 def test_duplicate_json_keys_are_refused():
     raw = json.dumps(envelope()).replace('"protocol": 1', '"protocol": 1, "protocol": 1')
     with pytest.raises(ValueError, match="duplicate"):
-        report_outcome(raw.encode(), ShellFlavor.BASH, ["main.sh"], ShellPolicy())
+        report_outcome(raw.encode(), ShellFlavor.BASH, {"main.sh": "files[0]"}, ShellPolicy())
 
 
 def test_cancellation_drains_execution_before_disposal():
@@ -304,15 +295,43 @@ def test_cancellation_drains_execution_before_disposal():
     asyncio.run(scenario())
 
 
-def test_hidden_argument_tool_keeps_fixed_summaries(monkeypatch):
-    tool, _, _ = attach(report=envelope(diagnostics=[diagnostic()]))
-    monkeypatch.setattr(
-        workload, "positions_holding_hidden_content", lambda *args, **kwargs: frozenset({0})
+@pytest.mark.parametrize("flavor", list(ShellFlavor))
+@pytest.mark.parametrize("case", ["trusted", "untrusted", "rewritten", "closed", "overlong"])
+def test_summary_uses_only_visible_caller_names(flavor, case, monkeypatch):
+    suffix, rule = ("sh", "SC2086") if flavor == ShellFlavor.BASH else ("ps1", "PSParseError")
+    first = f"first.{suffix}"
+    stem = "x" * MAX_ECHOED_NAME_CHARACTERS if case == "overlong" else "second"
+    second = f"{stem}.{suffix}"
+    names = [f"./{first}", f"./{second}"]
+    # A sourced file's diagnostic may occur in another script's report.
+    report = envelope(flavor, first, [diagnostic(rule, path=second), diagnostic(rule, path=first)])
+    report["files"].extend(envelope(flavor, second)["files"])
+    tool, _, _ = attach(
+        {first: "", second: ""},
+        flavor,
+        report,
+        argument_integrity=SourceIntegrity.UNTRUSTED
+        if case == "untrusted"
+        else SourceIntegrity.TRUSTED,
     )
-    result = asyncio.run(tool.func(files=["main.sh"]))
-    rendered = "\n".join(str(item.text) for item in result)
-    assert "AUTHOR-CONTROLLED" not in rendered
-    assert "files[0]" in rendered
+    if case == "rewritten":
+        monkeypatch.setattr(workload, "positions_holding_hidden_content", lambda *a, **kw: {1})
+    if case == "closed":
+        monkeypatch.setattr(SandboxToolSession, "argument_integrity", property(lambda _: None))
+    items = asyncio.run(tool.func(files=names))
+    summaries = [item.text.split(": ", 1)[0] for item in items if item.text.startswith("files[")]
+    assert summaries == [
+        "files[0]" if case in {"untrusted", "closed"} else f"files[0] './{first}'",
+        f"files[1] './{second}'" if case == "trusted" else "files[1]",
+    ]
+    assert items[1].text == "Result: findings"
+    assert all(
+        "AUTHOR-CONTROLLED" not in item.text
+        for item in items
+        if not (item.additional_properties or {}).get("security_label")
+    )
+    if case == "rewritten":
+        assert all(second not in item.text for item in items)
 
 
 @pytest.mark.parametrize("flavor", ["sh", "powershell", "BASH"])
