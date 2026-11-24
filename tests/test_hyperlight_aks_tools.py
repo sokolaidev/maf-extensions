@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import json
@@ -14,13 +15,25 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hyperlight_aks_image
+import hyperlight_aks
+import hyperlight_plugin_evidence
 from hyperlight_aks import (
+    DEVICE_ACCESS,
+    PLUGIN,
+    PLUGIN_AMD64_DIGEST,
     PLUGIN_IMAGE,
     current_revision,
     node_report,
     plugin_rollout,
     render_plugin,
 )
+
+
+def test_overlay_pins_match_the_verified_upstream_candidate():
+    candidate = hyperlight_plugin_evidence
+    assert hyperlight_aks.UPSTREAM_REVISION == candidate.SOURCE
+    assert PLUGIN_IMAGE == f"{candidate.IMAGE}:{candidate.SOURCE[:7]}@{candidate.INDEX_DIGEST}"
+    assert PLUGIN_AMD64_DIGEST == candidate.AMD64_DIGEST
 
 
 @pytest.mark.parametrize("namespace", ["", "-a", "a-", "a.b", "A", "a" * 64])
@@ -83,16 +96,21 @@ def test_overlay_keeps_upstream_devices_without_adding_node_delegation(namespace
             }
         },
     }
-    result = render_plugin(json.dumps(source), namespace=namespace, count=count)
-    daemon = result["items"][0]
-    pod = daemon["spec"]["template"]["spec"]
-    assert pod["nodeSelector"] == source["spec"]["template"]["spec"]["nodeSelector"]
-    assert pod["volumes"] == source["spec"]["template"]["spec"]["volumes"]
-    assert pod["automountServiceAccountToken"] is False
-    assert pod["containers"][0]["image"] == PLUGIN_IMAGE
-    assert pod["containers"][0]["env"][0]["value"] == str(count)
-    assert pod["containers"][0]["securityContext"]["capabilities"] == {"drop": ["ALL"]}
-    assert daemon["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    access = {**source, "metadata": {"name": DEVICE_ACCESS}}
+    manifest = json.dumps(source) + "\n---\n" + json.dumps(access)
+    result = render_plugin(manifest, namespace=namespace, count=count)
+    for daemon in result["items"]:
+        pod = daemon["spec"]["template"]["spec"]
+        assert pod["nodeSelector"] == source["spec"]["template"]["spec"]["nodeSelector"]
+        assert pod["volumes"] == source["spec"]["template"]["spec"]["volumes"]
+        assert pod["automountServiceAccountToken"] is False
+        assert pod["containers"][0]["image"] == PLUGIN_IMAGE
+        assert pod["containers"][0]["env"][0]["value"] == str(count)
+        assert pod["containers"][0]["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+        assert daemon["spec"]["updateStrategy"] == {"type": "OnDelete"}
+    for invalid in (json.dumps(source), manifest.replace(DEVICE_ACCESS, PLUGIN)):
+        with pytest.raises(ValueError, match="DaemonSets"):
+            render_plugin(invalid, namespace=namespace)
     with pytest.raises(ValueError, match="digest"):
         render_plugin(json.dumps(source), namespace="trusted-infra", image="plugin:latest")
 
@@ -270,6 +288,39 @@ def test_a_template_match_is_not_enough_when_the_node_resolved_another_digest():
     pod = plugin_pod(imageID="ghcr.io/hyperlight-dev/hyperlight-device-plugin@sha256:" + "b" * 64)
     [report] = rollout([pod], [plugin_node()])
     assert report["reasons"] == ["the running plugin digest is not the expected one"]
+
+
+def test_platform_digest_is_accepted_only_for_its_verified_index():
+    pod = plugin_pod(
+        imageID="ghcr.io/hyperlight-dev/hyperlight-device-plugin@" + PLUGIN_AMD64_DIGEST
+    )
+    assert rollout([pod], [plugin_node()])[0]["verified"]
+    assert not rollout([pod], [plugin_node()], PREVIOUS_PLUGIN)[0]["verified"]
+    pod["spec"]["containers"][0]["image"] = PREVIOUS_PLUGIN
+    assert not rollout([pod], [plugin_node()])[0]["verified"]
+
+
+@pytest.mark.parametrize(
+    "helper_image,ready,valid",
+    [(PLUGIN_IMAGE, True, True), (PLUGIN_IMAGE, False, False), (PREVIOUS_PLUGIN, True, False)],
+)
+def test_status_requires_both_daemonsets_on_the_same_image(monkeypatch, helper_image, ready, valid):
+    def get(args, verb, resource, *options):
+        helper = any(DEVICE_ACCESS in option for option in options)
+        image = helper_image if helper else PLUGIN_IMAGE
+        if resource == "nodes":
+            return {"items": [plugin_node()]}
+        if resource == "daemonset":
+            return plugin_daemonset(image=image)
+        if resource == "controllerrevisions":
+            return {"items": [controller_revision(1, "current")]}
+        assert resource == "pods"
+        return {"items": [plugin_pod(image=image, ready=ready if helper else True)]}
+
+    monkeypatch.setattr(hyperlight_aks, "_kubectl", get)
+    [row] = hyperlight_aks._plugin_status(argparse.Namespace(namespace="infra", image=None))
+    assert row["verified"] is valid
+    assert row["device_access"]["pods"][0]["ready"] is ready
 
 
 @pytest.mark.parametrize("owner", [None, "another-daemonset"])
