@@ -323,6 +323,47 @@ def test_status_requires_both_daemonsets_on_the_same_image(monkeypatch, helper_i
     assert row["device_access"]["pods"][0]["ready"] is ready
 
 
+@pytest.mark.parametrize("older_with_helper", [False, True])
+def test_pre_restore_status_uses_the_rollback_targets_topology(monkeypatch, older_with_helper):
+    names = ["untouched", "upgraded"]
+    old = plugin_pod("untouched", PREVIOUS_PLUGIN, revision="old")
+    pods = [old, plugin_pod("upgraded")]
+    request = {"requests": {"hyperlight.dev/device-access": "1"}}
+    if older_with_helper:
+        names.append("older-pair")
+        pair = plugin_pod("older-pair", PREVIOUS_PLUGIN, revision="old")
+        pair["spec"]["containers"][0]["resources"] = request
+        pods.append(pair)
+
+    def get(args, verb, resource, *options):
+        helper = any(DEVICE_ACCESS in option for option in options)
+        if helper:
+            assert older_with_helper
+        if resource == "nodes":
+            return {"items": [plugin_node(name) for name in names]}
+        if resource == "daemonset":
+            ds = plugin_daemonset()
+            if not helper:
+                ds["spec"]["template"]["spec"]["containers"][0]["resources"] = request
+            return ds
+        if resource == "controllerrevisions":
+            return {"items": [controller_revision(1, "current")]}
+        assert resource == "pods"
+        return {"items": [plugin_pod(name) for name in names] if helper else pods}
+
+    monkeypatch.setattr(hyperlight_aks, "_kubectl", get)
+    rows = hyperlight_aks._plugin_status(
+        argparse.Namespace(namespace="infra", image=PREVIOUS_PLUGIN)
+    )
+    untouched, upgraded, *older_pair = rows
+    assert untouched["verified"] and "device_access" not in untouched
+    assert not upgraded["verified"]
+    if older_with_helper:
+        [row] = older_pair
+        assert not row["verified"]
+        assert not row["device_access"]["verified"]
+
+
 @pytest.mark.parametrize("owner", [None, "another-daemonset"])
 def test_a_same_labelled_pod_cannot_stand_in_for_the_daemonsets_pod(owner):
     [alone] = rollout([plugin_pod(owner=owner)], [plugin_node()])

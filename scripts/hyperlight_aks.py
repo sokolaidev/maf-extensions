@@ -163,6 +163,7 @@ def current_revision(daemonset: dict, revisions: list[dict]) -> str:
 
 
 def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
+    container = pod["spec"]["containers"][0]
     statuses = pod.get("status", {}).get("containerStatuses", [])
     status = statuses[0] if len(statuses) == 1 else {}
     return {
@@ -171,7 +172,9 @@ def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
         "terminating": bool(pod["metadata"].get("deletionTimestamp")),
         "current_revision": pod["metadata"].get("labels", {}).get("controller-revision-hash")
         == revision,
-        "template_image": pod["spec"]["containers"][0]["image"],
+        "template_image": container["image"],
+        "requests_device_access": "hyperlight.dev/device-access"
+        in container.get("resources", {}).get("requests", {}),
         "running_digest": _digest(status.get("imageID", "")),
         "ready": status.get("ready") is True,
         "restarts": status.get("restartCount", 0),
@@ -264,14 +267,30 @@ def _plugin_status(args: argparse.Namespace) -> list[dict]:
 
     reports = report(daemonset, PLUGIN)
     requests = container.get("resources", {}).get("requests", {})
-    if (
-        _digest(container["image"]) == _digest(PLUGIN_IMAGE)
-        or "hyperlight.dev/device-access" in requests
-    ):
+    target_digest = _digest(target)
+    template_requires_helper = target_digest in {_digest(PLUGIN_IMAGE), PLUGIN_AMD64_DIGEST} or (
+        target_digest == _digest(container["image"]) and "hyperlight.dev/device-access" in requests
+    )
+    # OnDelete can leave a node on a different topology from the current template.
+    helper_nodes = {
+        row["name"]
+        for row in reports
+        if template_requires_helper
+        or any(
+            pod["controlled"]
+            and not pod["terminating"]
+            and pod["running_digest"] == target_digest
+            and pod["requests_device_access"]
+            for pod in row["pods"]
+        )
+    }
+    if helper_nodes:
         access = _kubectl(args, "get", "daemonset", DEVICE_ACCESS, *scope)
         for row, helper in zip(reports, report(access, DEVICE_ACCESS), strict=True):
+            if row["name"] not in helper_nodes:
+                continue
             row["device_access"] = helper
-            if helper["expected_digest"] != _digest(target) or not helper["verified"]:
+            if helper["expected_digest"] != target_digest or not helper["verified"]:
                 row["reasons"].append(
                     "the device-access DaemonSet has not reached the expected image"
                 )
