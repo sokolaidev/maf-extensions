@@ -253,6 +253,14 @@ _TARGET_FEEDBACK_GUIDANCE = (
 _GENERAL_TARGET_FEEDBACK = (
     "The previous records missed values from earlier tool results. " + _TARGET_FEEDBACK_GUIDANCE
 )
+_TRUNCATED_RECORD_HINT = "The previous recall reached the response limit. Write a shorter record"
+_OVERSIZED_RECORD_HINT = (
+    "The previous recall would exceed the next request's input budget. Write a shorter record"
+)
+_SHORTER_RECORD_FEEDBACK = re.compile(
+    rf"(?:{re.escape(_TRUNCATED_RECORD_HINT)}|{re.escape(_OVERSIZED_RECORD_HINT)})"
+    r"(?:, targeting at most [1-9][0-9]{0,2}(?:,[0-9]{3})* tokens)?\."
+)
 _FEEDBACK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 _MAX_FEEDBACK_TARGETS = 8
 
@@ -3141,10 +3149,16 @@ def _target_feedback(results: Iterable[Mapping[str, object]]) -> str:
     return _TARGET_FEEDBACK_PREFIX + json.dumps(targets) + ". " + _TARGET_FEEDBACK_GUIDANCE
 
 
-def _restore_feedback(feedback: str) -> str:
-    """Apply the same field limits to saved target feedback as to a new request."""
+def _restore_feedback(feedback: object) -> str:
+    """Restore only package-generated retry guidance and validate saved target identifiers."""
+    if not isinstance(feedback, str):
+        return ""
     if not feedback.startswith(_TARGET_FEEDBACK_PREFIX):
-        return feedback
+        if feedback == _GENERAL_TARGET_FEEDBACK or (
+            len(feedback) <= 4_096 and _SHORTER_RECORD_FEEDBACK.fullmatch(feedback)
+        ):
+            return feedback
+        return ""
     suffix = ". " + _TARGET_FEEDBACK_GUIDANCE
     if len(feedback) <= 4_096 and feedback.endswith(suffix):
         try:
@@ -3891,17 +3905,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._awaiting_record = False
             self._ignored_streak = 0
             self._feedback = (
-                (
-                    "The previous recall would exceed the next request's input budget."
-                    if isinstance(exc, _RecallTooLarge)
-                    else "The previous recall reached the response limit."
-                )
-                + " Write a shorter record"
-                + (
-                    f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
-                    if self.record_max_tokens is not None
-                    else "."
-                )
+                _OVERSIZED_RECORD_HINT
+                if isinstance(exc, _RecallTooLarge)
+                else _TRUNCATED_RECORD_HINT
+            ) + (
+                f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
+                if self.record_max_tokens is not None
+                else "."
             )
             if self.disarm is not None:
                 self.disarm()

@@ -244,6 +244,55 @@ async def test_restored_target_feedback_only_prompts_with_bounded_identifiers(mo
     await middleware.process(context, send)
 
 
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        None,
+        {"tool": "lookup"},
+        "unrecognized saved note",
+        f"{RECORD_MARKER} saved record",
+        "The previous recall reached the response limit. Write a shorter record. Extra text.",
+        "The previous recall reached the response limit. Write a shorter record, "
+        "targeting at most 12,34 tokens.",
+    ],
+)
+async def test_unknown_saved_feedback_is_absent_from_the_next_recall(feedback):
+    middleware, gate = recall(record_instruction="Keep tool values.")
+    state = middleware.session_state()
+    state["feedback"] = feedback
+    middleware.restore_session_state(state)
+    assert middleware.session_state()["feedback"] == ""
+    context = ChatContext(
+        None, [Message("user", ["continue"])], {"tools": [make_recall_tool(gate)]}
+    )
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+        assert context.messages[-1].text == "Keep tool values."
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        "The previous recall reached the response limit. Write a shorter record.",
+        "The previous recall would exceed the next request's input budget. Write a shorter record, "
+        "targeting at most 12,345 tokens.",
+        "The previous records missed values from earlier tool results. "
+        "Quote their distinctive values verbatim. A record without their values "
+        "cannot preserve them if budget pressure later removes the original results.",
+    ],
+)
+def test_known_saved_feedback_round_trips(feedback):
+    middleware, _ = recall()
+    state = middleware.session_state()
+    state["feedback"] = feedback
+    middleware.restore_session_state(state)
+    assert middleware.session_state()["feedback"] == feedback
+
+
 @pytest.mark.parametrize("retry_fails", [False, True])
 async def test_repeated_truncation_never_disables_recall_or_loses_pending_ask(retry_fails):
     middleware, gate = recall()
