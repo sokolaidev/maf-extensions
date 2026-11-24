@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -14,6 +17,163 @@ import hyperlight_plugin_evidence as evidence
 from container_release import digest, write
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def make_oci_layout(layout, monkeypatch, fault):
+    blobs = layout / "blobs" / "sha256"
+    blobs.mkdir(parents=True)
+
+    def put(document):
+        raw = json.dumps(document).encode()
+        sha = hashlib.sha256(raw).hexdigest()
+        (blobs / sha).write_bytes(raw)
+        return {"digest": "sha256:" + sha, "size": len(raw)}
+
+    platform = put({"schemaVersion": 2, "mediaType": evidence.MANIFEST})
+    platform.update(mediaType=evidence.MANIFEST, platform={"architecture": "amd64", "os": "linux"})
+    amd64 = platform["digest"]
+    monkeypatch.setattr(evidence, "AMD64_DIGEST", amd64)
+    layers = []
+    expected = {"linux-amd64.json": amd64}
+    for kind, name in [
+        (evidence.PREDICATE, "buildkit-provenance.json"),
+        (evidence.SPDX, "sbom.json"),
+    ]:
+        subject = "0" * 64 if fault == (name, "subject") else amd64[7:]
+        descriptor = put(
+            {
+                "predicateType": "wrong" if fault == (name, "predicate") else kind,
+                "subject": [{"digest": {"sha256": subject}}],
+            }
+        )
+        descriptor["annotations"] = {"in-toto.io/predicate-type": kind}
+        expected[name] = descriptor["digest"]
+        if fault != (name, "missing"):
+            layers.append(descriptor)
+        if fault == (name, "duplicate"):
+            layers.append(descriptor)
+    manifest = put(
+        {
+            "subject": {"digest": "wrong" if fault == ("manifest", "subject") else amd64},
+            "layers": layers,
+        }
+    )
+    expected["attestation-manifest.json"] = manifest["digest"]
+    manifest["annotations"] = {
+        "vnd.docker.reference.digest": "wrong" if fault == ("index", "reference") else amd64,
+        "vnd.docker.reference.type": "attestation-manifest",
+    }
+    index = put({"mediaType": evidence.INDEX, "manifests": [platform, manifest]})
+    expected["signed-manifest.json"] = index["digest"]
+    monkeypatch.setattr(evidence, "INDEX_DIGEST", index["digest"])
+    if fault and fault[1] == "substitute":
+        path = blobs / expected[fault[0]][7:]
+        path.write_bytes(b"x" * path.stat().st_size)
+    return expected
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        ("index", "reference"),
+        ("manifest", "subject"),
+        *[
+            (name, "substitute")
+            for name in (
+                "signed-manifest.json",
+                "linux-amd64.json",
+                "attestation-manifest.json",
+                "buildkit-provenance.json",
+                "sbom.json",
+            )
+        ],
+        *[
+            (name, defect)
+            for name in ("buildkit-provenance.json", "sbom.json")
+            for defect in ("subject", "predicate", "missing", "duplicate")
+        ],
+    ],
+)
+def test_collects_only_statements_bound_to_the_reviewed_image(tmp_path, monkeypatch, fault):
+    expected = make_oci_layout(tmp_path / "layout", monkeypatch, fault)
+    files = tmp_path / "evidence"
+    files.mkdir()
+    if fault is not None:
+        with pytest.raises(ValueError):
+            evidence.collect_manifests(tmp_path / "layout", files)
+        return
+    evidence.collect_manifests(tmp_path / "layout", files)
+    assert {path.name: digest(path) for path in files.iterdir()} == expected
+
+
+@pytest.mark.parametrize("case", ["accepted", "cli-error", "empty", "wrong-name", "wrong-digest"])
+def test_signature_enforces_publisher_source_and_signed_subject(tmp_path, monkeypatch, case):
+    subject = {
+        "name": "other" if case == "wrong-name" else evidence.IMAGE,
+        "digest": {"sha256": "0" * 64 if case == "wrong-digest" else evidence.INDEX_DIGEST[7:]},
+    }
+    records = (
+        [] if case == "empty" else [{"verificationResult": {"statement": {"subject": [subject]}}}]
+    )
+    response = json.dumps(records).encode()
+    cli = Mock(return_value=response)
+    if case == "cli-error":
+        cli.side_effect = subprocess.CalledProcessError(1, "gh")
+    monkeypatch.setattr(evidence, "gh", cli)
+    result = tmp_path / "verification.json"
+    if case == "accepted":
+        evidence.verify_signature(tmp_path)
+        assert result.read_bytes() == response
+    else:
+        with pytest.raises(subprocess.CalledProcessError if case == "cli-error" else ValueError):
+            evidence.verify_signature(tmp_path)
+        assert not result.exists()
+    cli.assert_called_once_with(
+        tmp_path,
+        "attestation",
+        "verify",
+        "signed-manifest.json",
+        "--bundle",
+        "attestation-bundles.jsonl",
+        "--custom-trusted-root",
+        "trusted-root.jsonl",
+        "--repo",
+        "hyperlight-dev/hyperlight-on-kubernetes",
+        "--hostname",
+        "github.com",
+        "--cert-identity",
+        "https://github.com/hyperlight-dev/hyperlight-on-kubernetes/.github/workflows/publish-device-plugin.yml@refs/heads/main",
+        "--cert-oidc-issuer",
+        "https://token.actions.githubusercontent.com",
+        "--source-ref",
+        "refs/heads/main",
+        "--source-digest",
+        evidence.SOURCE,
+        "--deny-self-hosted-runners",
+        "--predicate-type",
+        "https://slsa.dev/provenance/v1",
+        "--format",
+        "json",
+    )
+
+
+def test_failed_signature_leaves_no_collect_archive(tmp_path, monkeypatch):
+    def gh(files, *args):
+        if args[:2] == ("attestation", "download"):
+            (files / "sha256-bundle.jsonl").write_bytes(b"bundle")
+        if args[:2] == ("attestation", "verify"):
+            raise subprocess.CalledProcessError(1, "gh attestation verify")
+        return b"fixture"
+
+    monkeypatch.setattr(evidence.subprocess, "run", Mock())
+    monkeypatch.setattr(evidence, "collect_manifests", Mock())
+    monkeypatch.setattr(evidence, "verify_materials", Mock())
+    monkeypatch.setattr(evidence, "gh", gh)
+    (tmp_path / evidence.ARCHIVE).write_bytes(b"previous run")
+    with pytest.raises(subprocess.CalledProcessError):
+        evidence.collect(tmp_path)
+    assert not (tmp_path / evidence.ARCHIVE).exists()
 
 
 @pytest.mark.parametrize("change", ["none", "base", "floating", "source", "stage"])

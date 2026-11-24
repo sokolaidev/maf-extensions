@@ -142,7 +142,9 @@ def verify_signature(files: Path) -> None:
 def collect(output: Path) -> None:
     """Build a portable evidence archive from the reviewed upstream candidate."""
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as temp:
+    destination = output / ARCHIVE
+    destination.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(dir=output) as temp:
         layout = Path(temp, "oci")
         files = Path(temp, "evidence")
         files.mkdir()
@@ -193,9 +195,11 @@ def collect(output: Path) -> None:
             {"image": f"{IMAGE}@{INDEX_DIGEST}", "source": SOURCE, "platformDigest": AMD64_DIGEST},
         )
         write(files / "checksums.json", {p.name: digest(p) for p in files.iterdir()})
-        with zipfile.ZipFile(output / ARCHIVE, "w", zipfile.ZIP_DEFLATED) as archive:
+        staged = Path(temp, ARCHIVE)
+        with zipfile.ZipFile(staged, "w", zipfile.ZIP_DEFLATED) as archive:
             for p in sorted(files.iterdir()):
                 archive.write(p, p.name)
+        staged.replace(destination)
 
 
 def publish(directory: Path, expected: str) -> dict[str, Any]:
