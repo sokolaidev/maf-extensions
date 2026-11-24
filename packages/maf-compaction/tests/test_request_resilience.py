@@ -324,10 +324,94 @@ async def test_post_call_budget_callback_does_not_hide_unrelated_errors():
         await middleware.process(context, respond, request_budget=broken_budget)
 
 
-@pytest.mark.parametrize("remaining", [0, -1])
-@pytest.mark.parametrize("truncated", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, truncated, stream):
+async def test_a_pending_ask_is_not_sent_when_its_pass_cannot_fit_the_prompt(stream):
+    """The composed strategy raises when its pass cannot fit the prompt (#2953).
+
+    A host that sends an over-budget prompt anyway catches that refusal around the strategy, so
+    the ask that was due went out and was discarded. No record fits such a prompt: the call now
+    goes out once, unpinned, and the ask is not counted as made.
+    """
+    middleware, gate = recall()
+    options = {"tools": [make_recall_tool(gate)]}
+    context = ChatContext(None, [Message("user", ["continue"])], options, stream=stream)
+    passes: list[bool] = []
+    sent: list[bool] = []
+
+    async def over_budget(messages: list[Message]) -> bool:
+        passes.append(context.options is not options)
+        raise CompactionBudgetExceeded(2, 1)
+
+    context.kwargs["compaction_strategy"] = over_budget
+
+    async def tolerant(messages: list[Message]) -> None:
+        try:
+            await context.kwargs["compaction_strategy"](messages)
+        except CompactionBudgetExceeded:
+            pass
+
+    def response() -> ChatResponse:
+        forced = context.options is not options
+        sent.append(forced)
+        contents = (
+            [
+                Content.from_function_call(
+                    call_id="rec", name="recall_earlier_tool_results", arguments={"values": "SKU"}
+                )
+            ]
+            if forced
+            else [Content.from_text("answer")]
+        )
+        return ChatResponse(messages=Message("assistant", contents))
+
+    async def send():
+        if stream:
+
+            async def updates():
+                await tolerant(context.messages)
+                for update in response().to_updates():
+                    yield update
+
+            context.result = ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+            return
+        await tolerant(context.messages)
+        context.result = response()
+
+    await middleware.process(context, send, request_budget=lambda: 1)
+    if isinstance(context.result, ResponseStream):
+        await context.result.get_final_response()
+
+    assert passes == [True, False]
+    assert sent == [False]
+    assert middleware.forced_calls == 0
+    assert middleware.reforced_calls == 0
+    assert not middleware.recall_disabled
+    assert not middleware.session_state()["force_next"]
+
+
+async def test_an_unpinned_pass_that_cannot_fit_the_prompt_still_raises():
+    middleware, gate = recall()
+    middleware._force_next = False
+    middleware._reforce_next = False
+    options = {"tools": [make_recall_tool(gate)]}
+    context = ChatContext(None, [Message("user", ["continue"])], options)
+
+    async def over_budget(messages: list[Message]) -> bool:
+        raise CompactionBudgetExceeded(2, 1)
+
+    context.kwargs["compaction_strategy"] = over_budget
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+
+    with pytest.raises(CompactionBudgetExceeded):
+        await middleware.process(context, send, request_budget=lambda: 1)
+
+
+@pytest.mark.parametrize("remaining", [0, -1])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, stream):
+    """An ask pending while the reloaded history fills the budget is not sent (#2953)."""
     reasks = []
 
     def reforce():
@@ -359,12 +443,7 @@ async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, tru
                 if forced
                 else [Content.from_text("answer")]
             )
-            cut_off = forced and truncated and len(sent) == 1
-            if cut_off:
-                contents[0].arguments = "{"
-            response = ChatResponse(
-                messages=Message("assistant", contents), finish_reason="length" if cut_off else None
-            )
+            response = ChatResponse(messages=Message("assistant", contents))
             if stream:
 
                 async def updates():
@@ -382,8 +461,9 @@ async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, tru
         return context.result
 
     assert (await run()).text == "answer"
-    assert sent == [True, False]
-    assert middleware.records_truncated == int(truncated)
+    assert sent == [False]
+    assert middleware.forced_calls == 0
+    assert middleware.reforced_calls == 0
     state = middleware.session_state()
     assert not state["force_next"] and not state["reforce_next"] and not state["feedback"]
     assert not state["awaiting_record"] and not middleware.recall_disabled
@@ -392,7 +472,7 @@ async def test_recall_waits_for_room_in_reloaded_outgoing_history(remaining, tru
     middleware.restore_session_state(json.loads(json.dumps(state)))
     for _ in range(3):
         await run()
-    assert sent == [True, False, False, False, False]
+    assert sent == [False] * 4
     assert not reasks
 
     budget += 500

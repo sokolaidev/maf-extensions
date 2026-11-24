@@ -3688,6 +3688,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Unsupported tool_choice falls back to a temporary trailing message and one tool.
         Two consecutive ignored requests, refusals or value-free records stop recall.
         Refusals and unusable length-limited records retry once with the original options.
+        An ask whose pass leaves the prompt over the sending budget is not sent: the call goes
+        out once, with the original options.
         Truncation leaves a shorter recall request pending; other failures stop recall immediately.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
@@ -3743,9 +3745,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         )
         prompt: Message | None = None
         outgoing: list[Message] | None = None
+        # Whether the attempt going out asks for a record, and whether one was stopped unsent.
+        asking = forced_this_call
+        unsent = False
 
         async def compact(messages: list[Message]) -> bool:
-            nonlocal outgoing
+            nonlocal outgoing, unsent
             outgoing = messages
             if forced_this_call and self._capture_value_targets is not None:
                 self._capture_value_targets(messages)
@@ -3753,11 +3758,33 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             messages[:] = _without_recall_prompt(messages)
             if prompt is not None:
                 messages.append(prompt)
-            if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
-                return await strategy.compact_before(messages, options=context.options or {})
-            if strategy is not None:
-                return await cast(Callable[[list[Message]], Awaitable[bool]], strategy)(messages)
-            return False
+            try:
+                if isinstance(
+                    strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                ):
+                    changed = await strategy.compact_before(messages, options=context.options or {})
+                elif strategy is not None:
+                    changed = await cast(Callable[[list[Message]], Awaitable[bool]], strategy)(
+                        messages
+                    )
+                else:
+                    changed = False
+            except CompactionBudgetExceeded:
+                if not asking:
+                    raise
+                # Over the budget without the ask as well: a full prompt, so the ask waits. Over
+                # only with it: the refusal stays the failure it was.
+                unsent = True
+                check_record_budget([])
+                unsent = False
+                raise
+            if asking:
+                # The ask was due before this pass; a prompt it leaves full fits no record, so
+                # the request is not sent at all.
+                unsent = True
+                check_record_budget([])
+                unsent = False
+            return changed
 
         context.kwargs = {**context.kwargs, "compaction_strategy": compact}
         if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
@@ -3818,6 +3845,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             return normalized
 
         def restore_request() -> None:
+            nonlocal asking
+            asking = False
             context.options = original_options
             context.messages = list(original_messages)
             context.kwargs = {**original_kwargs, "compaction_strategy": compact}
@@ -3883,6 +3912,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 await persistence.flush()
 
         async def attempt_with_fallback() -> None:
+            nonlocal asking
             try:
                 await validated_attempt()
             except ChatClientException as exc:
@@ -3890,6 +3920,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     raise
                 self._disable_pin("unsupported")
                 restore_request()
+                asking = True
                 context.options = self._forced_options(available)
                 self.arm()
                 await validated_attempt()
@@ -3932,6 +3963,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._observe_record_values(None, False)
             elif self._defer_reforce is not None:
                 self._defer_reforce(reforced_this_call)
+            if unsent:
+                self._forced -= 1
+                if reforced_this_call:
+                    self._reforced -= 1
             if self.disarm is not None:
                 self.disarm()
             restore_request()

@@ -20,8 +20,10 @@ from agent_framework import (
     CharacterEstimatorTokenizer,
     ChatContext,
     ChatResponse,
+    ChatResponseUpdate,
     Content,
     Message,
+    ResponseStream,
 )
 from agent_framework._compaction import (
     included_token_count,
@@ -1257,7 +1259,8 @@ async def test_coverage_ask_survives_full_budget_passes_and_restore(
     budget = 1
     for _ in range(4):
         await run()
-    assert sent == ([False, True] if already_queued else [False]) + [False] * 4
+    # An ask queued while there was room is not sent once the prompt is full (#2953).
+    assert sent == [False] * 5
     saved_strategy = strategy.decision_state().to_dict()
     saved_middleware = middleware.session_state()
     strategy, middleware = stack()
@@ -1271,6 +1274,70 @@ async def test_coverage_ask_survives_full_budget_passes_and_restore(
     assert sent[-2:] == [False, True]
     assert middleware.reforced_calls == 1
     assert middleware.session_state()["awaiting_record"]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["response", "stream"])
+async def test_a_pending_ask_is_not_sent_while_the_prompt_is_full(stream):
+    """A session saved with a record owed starts its next run with the ask pending (#2953).
+
+    The prompt the pass leaves is already over the sending budget, so no record could fit:
+    the call goes out unpinned and only once, and the skipped ask is not counted as made.
+    """
+    from copy import deepcopy
+
+    history = _conversation(tool_turns=6, record=_covering_record(2))
+    gate = RecallGate()
+    options = {"tools": [make_recall_tool(gate)]}
+    strategy = _chained()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        disarm=gate.disarm,
+        repeat_records=False,
+        reforce=strategy.take_reforce,
+    )
+    saved = middleware.session_state()
+    saved["force_next"] = True
+    middleware.restore_session_state(json.loads(json.dumps(saved)))
+    sent: list[bool] = []
+    context = ChatContext(
+        None, deepcopy(history), options, kwargs={"compaction_strategy": strategy}
+    )
+
+    def reply(forced: bool) -> list[Content]:
+        if forced:
+            return [
+                Content.from_function_call(
+                    call_id="record", name=RECALL_TOOL_NAME, arguments={"values": "CODE-2"}
+                )
+            ]
+        return [Content.from_text("answer")]
+
+    async def send():
+        if stream:
+
+            async def updates():
+                await context.kwargs["compaction_strategy"](context.messages)
+                forced = context.options is not options
+                sent.append(forced)
+                yield ChatResponseUpdate(contents=reply(forced), role="assistant")
+
+            context.result = ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+            return
+        await context.kwargs["compaction_strategy"](context.messages)
+        forced = context.options is not options
+        sent.append(forced)
+        context.result = ChatResponse(messages=Message("assistant", reply(forced)))
+
+    await middleware.process(context, send, request_budget=lambda: 1)
+    if isinstance(context.result, ResponseStream):
+        await context.result.get_final_response()
+
+    assert sent == [False]
+    assert middleware.forced_calls == 0
+    assert not middleware.recall_disabled
+    assert not middleware.session_state()["force_next"]
 
 
 async def test_deferred_coverage_ask_expires_when_its_targets_disappear():

@@ -1209,7 +1209,9 @@ async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
         with pytest.raises(CompactionBudgetExceeded):
             await middleware.process(context, send)
         assert not completed
-        assert middleware.failed_forced_calls == 1
+        # The preserved group alone fills the budget: the ask waits, it did not fail (#2953).
+        assert middleware.failed_forced_calls == 0
+        assert not middleware.recall_disabled
     else:
         await middleware.process(context, send)
         assert completed == [True]
