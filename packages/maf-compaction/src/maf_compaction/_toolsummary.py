@@ -3758,12 +3758,23 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             messages[:] = _without_recall_prompt(messages)
             if prompt is not None:
                 messages.append(prompt)
-            if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
-                changed = await strategy.compact_before(messages, options=context.options or {})
-            elif strategy is not None:
-                changed = await cast(Callable[[list[Message]], Awaitable[bool]], strategy)(messages)
-            else:
-                changed = False
+            try:
+                if isinstance(
+                    strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                ):
+                    changed = await strategy.compact_before(messages, options=context.options or {})
+                elif strategy is not None:
+                    changed = await cast(Callable[[list[Message]], Awaitable[bool]], strategy)(
+                        messages
+                    )
+                else:
+                    changed = False
+            except CompactionBudgetExceeded:
+                # A pass that cannot fit the prompt leaves no room for a record either.
+                if not asking:
+                    raise
+                unsent = True
+                raise _RecallPromptFull from None
             if asking:
                 # The ask was due before this pass; a prompt it leaves full fits no record, so
                 # the request is not sent at all.
