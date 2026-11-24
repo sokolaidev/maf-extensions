@@ -473,6 +473,9 @@ class MeteredClient:
         self.calls = 0
         self.failures = 0
         self.cancelled = 0
+        self._pending = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
         self.usage: list[SummarizerUsage] = []
         self.input_tokens = 0
         self.cached_tokens = 0
@@ -492,6 +495,10 @@ class MeteredClient:
         """
         return getattr(self.inner, name)
 
+    async def wait_for_idle(self) -> None:
+        """Wait until the cell's outstanding summarizer calls finish accounting for usage."""
+        await self._idle.wait()
+
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
         """Delegate to the wrapped client, recording usage and failures.
 
@@ -502,6 +509,8 @@ class MeteredClient:
             Exception: Whatever the wrapped client raised, after counting it.
         """
         self.calls += 1
+        self._pending += 1
+        self._idle.clear()
         try:
             response = await self.inner.get_response(*args, **kwargs)
         except asyncio.CancelledError:
@@ -510,6 +519,10 @@ class MeteredClient:
         except Exception:
             self.failures += 1
             raise
+        finally:
+            self._pending -= 1
+            if not self._pending:
+                self._idle.set()
         usage: dict[str, Any] = dict(getattr(response, "usage_details", None) or {})
         self.usage.append(
             SummarizerUsage(
@@ -2222,6 +2235,10 @@ async def run_live(
                 break
             questions_done += 1
 
+    if background:
+        experiment.release_background_session()
+        if summarizer is not None:
+            await summarizer.wait_for_idle()
     usage_missing = any(call.input_tokens <= 0 for call in recorder.calls) or (
         summarizer is not None and any(call.input_tokens <= 0 for call in summarizer.usage)
     )

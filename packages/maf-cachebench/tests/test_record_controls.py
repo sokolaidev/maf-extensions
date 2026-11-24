@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import maf_compaction
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Message
+from agent_framework import Agent, CharacterEstimatorTokenizer, ChatResponse, Message
 from test_compaction_features import Model, Summarizer, binding_factory
 
 from maf_cachebench import (
@@ -340,15 +340,64 @@ def _history():
     return messages
 
 
+async def test_live_cell_accounts_for_an_unfinished_request_before_returning(monkeypatch):
+    entered = asyncio.Event()
+    create_session = Agent.create_session
+
+    def seeded(agent, *args, **kwargs):
+        session = create_session(agent, *args, **kwargs)
+        session.state["in_memory"] = {"messages": _history()}
+        return session
+
+    class Waiting:
+        async def get_response(self, *args, **kwargs):
+            entered.set()
+            await asyncio.Future()
+
+    async def during_tool(_):
+        await entered.wait()
+
+    monkeypatch.setattr(Agent, "create_session", seeded)
+    scenario = build_live_scenario(salt="late", filler_turns=1, filler_tokens=20, tool_turns=1)
+    scope = next(iter(scenario.tool_lookups))
+    summarizer = MeteredClient(Waiting())
+    async with asyncio.timeout(10):
+        outcome = await run_live(
+            ProviderRuntime(Model(tool=f"lookup_{scope}"), "stub", {}),
+            strategy_name="tool_and_user_summary_anchored",
+            options=StrategyOptions(
+                tokenizer=CharacterEstimatorTokenizer(),
+                max_context_window_tokens=100_000,
+                max_output_tokens=1000,
+                summarizer=cast(Any, summarizer),
+                compaction=CompactionOptions(
+                    background_record_merges=True, record_budget_share=0.001, tool_delay_seconds=1
+                ),
+            ),
+            scenario=scenario,
+            force_tool_calls=False,
+            probe_repeats=1,
+            combined_repeats=1,
+            sleep=during_tool,
+        )
+    assert outcome.summarizer_calls == summarizer.cancelled == 1
+    assert outcome.error == "Incomplete pricing: cancelled summarizer requests have no usage."
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("kind", ["plain", "harness"])
 @pytest.mark.parametrize("mode", ["memory", "roundtrip", "restart"])
 @pytest.mark.parametrize("ready", [False, True])
 @pytest.mark.parametrize("history", ["incremental", "replay"])
-async def test_background_merges_apply_or_cancel_across_session_modes(
+async def test_background_merges_follow_the_cached_session_across_runs(
     stream, kind, mode, ready, history
 ):
     entered, release, answered, cancelled = (asyncio.Event() for _ in range(4))
+    prepared = asyncio.Event()
+
+    def observe(phase, event, counts):
+        if phase == "background" and event == "answer_prepared":
+            prepared.set()
 
     class Waiting:
         async def get_response(self, messages, **kwargs):
@@ -396,11 +445,11 @@ async def test_background_merges_apply_or_cancel_across_session_modes(
     session.state["in_memory"] = {"messages": _history()}
     if history == "replay":
         session.state["cachebench_original_history"] = [message.to_dict() for message in _history()]
-    response, session = await asyncio.wait_for(experiment.run(session, "Continue.", {}), 15)
+    with maf_compaction.observe_record_merges(observe):
+        response, session = await asyncio.wait_for(experiment.run(session, "Continue.", {}), 15)
     assert response.text == "answer"
     assert entered.is_set()
-    assert cancelled.is_set() is not ready
-    assert summarizer.cancelled == int(not ready)
+    assert not cancelled.is_set()
     assert len(summarizer.usage) == int(ready)
     assert experiment.totals["records_merged"] == int(ready)
     assert experiment.binding.strategy._background is None
@@ -408,9 +457,16 @@ async def test_background_merges_apply_or_cancel_across_session_modes(
     sent = json.dumps([message.to_dict() for message in model.requests[-1][0]])
     assert all(f"CODE-{index:06d}" in sent for index in range(4))
     previous_calls = summarizer.calls
+    if not ready and mode != "restart":
+        release.set()
+        await asyncio.wait_for(prepared.wait(), 5)
     await asyncio.wait_for(experiment.run(session, "What remains?", {}), 15)
+    await asyncio.wait_for(summarizer.wait_for_idle(), 5)
     assert summarizer.calls == previous_calls
-    assert experiment.totals["records_merged"] == int(ready)
+    discarded = not ready and mode == "restart"
+    assert summarizer.cancelled == int(discarded)
+    assert len(summarizer.usage) == int(not discarded)
+    assert experiment.totals["records_merged"] == int(not discarded)
 
 
 @pytest.mark.parametrize("stream", [False, True])
