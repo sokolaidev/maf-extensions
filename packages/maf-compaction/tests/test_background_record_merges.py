@@ -1,4 +1,4 @@
-"""Background answers must wait for foreground validation and stay inside their run."""
+"""Background answers require foreground validation against the session's current records."""
 
 import asyncio
 import logging
@@ -778,8 +778,28 @@ async def test_agent_merges_during_tools_without_waiting_for_pending_work(stream
         assert stack.strategy._background is None
         assert bool(stack.strategy._kept_records) == ready
     assert _sent_values(model.prompts[1]) == {v for i in range(4) for v in _values(i)}
-    assert cancelled.is_set() != ready
+    assert not cancelled.is_set()
     assert len(summarizer.requests) == int(ready)
+    if not ready:
+        # A second run can finish even while the original request still owns the batch.
+        work = registry._retained[session.session_id]
+        pending = running(work)
+        async with asyncio.timeout(10):
+            await agent.run("Continue while pending.", session=session)
+        assert registry._retained[session.session_id] is work
+        saved = deepcopy(session.to_dict())
+        release.set()
+        await pending
+        assert session.to_dict() == saved
+        session = AgentSession.from_dict(saved)
+        await agent.run("Apply the late answer.", session=session)
+        assert not registry._retained
+        with registry.activate(session) as stack:
+            assert isinstance(
+                stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            )
+            assert stack.strategy.records_merged == 1
+        assert len(summarizer.requests) == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -850,6 +870,11 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending, para
             await asyncio.wait_for(task, 10)
     else:
         await asyncio.wait_for(task, 10)
+        # The framework delivers a handled tool error as a normal completed run.
+        assert not cancelled.is_set()
+        pending = running(registry._retained[session.session_id])
+        registry.release(session.session_id)
+        await asyncio.gather(pending, return_exceptions=True)
     assert cancelled.is_set()
     assert started_count == cancelled_count == parallel
     assert not registry._merge_work
@@ -859,6 +884,98 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending, para
         )
         assert not stack.strategy._kept_records
         assert stack.strategy._background is None
+
+
+@pytest.mark.parametrize("change", ["evict", "reset", "replace"])
+async def test_cached_worker_is_discarded_when_its_session_or_stack_changes(change):
+    entered = asyncio.Event()
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            entered.set()
+            # A provider can still return an answer after its worker loses the session.
+            with suppress(asyncio.CancelledError):
+                await asyncio.Future()
+            return await super().get_response(messages, **kwargs)
+
+    def build():
+        stack = build_stack(Waiting(), budget=100_000)
+        assert isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
+        stack.strategy.record_budget_share = 0.001
+        return stack
+
+    registry = SessionCompactionRegistry(build, max_cached_sessions=1)
+    session = AgentSession()
+    session.state["in_memory"] = {"messages": _history(4)}
+
+    @tool
+    async def lookup() -> str:
+        """Look up one fact."""
+        await asyncio.wait_for(entered.wait(), 2)
+        return "lookup complete"
+
+    await background_harness(registry, ToolModel(), lookup).run("Continue.", session=session)
+    work = registry._retained[session.session_id]
+    pending = running(work)
+    if change == "reset":
+        del session.state[registry.state_key]
+    elif change == "replace":
+        session.state[registry.state_key]["strategy"]["refused_merges"] = [
+            {"transcript": "different", "source_count": 2}
+        ]
+    with registry.activate(AgentSession() if change == "evict" else session):
+        pass
+    await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 2)
+    assert not registry._retained
+    assert not work._ready
+
+
+@pytest.mark.parametrize("ending", ["timeout", "provider_error"])
+async def test_retained_parallel_wave_keeps_its_answer_when_a_sibling_fails(ending):
+    entered, answered, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    requests = 0
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                entered.set()
+                # Exercise a provider that returns its answer even after timeout cancellation.
+                with suppress(asyncio.CancelledError):
+                    await release.wait()
+                if ending == "provider_error":
+                    raise RuntimeError("summary unavailable")
+            response = await super().get_response(messages, **kwargs)
+            answered.set()
+            return response
+
+    model = Waiting()
+    strategy, work, _ = await prepared(model)
+    strategy.record_merge_max_records = 2
+    strategy.user_turns.summary_timeout_seconds = 0.02 if ending == "timeout" else 5
+    strategy.user_turns.summary_options = {"max_tokens": 1_200}
+    strategy.user_turns.retry_without_summary_options = False
+    strategy.user_turns.summary_limiter = SummaryRequestLimiter(
+        10_000_000, max_parallel_summary_requests=2
+    )
+    messages = _history(12)
+    await strategy(messages)
+    await work.start(tool_reply())
+    async with asyncio.timeout(5):
+        await entered.wait()
+        await answered.wait()
+        assert work.retain()
+        if ending == "provider_error":
+            release.set()
+        await running(work)
+    work.bind(strategy, None)
+    assert await work.apply_ready(messages)
+    assert strategy.records_merged == 1
+    assert requests == 2
+    await work.close()
 
 
 @pytest.mark.parametrize("parallel", [1, 3])

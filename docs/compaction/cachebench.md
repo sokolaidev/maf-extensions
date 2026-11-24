@@ -520,6 +520,8 @@ Schema 23 separates these settings and installed package versions in the cell ke
 
 Schema 25 records the record-budget share, chain deadline, merge split depth, rewrite gain and background selection in cell identity. Older compaction mappings retain their recorded fields without inferred defaults for missing controls. Diagnostics include `chain_timeouts`, the row's effective `background_record_merges` flag and `summarizer_requests_cancelled`. Cancellation without returned usage marks pricing incomplete. Offline tests establish wiring, retained state and cleanup; provider quality, cache behavior, cost and long-history latency require a live benchmark with the recorded package versions.
 
+With background record merges enabled, memory and roundtrip runs can consume a late answer on the same registry. Restarting the benchmark process or finishing the cell releases the cached session. The cell records completed usage and cancellations before reporting its price.
+
 ## Development
 
 ```bash

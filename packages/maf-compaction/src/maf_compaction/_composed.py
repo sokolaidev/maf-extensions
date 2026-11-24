@@ -33,8 +33,8 @@ import json
 import logging
 import threading
 from bisect import bisect_left
-from collections.abc import Callable, Collection, Generator, Mapping
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from collections.abc import AsyncGenerator, Callable, Collection, Generator, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
@@ -220,6 +220,42 @@ class _ChainTimeSpent(SummaryWorkStopped):
     """The current pass has spent its summarizer deadline."""
 
 
+class _RunFinished(_ChainTimeSpent):
+    """A retained worker may finish admitted requests only."""
+
+
+class _BackgroundRequests:
+    """Arm each outstanding request's timeout when its run finishes."""
+
+    def __init__(self, timeout_seconds: float | None) -> None:
+        self.closed = False
+        self._seconds = timeout_seconds if timeout_seconds is not None else 120.0
+        self._deadlines: dict[asyncio.Timeout, float] = {}
+
+    def finish_run(self) -> None:
+        if not self.closed:
+            self.closed = True
+            for timeout, deadline in self._deadlines.items():
+                timeout.reschedule(deadline)
+
+    @asynccontextmanager
+    async def request(self) -> AsyncGenerator[None]:
+        if self.closed:
+            raise _RunFinished
+        timeout = asyncio.timeout(None)
+        self._deadlines[timeout] = asyncio.get_running_loop().time() + self._seconds
+        try:
+            async with timeout:
+                yield
+        except TimeoutError:
+            if not timeout.expired():
+                raise
+        finally:
+            del self._deadlines[timeout]
+        if timeout.expired():
+            raise _RunFinished
+
+
 @dataclass(frozen=True)
 class _RecordAnswer:
     """Record text and the provider's output-limit verdict."""
@@ -316,11 +352,20 @@ class _RecordMergeWork:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
+    def retain(self) -> bool:
+        """Detach this run's answers and close admission for its worker."""
+        self._history = None
+        if self.strategy is None or (self._task is None and not self._ready):
+            return False
+        self.strategy._background = None  # pyright: ignore[reportPrivateUsage]
+        self.defer_merges = self._task is not None and not self._task.done()
+        if self._worker and (requests := self._worker._background_requests):  # pyright: ignore[reportPrivateUsage]
+            requests.finish_run()
+        return True
+
     async def start(self, response: list[Message]) -> None:
         if not any(c.type == "function_call" for m in response for c in m.contents):
-            # A reply without tool calls starts no work. What is ready stays for the end-of-run
-            # pass to apply, and close() ends the rest: cancelling here threw away answers that
-            # finished during the last model call, and their batches were asked again next run.
+            # The end-of-run pass can still consume a ready answer.
             self._history = None
             if self._task is None or self._task.done():
                 self.defer_merges = False
@@ -417,6 +462,11 @@ class _RecordMergeWork:
             self._worker = None
             self._task = None
             if worker is not None:
+                if worker._background_requests and worker._background_requests.closed:  # pyright: ignore[reportPrivateUsage]
+                    # A late answer may have arrived while the first answers were being applied.
+                    tail, self._ready = self._ready, []
+                    changed = await strategy._apply_record_answers(messages, tail) or changed  # pyright: ignore[reportPrivateUsage]
+                    self.defer_merges = False
                 changed = (
                     await strategy._apply_completed_merge_sweep(  # pyright: ignore[reportPrivateUsage]
                         messages, worker
@@ -1233,6 +1283,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._background: _RecordMergeWork | None = None
         self._record_answer_ready: Callable[[str, int, str, _RecordAnswer], None] | None = None
         self._record_work_current: Callable[[], bool] | None = None
+        self._background_requests: _BackgroundRequests | None = None
         # The list the last per-call pass left, for the next call to start from; see
         # ``_carryover``. Process-local, and never part of ``session_state``.
         self._carried: CarriedView | None = None
@@ -1270,6 +1321,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker._chain_deadline = ContextVar("background_record_deadline", default=None)
         worker._record_answer_ready = ready
         worker._record_work_current = current
+        worker._background_requests = _BackgroundRequests(self.user_turns.summary_timeout_seconds)
         return worker
 
     def _merge_event(
@@ -1306,6 +1358,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 await self._merge_records(messages, start)
                 if self._merge_coverage.adaptive and self._merge_sweep_complete:
                     self._completed_merge_sweep = self._merge_sweep_key(messages)
+        except _RunFinished:
+            # Closing admission is expected. Prepared answers still belong to the foreground.
+            return
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             self._merge_event("deadline")
@@ -2465,6 +2520,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _check_chain_deadline(self) -> None:
         if self._record_work_current is not None and not self._record_work_current():
             raise asyncio.CancelledError
+        if self._background_requests is not None and self._background_requests.closed:
+            raise _RunFinished
         deadline = self._chain_deadline.get()
         if deadline is not None and monotonic() >= deadline:
             raise _ChainTimeSpent
@@ -3806,6 +3863,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         stopped = error
                         continue
                     if answer is None:
+                        if self._background_requests and self._background_requests.closed:
+                            stopped = _RunFinished()
+                            continue
                         return changed, "failed"
                 if expected is None or self.merge_prompt != prompt:
                     continue
@@ -4596,14 +4656,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         capped_prompt = await off_loop(self._budgeted_prompt, prompt, request_tokens)
         try:
-            text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
-                transcript,
-                prompt=prompt,
-                observe=observe,
-                allow_empty_on_length=True,
-                before_request=self._check_chain_deadline,
-                capped_prompt=capped_prompt,
-            )
+            requests = self._background_requests
+            async with requests.request() if requests is not None else nullcontext():
+                text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
+                    transcript,
+                    prompt=prompt,
+                    observe=observe,
+                    allow_empty_on_length=True,
+                    before_request=self._check_chain_deadline,
+                    capped_prompt=capped_prompt,
+                )
             return _RecordAnswer(text, incomplete)
         except asyncio.CancelledError:
             if merge:

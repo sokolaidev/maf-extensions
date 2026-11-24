@@ -90,6 +90,7 @@ class SessionExperiment:
         self.options = options
         self.session_build = session_build
         self.registry = self._registry()
+        self._background_session: str | None = None
         self.binding = self._build()
         self.lock = asyncio.Lock()
         self.totals = counters(self.binding.strategy, self.binding.recall)
@@ -112,6 +113,12 @@ class SessionExperiment:
             return self.binding.stack()
 
         return maf_compaction.SessionCompactionRegistry(build, max_cached_sessions=1)
+
+    def release_background_session(self) -> None:
+        """Discard work owned by the benchmark process that is about to stop."""
+        if self._background_session is not None:
+            self.registry.release(self._background_session)
+            self._background_session = None
 
     async def run(
         self,
@@ -187,6 +194,10 @@ class SessionExperiment:
         token = _REPLAY_MESSAGES.set(captured if self.options.history_mode == "replay" else None)
         try:
             mode = self.options.session_mode
+            if self.session_build is not None:
+                if mode == "restart" or self._background_session != session.session_id:
+                    self.release_background_session()
+                self._background_session = session.session_id
             if mode == "memory":
                 if self.session_build is None:
                     result = await call(session)

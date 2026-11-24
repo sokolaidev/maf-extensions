@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import AsyncExitStack, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -15,6 +15,7 @@ from weakref import WeakValueDictionary
 from agent_framework import (
     AgentContext,
     AgentMiddleware,
+    AgentResponseUpdate,
     AgentSession,
     ChatContext,
     ChatMiddleware,
@@ -150,6 +151,7 @@ class SessionCompactionRegistry:
         self._active: dict[str, _Binding] = {}
         self._current: ContextVar[_Binding | None] = ContextVar("compaction_session", default=None)
         self._merge_work: dict[str, tuple[AgentSession, _RecordMergeWork]] = {}
+        self._retained: dict[str, _RecordMergeWork] = {}
 
     @contextmanager
     def activate(self, session: AgentSession) -> Generator[CompactionStack]:
@@ -168,6 +170,9 @@ class SessionCompactionRegistry:
             raise RuntimeError("Overlapping compaction phases for one session are unsupported.")
         stack = self._cache.pop(session.session_id, None)
         data = session.state.get(self.state_key)
+        if retained := self._retained.get(session.session_id):
+            if stack is None or retained.expected_state != data:
+                self._retained.pop(session.session_id).cancel()
         # A removed snapshot is a reset, even when this session is still cached.
         if stack is None or data is None:
             stack = self.build()
@@ -206,6 +211,7 @@ class SessionCompactionRegistry:
             while len(self._cache) > self.max_cached_sessions:
                 evicted, _ = self._cache.popitem(last=False)
                 self._owners.pop(evicted, None)
+                self._discard_merge_work(evicted)
             self._release_carried_views()
 
     def _release_carried_views(self) -> None:
@@ -230,6 +236,13 @@ class SessionCompactionRegistry:
         self.release_carried_view(session_id)
         self._cache.pop(session_id, None)
         self._owners.pop(session_id, None)
+        self._discard_merge_work(session_id)
+
+    def _discard_merge_work(self, session_id: str) -> None:
+        if retained := self._retained.pop(session_id, None):
+            retained.cancel()
+        if entry := self._merge_work.get(session_id):
+            entry[1].cancel()
 
     def release_carried_view(self, session_id: str) -> None:
         """Release a turn's kept list, saving its layout when a saved_view_key is configured."""
@@ -327,30 +340,57 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
         workers = self.registry._merge_work  # pyright: ignore[reportPrivateUsage]
         if session.session_id in workers:
             raise RuntimeError("Overlapping agent runs for one compaction session are unsupported.")
-        work = _RecordMergeWork()
+        retained = self.registry._retained  # pyright: ignore[reportPrivateUsage]
+        work = retained.pop(session.session_id, None) or _RecordMergeWork()
         entry = session, work
         workers[session.session_id] = entry
         close_lock = asyncio.Lock()
 
-        async def close() -> None:
+        async def close(completed: bool = False) -> None:
             async with close_lock:
                 if workers.get(session.session_id) is not entry:
                     return
-                async with AsyncExitStack() as cleanup:
-                    # The next run may bind this strategy only after its previous worker detaches.
-                    cleanup.callback(workers.pop, session.session_id)
-                    cleanup.push_async_callback(work.close)
-                    await self.registry._end_turn(session.session_id)  # pyright: ignore[reportPrivateUsage]
+                try:
+                    async with AsyncExitStack() as discard:
+                        discard.push_async_callback(work.close)
+                        await self.registry._end_turn(session.session_id)  # pyright: ignore[reportPrivateUsage]
+                        cached = self.registry._cache.get(session.session_id)  # pyright: ignore[reportPrivateUsage]
+                        if (
+                            completed
+                            and cached
+                            and cached.strategy is work.strategy
+                            and work.retain()
+                        ):
+                            retained[session.session_id] = work
+                            discard.pop_all()
+                finally:
+                    workers.pop(session.session_id)
 
-        if context.stream:
-            context.stream_cleanup_hooks.append(close)
         try:
             await call_next()
         except BaseException:
             await close()
             raise
-        if not isinstance(context.result, ResponseStream):
-            await close()
+        if isinstance(stream := context.result, ResponseStream):
+
+            async def updates() -> AsyncIterator[AgentResponseUpdate]:
+                async for update in stream:
+                    yield update
+                await close(completed=True)
+
+            async def stream_closed() -> None:
+                try:
+                    await stream.close()
+                finally:
+                    await close()
+
+            context.result = ResponseStream(
+                updates(),
+                finalizer=lambda _: stream.get_final_response(),
+                cleanup_hooks=[stream_closed],
+            )
+        else:
+            await close(completed=True)
 
 
 class _RecordMergeChatMiddleware(ChatMiddleware):
@@ -379,7 +419,7 @@ class _RecordMergeChatMiddleware(ChatMiddleware):
 
 
 def make_session_record_merge_middleware(registry: SessionCompactionRegistry) -> MiddlewareBundle:
-    """Prepare record merges during tools, with cancellation scoped to one agent run.
+    """Prepare record merges during tools and retain late answers on the cached session.
 
     Install on the agent alongside session compaction and recall middleware. The bundle
     requires explicit sessions and must not be installed on a chat client alone.
