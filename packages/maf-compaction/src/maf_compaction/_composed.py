@@ -35,9 +35,10 @@ import threading
 from bisect import bisect_left
 from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
+from functools import partial
 from math import ceil, isfinite
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -240,6 +241,8 @@ class _RecordMergeWork:
     """Prepare isolated record answers; only a foreground pass may accept them."""
 
     def __init__(self) -> None:
+        # Stream result and cleanup hooks can run in different readers' tasks.
+        self._run_context = copy_context()
         self.strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
         self.expected_state: dict[str, Any] | None = None
         self.defer_merges = False
@@ -252,6 +255,12 @@ class _RecordMergeWork:
         self._worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
         # Held by each of the worker's steps on its thread (_offload.steps_locked).
         self._worker_steps = threading.Lock()
+
+    def _in_run_context[**P, R](
+        self, callback: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        """Isolate each hook's bindings from other callbacks and the worker task."""
+        return self._run_context.copy().run(callback, *args, **kwargs)
 
     def bind(
         self,
@@ -274,13 +283,18 @@ class _RecordMergeWork:
     def cancel(self) -> None:
         if self.strategy is not None and (self._task is not None or self._ready):
             pending = int(self._task is not None and not self._task.done())
-            self.strategy._merge_event(  # pyright: ignore[reportPrivateUsage]
-                "worker_closed", phase="background", pending=pending, discarded=len(self._ready)
+            self._in_run_context(
+                self.strategy._merge_event,  # pyright: ignore[reportPrivateUsage]
+                "worker_closed",
+                phase="background",
+                pending=pending,
+                discarded=len(self._ready),
             )
             if pending or self._ready:
                 # Each is a batch the summarizer will be asked again; without an observer this
                 # line is the only trace of it.
-                logger.info(
+                self._in_run_context(
+                    logger.info,
                     "Background record merge closed with work unapplied: discarded=%d "
                     "pending=%d; those batches are asked again later.",
                     len(self._ready),
@@ -333,16 +347,18 @@ class _RecordMergeWork:
                 return BackgroundRecords.capture(messages)
 
         try:
-            records = await off_loop(snapshot)
+            records = await off_loop(self._in_run_context, snapshot)
         except Exception as error:
             self.defer_merges = False
-            strategy._merge_event("worker_failed", phase="background")  # pyright: ignore[reportPrivateUsage]
-            logger.warning("Background record snapshot failed (%s).", type(error).__name__)
+            self._in_run_context(strategy._merge_event, "worker_failed", phase="background")  # pyright: ignore[reportPrivateUsage]
+            self._in_run_context(
+                logger.warning, "Background record snapshot failed (%s).", type(error).__name__
+            )
             return
         if generation != self._generation or self._task is not None:
             return
         prompt = self.strategy.merge_prompt
-        self.strategy._merge_event("worker_started", phase="background")  # pyright: ignore[reportPrivateUsage]
+        self._in_run_context(strategy._merge_event, "worker_started", phase="background")  # pyright: ignore[reportPrivateUsage]
 
         def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
             if generation == self._generation:
@@ -353,13 +369,16 @@ class _RecordMergeWork:
                     )
 
         worker = self.strategy._record_worker(  # pyright: ignore[reportPrivateUsage]
-            budget, ready, lambda: generation == self._generation
+            budget,
+            partial(self._in_run_context, ready),
+            lambda: generation == self._generation,
         )
         worker._background_records = records  # pyright: ignore[reportPrivateUsage]
         self._worker = worker
         self._worker_steps = threading.Lock()
         self._task = asyncio.create_task(
-            self._run_worker(worker, records.messages, self._worker_steps)
+            self._run_worker(worker, records.messages, self._worker_steps),
+            context=self._run_context.copy(),
         )
         self._tasks.add(self._task)
         self._task.add_done_callback(self._tasks.discard)
