@@ -43,6 +43,7 @@ from agent_framework._compaction import (
     set_excluded,
 )
 
+from ._artifacts import exclude_compaction_echoes
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._offload import off_loop
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
@@ -1054,11 +1055,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        await off_loop(_annotate_for_pass, messages, self.tokenizer)
-        return await self.compact_against(
-            messages,
-            prompt_tokens=included_token_count(messages),
-            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+        echoes = await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        return (
+            await self.compact_against(
+                messages,
+                prompt_tokens=included_token_count(messages),
+                trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            )
+            or echoes
         )
 
     async def compact_against(
@@ -2321,17 +2325,22 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         allow_empty_on_length: bool = False,
         before_request: Callable[[], None] | None = None,
         progress: _SummaryProgress | None = None,
+        capped_prompt: str | None = None,
     ) -> str:
         """Ask once, optionally retiring incompatible options after one failed attempt.
 
         Record callers may retain empty length-limited answers for their own refusal handling.
+        ``capped_prompt``, when given, is sent while the request carries the summary options and
+        ``prompt`` on a retry without them: a prompt that states the options' output cap must not
+        go out on a request that no longer has one.
         """
         options = self.summary_options if not self._summary_options_disabled else {}
 
         async def ask(call_options: dict[str, Any]) -> str:
+            request_prompt = capped_prompt if call_options and capped_prompt is not None else prompt
             if self.summary_limiter is None:
                 response = await self.client.get_response(
-                    summary_request(prompt, transcript), stream=False, options=call_options
+                    summary_request(request_prompt, transcript), stream=False, options=call_options
                 )
             else:
                 self.summary_limiter.configure_request(self.max_summary_input_tokens, call_options)
@@ -2341,7 +2350,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     if progress is not None:
                         progress.waiting_for_capacity = False
                     response = await self.client.get_response(
-                        summary_request(prompt, transcript), stream=False, options=call_options
+                        summary_request(request_prompt, transcript),
+                        stream=False,
+                        options=call_options,
                     )
             if observe is not None:
                 observe(response)
@@ -2573,10 +2584,12 @@ def _band_transcript(selected: list[Message], bodies: dict[int, str]) -> tuple[s
     return transcript, source_key
 
 
-def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
-    """Group and count the conversation before a standalone pass, off the loop."""
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> bool:
+    """Exclude echoes before measuring the standalone strategy trigger."""
+    echoes = exclude_compaction_echoes(messages)
     annotate_message_groups(messages)
     annotate_token_counts(messages, tokenizer=tokenizer)
+    return echoes
 
 
 def _no_shorter(tokenizer: TokenizerProtocol, answer: str, transcript: str) -> bool:

@@ -98,6 +98,33 @@ def _rebuilt_elsewhere(messages: list[Message]) -> list[Message]:
     ]
 
 
+async def test_saved_view_excludes_stored_and_new_echoes_beside_the_genuine_record() -> None:
+    record = build_record_message("Retain the page title.")
+    record.message_id = "record"
+    history = [
+        Message("user", ["Read the page"], message_id="user"),
+        record,
+        Message("assistant", [record.text], message_id="stored-echo"),
+    ]
+    first = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
+    assert [mid for mid, _, _ in await _call(first, _reload(history))] == ["user", "record"]
+    saved = first.take_saved_view()
+    assert saved
+    history.extend(
+        [
+            Message(
+                "assistant", ["[compacted: an earlier assistant reply]"], message_id="new-echo"
+            ),
+            Message("assistant", ["The page is ready."], message_id="reply"),
+        ]
+    )
+    restored = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
+    restored.restore_session_state(first.session_state())
+    sent = await _call(restored, _reload(history), json.loads(json.dumps(saved)))
+    assert [mid for mid, _, _ in sent] == ["user", "record", "reply"]
+    assert restored.calls_resumed == 1
+
+
 async def test_first_call_resumes_when_the_host_hands_back_messages_without_the_links() -> None:
     first = _strategy(_Summarizer(), budget=_FITS_A_FULL_REPLAY, policy="shed")
     host = _Rebuilding(_rebuilt_elsewhere(user_history()))

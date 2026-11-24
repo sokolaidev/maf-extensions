@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from test_record_budget import _history, _sent_text, _size, _strategy, _Summarizer
+from test_record_budget import _CAP, _history, _sent_text, _size, _strategy, _Summarizer
 from test_usersummary import (
     _LARGE_SUMMARY_CHARS,
     _conversation,
@@ -68,7 +68,7 @@ async def test_selected_record_request_separates_instructions_from_source(
         if operation == "merge"
         else composed.harder_record_prompt(1)
     )
-    assert prompt == versioned_prompt(expected, version)
+    assert prompt == versioned_prompt(expected, version) + composed.record_answer_budget(_CAP)
     assert prompt.startswith(SUMMARY_DATA_BOUNDARY) == (version == "2")
     assert "VAL-000-0" in transcript and "VAL-000-0" not in prompt
 
@@ -149,8 +149,8 @@ async def test_custom_rewrite_prompts_receive_each_one_based_attempt():
     strategy.rewrite_prompt = lambda attempt: f"Custom rewrite attempt {attempt}."
     assert not await record_attempt(strategy, _history(2), "rewrite")
     assert [prompt for prompt, _ in model.requests] == [
-        "Custom rewrite attempt 1.",
-        "Custom rewrite attempt 2.",
+        f"Custom rewrite attempt {attempt}." + composed.record_answer_budget(_CAP)
+        for attempt in (1, 2)
     ]
     assert not await record_attempt(strategy, _history(2), "rewrite")
     assert len(model.requests) == 2

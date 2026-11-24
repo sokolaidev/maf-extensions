@@ -1614,7 +1614,7 @@ wheels = [
 
 [[package]]
 name = "maf-cachebench"
-version = "0.8.1"
+version = "0.8.3"
 source = { editable = "packages/maf-cachebench" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1664,7 +1664,7 @@ provides-extras = ["openai", "foundry", "mistral", "ollama", "tiktoken"]
 
 [[package]]
 name = "maf-compaction"
-version = "0.18.0"
+version = "0.19.0"
 source = { editable = "packages/maf-compaction" }
 dependencies = [
     { name = "agent-framework-core" },
