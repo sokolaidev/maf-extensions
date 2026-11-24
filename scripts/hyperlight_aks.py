@@ -13,8 +13,11 @@ import yaml
 from maf_sandbox import SandboxKey
 from maf_sandbox_hyperlight.kubernetes import HyperlightPodController, HyperlightPodTemplate
 
-UPSTREAM_REVISION = "fc71b4501d23977fcc54f7be144d884fc8210667"
-PLUGIN_IMAGE = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98"
+UPSTREAM_REVISION = "f78f93f2ca50844e7a794e4e547bd23e254329e5"
+PLUGIN_IMAGE = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:f78f93f@sha256:077997abe85debe7920ae42f7fd985ba6013a6854ce1a56d7a1adc45e1aa8c70"
+PLUGIN_AMD64_DIGEST = "sha256:e83d353338a643aedc351975df32d7951f2966988d21b7f2e0066da61485c4c6"
+PLUGIN = "hyperlight-device-plugin"
+DEVICE_ACCESS = "hyperlight-device-access"
 # Exact observations from live probe runs. A node verifies only by matching one of them;
 # a newer node image, kernel or patch needs its own run first. Node status omits runc, so
 # the report shows the measured value for the operator to compare on the node.
@@ -70,14 +73,14 @@ def render_plugin(source: str, *, namespace: str, image: str = PLUGIN_IMAGE, cou
     if "${" in source:
         raise ValueError("unresolved upstream device-plugin placeholder")
     resources = list(yaml.safe_load_all(source))
-    daemonsets = 0
+    daemonsets = []
     for resource in resources:
         if resource["kind"] == "Namespace":
             resource["metadata"]["name"] = namespace
         else:
             resource["metadata"]["namespace"] = namespace
         if resource["kind"] == "DaemonSet":
-            daemonsets += 1
+            daemonsets.append(resource["metadata"]["name"])
             resource["spec"]["updateStrategy"] = {"type": "OnDelete"}
             pod = resource["spec"]["template"]["spec"]
             pod["automountServiceAccountToken"] = False
@@ -85,8 +88,10 @@ def render_plugin(source: str, *, namespace: str, image: str = PLUGIN_IMAGE, cou
             for container in pod["containers"]:
                 container["securityContext"]["capabilities"] = {"drop": ["ALL"]}
                 container["imagePullPolicy"] = "IfNotPresent"
-    if daemonsets != 1:
-        raise ValueError("the pinned source must contain exactly one device-plugin DaemonSet")
+    if sorted(daemonsets) != [DEVICE_ACCESS, PLUGIN]:
+        raise ValueError(
+            "the pinned source must contain the device-access and device-plugin DaemonSets"
+        )
     return {"apiVersion": "v1", "kind": "List", "items": resources}
 
 
@@ -158,6 +163,7 @@ def current_revision(daemonset: dict, revisions: list[dict]) -> str:
 
 
 def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
+    container = pod["spec"]["containers"][0]
     statuses = pod.get("status", {}).get("containerStatuses", [])
     status = statuses[0] if len(statuses) == 1 else {}
     return {
@@ -166,7 +172,9 @@ def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
         "terminating": bool(pod["metadata"].get("deletionTimestamp")),
         "current_revision": pod["metadata"].get("labels", {}).get("controller-revision-hash")
         == revision,
-        "template_image": pod["spec"]["containers"][0]["image"],
+        "template_image": container["image"],
+        "requests_device_access": "hyperlight.dev/device-access"
+        in container.get("resources", {}).get("requests", {}),
         "running_digest": _digest(status.get("imageID", "")),
         "ready": status.get("ready") is True,
         "restarts": status.get("restartCount", 0),
@@ -207,7 +215,10 @@ def plugin_rollout(
             # are necessarily on an older revision.
             if not image and not pod["current_revision"]:
                 reasons.append("the plugin pod predates the DaemonSet template; delete it")
-            if pod["running_digest"] != expected:
+            accepted = {expected}
+            if expected == _digest(PLUGIN_IMAGE) and _digest(pod["template_image"]) == expected:
+                accepted.add(PLUGIN_AMD64_DIGEST)
+            if pod["running_digest"] not in accepted:
                 reasons.append("the running plugin digest is not the expected one")
             if not pod["ready"]:
                 reasons.append("the plugin pod is not ready")
@@ -237,6 +248,54 @@ def _kubectl(args: argparse.Namespace, *command: str) -> dict:
         check=True,
     )
     return json.loads(listed.stdout)
+
+
+def _plugin_status(args: argparse.Namespace) -> list[dict]:
+    scope = ("-n", args.namespace, "-o", "json")
+    nodes = _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")[
+        "items"
+    ]
+    daemonset = _kubectl(args, "get", "daemonset", PLUGIN, *scope)
+    container = daemonset["spec"]["template"]["spec"]["containers"][0]
+    target = args.image or container["image"]
+
+    def report(ds: dict, name: str) -> list:
+        selector = ("-l", f"app.kubernetes.io/name={name}")
+        revisions = _kubectl(args, "get", "controllerrevisions", *selector, *scope)["items"]
+        pods = _kubectl(args, "get", "pods", *selector, *scope)["items"]
+        return plugin_rollout(ds, current_revision(ds, revisions), pods, nodes, args.image or "")
+
+    reports = report(daemonset, PLUGIN)
+    requests = container.get("resources", {}).get("requests", {})
+    target_digest = _digest(target)
+    template_requires_helper = target_digest in {_digest(PLUGIN_IMAGE), PLUGIN_AMD64_DIGEST} or (
+        target_digest == _digest(container["image"]) and "hyperlight.dev/device-access" in requests
+    )
+    # OnDelete can leave a node on a different topology from the current template.
+    helper_nodes = {
+        row["name"]
+        for row in reports
+        if template_requires_helper
+        or any(
+            pod["controlled"]
+            and not pod["terminating"]
+            and pod["running_digest"] == target_digest
+            and pod["requests_device_access"]
+            for pod in row["pods"]
+        )
+    }
+    if helper_nodes:
+        access = _kubectl(args, "get", "daemonset", DEVICE_ACCESS, *scope)
+        for row, helper in zip(reports, report(access, DEVICE_ACCESS), strict=True):
+            if row["name"] not in helper_nodes:
+                continue
+            row["device_access"] = helper
+            if helper["expected_digest"] != target_digest or not helper["verified"]:
+                row["reasons"].append(
+                    "the device-access DaemonSet has not reached the expected image"
+                )
+                row["verified"] = False
+    return reports
 
 
 def main() -> None:
@@ -271,21 +330,7 @@ def main() -> None:
     if args.action == "plugin-status":
         if not (args.kubeconfig and args.context):
             parser.error("plugin-status requires kubeconfig and context")
-        scope = ("-n", args.namespace, "-o", "json")
-        selector = ("-l", "app.kubernetes.io/name=hyperlight-device-plugin")
-        daemonset = _kubectl(args, "get", "daemonset", "hyperlight-device-plugin", *scope)
-        reports = plugin_rollout(
-            daemonset,
-            current_revision(
-                daemonset,
-                _kubectl(args, "get", "controllerrevisions", *selector, *scope)["items"],
-            ),
-            _kubectl(args, "get", "pods", *selector, *scope)["items"],
-            _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")[
-                "items"
-            ],
-            args.image or "",
-        )
+        reports = _plugin_status(args)
         print(json.dumps(reports, indent=2))
         raise SystemExit(0 if reports and all(item["verified"] for item in reports) else 1)
     if args.action == "plugin":
