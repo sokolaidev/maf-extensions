@@ -724,6 +724,8 @@ _RECORD_WORDS_PER_TOKEN: Final[float] = 0.6
 
 #: Why a merge batch is not asked when its required values cannot fit the answer budget.
 _SKIP_NO_ANSWER_ROOM: Final[str] = "required_values_over_budget"
+#: A batch's distinct values, the values its merge must keep, their tokens and the answer budget.
+_AnswerOverflow = tuple[int, int, int, int]
 
 
 def _record_answer_tokens(max_tokens: int) -> int:
@@ -1876,11 +1878,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def record_merges_skipped(self) -> int:
         """Merges not asked for after a refusal or for lack of answer room for required values.
 
-        Step a skipped for :meth:`_merge_records`'s reason, per pass, or because even the
-        cheapest values a batch must keep exceed the answer budget of its capped request; see
-        :meth:`_merge_batch`. On the live path the store pass skips what the copies pass
-        refused, so :attr:`record_merges_rejected` counts each refusal once. ``RECMERGESKIP``
-        in the flags.
+        Step a skipped for :meth:`_merge_records`'s reason, per pass, or because the shortest
+        text holding the values a batch must keep exceeds the answer budget of its capped
+        request; see :meth:`_merge_batch`. On the live path the store pass skips what the copies
+        pass refused, so :attr:`record_merges_rejected` counts each refusal once.
+        ``RECMERGESKIP`` in the flags.
         """
         return self._record_merges_skipped
 
@@ -3849,8 +3851,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return changed, None
         # A batch not asked here reaches ``_merge_batch`` without an answer, to be split there.
         overflows = [
-            await off_loop(self._merge_answer_overflow, messages, groups)
-            for groups, _, _ in batches
+            await off_loop(self._merge_answer_overflow, body, len(groups))
+            for groups, body, _ in batches
         ]
         tasks = [
             asyncio.create_task(self._ask(prompt=prompt, transcript=body))
@@ -3864,8 +3866,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         rate_limited = False
         try:
             await asyncio.gather(*active, return_exceptions=True)
-            for (original, body, depth), expected, task in zip(
-                batches, sources, tasks, strict=True
+            for (original, body, depth), expected, task, overflow in zip(
+                batches, sources, tasks, overflows, strict=True
             ):
                 answer = None
                 if task is not None:
@@ -3892,7 +3894,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     continue
                 try:
                     merged, failed = await self._merge_batch(
-                        messages, groups, transcript=body, depth=depth, answer=answer
+                        messages,
+                        groups,
+                        transcript=body,
+                        depth=depth,
+                        answer=answer,
+                        room_checked=True,
+                        overflow=overflow,
                     )
                 except _ChainTimeSpent as error:
                     stopped = error
@@ -3918,11 +3926,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         transcript: str,
         depth: int = 0,
         answer: _RecordAnswer | None = None,
+        room_checked: bool = False,
+        overflow: _AnswerOverflow | None = None,
     ) -> tuple[bool, _MergeStop | None]:
         """Merge a batch or its smaller halves; return progress and any reason to stop asking.
 
         A batch whose required values cannot fit the answer budget is not asked, and is split
-        as a truncated answer would have it split. Unfinished smaller batches are retained
+        as a truncated answer would have it split. ``room_checked`` says the caller made that
+        check, with ``overflow`` its result. Unfinished smaller batches are retained
         independently of their parent.
         """
         if answer is None:
@@ -3933,12 +3944,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_event("batch_skipped", reason="sources_not_durable")
             return False, None
         key = transcript, len(groups), _digest(self.merge_prompt)
-        overflow = None
+        checked, overflow = overflow, None
         if key in self._refused_merges:
             self._merge_event("batch_skipped", reason="previous_refusal")
             self._record_merges_skipped += 1
         elif answer is None and (
-            overflow := await off_loop(self._merge_answer_overflow, messages, groups)
+            overflow := checked
+            if room_checked
+            else await off_loop(self._merge_answer_overflow, transcript, len(groups))
         ):
             self._merge_event("batch_skipped", reason=_SKIP_NO_ANSWER_ROOM)
             self._record_merges_skipped += 1
@@ -4113,22 +4126,23 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return None
         return cap
 
-    def _merge_answer_overflow(
-        self, messages: list[Message], groups: list[dict[str, Any]]
-    ) -> tuple[int, int, int, int] | None:
-        """Return values, required values, their fewest tokens and the answer budget, if over it.
+    def _merge_answer_overflow(self, transcript: str, records: int) -> _AnswerOverflow | None:
+        """Return values, required values, their tokens and the answer budget, if over it.
 
-        Each required value is counted alone, cheapest first, as an unreachable record target is:
-        a lower bound on any answer that keeps them, so only a batch no answer can save is not
-        asked. None for a request without an output cap.
+        The required values are the shortest ones, written once each with a space between, and
+        that text is counted whole, as an answer carries them: a value counted alone can cost
+        more than it does among others. Read from the batch's own transcript, whose numbering
+        is left out, so the check reads no history. None for a request without an output cap.
         """
         cap = self._record_output_cap()
         if cap is None:
             return None
         self._sync_merge_coverage()
-        values = _record_values(record_bodies(messages, groups))
+        numbering = {str(number) for number in range(1, records + 1)}
+        values = _distinctive_tokens(transcript) - numbering
         required = self._merge_coverage.required(len(values))
-        tokens = sum(sorted(map(self.tokenizer.count_tokens, values))[:required])
+        shortest = " ".join(sorted(values, key=len)[:required])
+        tokens = self.tokenizer.count_tokens(shortest) if shortest else 0
         budget = _record_answer_tokens(cap)
         return (len(values), required, tokens, budget) if tokens > budget else None
 
