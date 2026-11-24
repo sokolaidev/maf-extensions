@@ -3016,6 +3016,24 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
     assert messages[1].text == "Do not quote results. Reply with titles only."
 
 
+async def test_reask_bounds_identifiers_before_recording_feedback():
+    from agent_framework._compaction import group_messages
+
+    messages = _conversation(10, payload_chars=0)
+    call = messages[4].contents[0]
+    call.name = "display name\nsecond line"
+    call.call_id = messages[5].contents[0].call_id = "x" * 65
+    messages[4].message_id = "marker\u2028text"
+    strategy = _strategy()
+    strategy._uncovered = {str(group["group_id"]) for group in group_messages(messages)}
+    feedback = strategy.recall_feedback(messages)
+    assert "display name" not in feedback and "marker" not in feedback and "x" * 65 not in feedback
+    assert "lookup_1" in feedback and "call_7" in feedback and "lookup_8" not in feedback
+    generic = strategy.recall_feedback(messages[:6])
+    assert "distinctive values verbatim" in generic
+    assert "display name" not in generic and "marker" not in generic and "x" * 65 not in generic
+
+
 async def test_records_with_any_target_value_are_not_counted_as_value_free():
     strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
     messages = _conversation(3, record="CODE-0")

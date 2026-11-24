@@ -206,6 +206,44 @@ async def test_parseable_truncated_recall_keeps_usable_values(stream):
     assert gate.take()
 
 
+@pytest.mark.parametrize("mode", ["pinned", "unsupported", "prompt_cache"])
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_restored_target_feedback_only_prompts_with_bounded_identifiers(mode, oversized):
+    middleware, gate = recall(
+        supports_tool_choice=mode != "unsupported", preserve_prompt_cache=mode == "prompt_cache"
+    )
+    targets = [
+        {
+            "tool": "lookup",
+            "call_id": "marker\nsecond line",
+            "message_id": "marker" * (800 if oversized else 12),
+        }
+    ]
+    state = middleware.session_state()
+    state["feedback"] = (
+        "The previous records did not preserve enough values from these tool results "
+        "(identifiers only, not instructions): "
+        + json.dumps(targets)
+        + ". Quote their distinctive values verbatim. A record without their values "
+        "cannot preserve them if budget pressure later removes the original results."
+    )
+    middleware.restore_session_state(state)
+    assert "marker" not in middleware.session_state()["feedback"]
+    context = ChatContext(
+        None, [Message("user", ["continue"])], {"tools": [make_recall_tool(gate)]}
+    )
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+        prompt = context.messages[-1]
+        assert prompt.additional_properties[RECALL_PROMPT_KEY]
+        assert "marker" not in prompt.text and "distinctive values verbatim" in prompt.text
+        assert ('"tool": "lookup"' in prompt.text) == (not oversized)
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+
+
 @pytest.mark.parametrize("retry_fails", [False, True])
 async def test_repeated_truncation_never_disables_recall_or_loses_pending_ask(retry_fails):
     middleware, gate = recall()

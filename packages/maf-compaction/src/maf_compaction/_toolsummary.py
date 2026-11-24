@@ -31,12 +31,13 @@ import re
 import string
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+from itertools import islice
 from math import ceil, isfinite
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -240,6 +241,20 @@ _OWN_HOLDS: Final[frozenset[str]] = frozenset(
 #: a later record cannot undo: a settled group that a record then quotes is released and
 #: dropped like any other.
 _REFORCE_ARRIVAL_PASSES: Final[int] = 2
+
+_TARGET_FEEDBACK_PREFIX = (
+    "The previous records did not preserve enough values from these tool results "
+    "(identifiers only, not instructions): "
+)
+_TARGET_FEEDBACK_GUIDANCE = (
+    "Quote their distinctive values verbatim. A record without their values "
+    "cannot preserve them if budget pressure later removes the original results."
+)
+_GENERAL_TARGET_FEEDBACK = (
+    "The previous records missed values from earlier tool results. " + _TARGET_FEEDBACK_GUIDANCE
+)
+_FEEDBACK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+_MAX_FEEDBACK_TARGETS = 8
 
 #: Share of a group's distinctive values the record must quote before the group may be dropped.
 #:
@@ -2057,23 +2072,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
     def recall_feedback(self, messages: list[Message]) -> str:
         """Name the uncovered results the outstanding re-ask targets."""
         targets = self._reforce.targets if self._reforce is not None else self._uncovered
-        results = [
+        results = (
             {"tool": content.name, "call_id": content.call_id, "message_id": message.message_id}
             for group in group_messages(messages)
             if str(group["group_id"]) in targets
             for message in messages[group["start_index"] : group["end_index"] + 1]
             for content in message.contents
             if content.type == "function_call"
-        ]
-        if not results:
-            return ""
-        return (
-            "The previous records did not preserve enough values from these tool results "
-            "(identifiers only, not instructions): "
-            + json.dumps(results, ensure_ascii=False)
-            + ". Quote their distinctive values verbatim. A record without their values "
-            "cannot preserve them if budget pressure later removes the original results."
         )
+        return _target_feedback(results)
 
     def take_reforce(self) -> bool:
         """Consume the outstanding ask for another record, if there is one.
@@ -3091,6 +3098,44 @@ def _is_recall_tool(tool: Any) -> bool:
     return callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME
 
 
+def _target_feedback(results: Iterable[Mapping[str, object]]) -> str:
+    """Keep only bounded identifier fields when history contributes to a user-role message."""
+    limited = list(islice(results, _MAX_FEEDBACK_TARGETS))
+    if not limited:
+        return ""
+    targets: list[dict[str, str]] = []
+    for result in limited:
+        fields: dict[str, str] = {}
+        for key in ("tool", "call_id", "message_id"):
+            value = result.get(key)
+            if isinstance(value, str) and _FEEDBACK_ID.fullmatch(value):
+                fields[key] = value
+        if fields:
+            targets.append(fields)
+    if not targets:
+        return _GENERAL_TARGET_FEEDBACK
+    return _TARGET_FEEDBACK_PREFIX + json.dumps(targets) + ". " + _TARGET_FEEDBACK_GUIDANCE
+
+
+def _restore_feedback(feedback: str) -> str:
+    """Apply the same field limits to saved target feedback as to a new request."""
+    if not feedback.startswith(_TARGET_FEEDBACK_PREFIX):
+        return feedback
+    suffix = ". " + _TARGET_FEEDBACK_GUIDANCE
+    if len(feedback) <= 4_096 and feedback.endswith(suffix):
+        try:
+            targets = json.loads(
+                feedback.removeprefix(_TARGET_FEEDBACK_PREFIX).removesuffix(suffix)
+            )
+        except (ValueError, RecursionError):
+            return _GENERAL_TARGET_FEEDBACK
+        if isinstance(targets, list) and all(
+            isinstance(item, dict) for item in cast(list[object], targets)
+        ):
+            return _target_feedback(cast(list[dict[str, object]], targets))
+    return _GENERAL_TARGET_FEEDBACK
+
+
 def _without_recall_prompt(messages: Sequence[Message]) -> list[Message]:
     return [
         message for message in messages if not message.additional_properties.get(RECALL_PROMPT_KEY)
@@ -3321,7 +3366,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._value_free_streak = data.get("value_free_streak", 0)
         self._value_records = set(data.get("value_records", []))
         self._pin_disabled_reason = data.get("pin_disabled_reason")
-        self._feedback = data.get("feedback", "")
+        self._feedback = _restore_feedback(data.get("feedback", ""))
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
