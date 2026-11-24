@@ -989,7 +989,8 @@ async def test_a_sweep_reads_the_history_once_and_again_only_after_an_accepted_m
 
     assert strategy.records_merged == 1, "the premise: one accepted merge, after 30 records passed"
     # One survey, then for the accepted merge its own body check, its check for a kept
-    # replacement and one survey of the history it changed: none for the records passed over.
+    # replacement and one survey of the history it changed: none for the records passed over,
+    # and none for the answer-room check, which reads the batch's transcript.
     assert max(walks.values()) <= 1 + 3 * strategy.records_merged, dict(walks)
 
 
