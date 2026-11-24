@@ -252,8 +252,10 @@ async def test_restored_target_feedback_only_prompts_with_bounded_identifiers(mo
         "unrecognized saved note",
         f"{RECORD_MARKER} saved record",
         "The previous recall reached the response limit. Write a shorter record. Extra text.",
-        "The previous recall reached the response limit. Write a shorter record, "
-        "targeting at most 12,34 tokens.",
+        (
+            "The previous recall reached the response limit. Write a shorter record, "
+            "targeting at most 12,34 tokens."
+        ),
     ],
 )
 async def test_unknown_saved_feedback_is_absent_from_the_next_recall(feedback):
@@ -278,11 +280,15 @@ async def test_unknown_saved_feedback_is_absent_from_the_next_recall(feedback):
     "feedback",
     [
         "The previous recall reached the response limit. Write a shorter record.",
-        "The previous recall would exceed the next request's input budget. Write a shorter record, "
-        "targeting at most 12,345 tokens.",
-        "The previous records missed values from earlier tool results. "
-        "Quote their distinctive values verbatim. A record without their values "
-        "cannot preserve them if budget pressure later removes the original results.",
+        (
+            "The previous recall would exceed the next request's input budget. Write a shorter record, "
+            "targeting at most 12,345 tokens."
+        ),
+        (
+            "The previous records missed values from earlier tool results. "
+            "Quote their distinctive values verbatim. A record without their values "
+            "cannot preserve them if budget pressure later removes the original results."
+        ),
     ],
 )
 def test_known_saved_feedback_round_trips(feedback):
