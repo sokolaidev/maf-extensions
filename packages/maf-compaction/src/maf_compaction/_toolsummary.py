@@ -96,7 +96,12 @@ from ._record_replay import (
     MessageKeyCache,
     source_lineage,
 )
-from ._request import RECALL_PROMPT_KEY, request_tools
+from ._request import (
+    RECALL_PROMPT_KEY,
+    as_compaction_context,
+    attribute_compaction_context,
+    request_tools,
+)
 from ._summary_links import has_summary_links
 from ._tool_result import (
     ResultTextRewriter,
@@ -3752,6 +3757,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         async def compact(messages: list[Message]) -> bool:
             nonlocal outgoing, unsent
             outgoing = messages
+            original_contents = {id(message.contents): message.contents for message in messages}
             if forced_this_call and self._capture_value_targets is not None:
                 self._capture_value_targets(messages)
             # History providers can load retained asks after middleware entry.
@@ -3778,6 +3784,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 check_record_budget([])
                 unsent = False
                 raise
+            finally:
+                attribute_compaction_context(messages, original_contents)
             if asking:
                 # The ask was due before this pass; a prompt it leaves full fits no record, so
                 # the request is not sent at all.
@@ -3856,12 +3864,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             nonlocal prompt
             instruction = self._ask_text()
             prompt = (
-                Message("user", [instruction], additional_properties={RECALL_PROMPT_KEY: True})
+                as_compaction_context(
+                    Message("user", [instruction], additional_properties={RECALL_PROMPT_KEY: True})
+                )
                 if forced_this_call and instruction is not None
                 else None
             )
             if prompt is not None:
-                # Pinned instructions enter after history captures inputs for persistence.
                 context.messages = list(context.messages)
                 if self._pin_disabled:
                     context.messages.append(prompt)
