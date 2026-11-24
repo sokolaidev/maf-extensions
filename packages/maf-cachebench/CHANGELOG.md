@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.8.3...maf-cachebench-v0.8.4) (2026-11-24)
+
+
+### Fixes
+
+* reuse late record merges across runs and account for them in cachebench ([#2949](https://github.com/sokolaidev/maf-extensions/issues/2949)) ([71c4984](https://github.com/sokolaidev/maf-extensions/commit/71c4984a9a631924a82e04f91dca473d2125ab41))
+
 ## [0.8.3](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.8.2...maf-cachebench-v0.8.3) (2026-11-23)
 
 
