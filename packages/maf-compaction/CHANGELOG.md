@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.19.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.0...maf-compaction-v0.19.1) (2026-11-24)
+
+
+### Fixes
+
+* **compaction:** cap record rewrites and skip targets too short to retain required values ([#2938](https://github.com/sokolaidev/maf-extensions/issues/2938)) ([0279f62](https://github.com/sokolaidev/maf-extensions/commit/0279f62dee2445a301eee9df679ac749e384b010))
+* **compaction:** keep a ready background merge answer for the end-of-run pass, and log discarded background work ([#2945](https://github.com/sokolaidev/maf-extensions/issues/2945)) ([1b666b0](https://github.com/sokolaidev/maf-extensions/commit/1b666b0bcf316e32f51f1643f86b58934d071e1b))
+* **compaction:** pause recall when the input budget is full and keep retry tool schemas stable ([#2947](https://github.com/sokolaidev/maf-extensions/issues/2947)) ([4ad112f](https://github.com/sokolaidev/maf-extensions/commit/4ad112fa96422279347cd22e25c203848f8a0ee1))
+* **compaction:** preserve the agent run context for background record merges ([#2951](https://github.com/sokolaidev/maf-extensions/issues/2951)) ([81eb03f](https://github.com/sokolaidev/maf-extensions/commit/81eb03fe6e6bad1de28a909b9966a70f35d9f406))
+* reuse late record merges across runs and account for them in cachebench ([#2949](https://github.com/sokolaidev/maf-extensions/issues/2949)) ([71c4984](https://github.com/sokolaidev/maf-extensions/commit/71c4984a9a631924a82e04f91dca473d2125ab41))
+
 ## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.18.0...maf-compaction-v0.19.0) (2026-11-23)
 
 
