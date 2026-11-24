@@ -3688,6 +3688,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Unsupported tool_choice falls back to a temporary trailing message and one tool.
         Two consecutive ignored requests, refusals or value-free records stop recall.
         Refusals and unusable length-limited records retry once with the original options.
+        An ask whose pass leaves the prompt over the sending budget is not sent: the call goes
+        out once, with the original options.
         Truncation leaves a shorter recall request pending; other failures stop recall immediately.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
@@ -3743,7 +3745,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         )
         prompt: Message | None = None
         outgoing: list[Message] | None = None
-        # True while the attempt going out asks for a record, and set when one never went out.
+        # Whether the attempt going out asks for a record, and whether one was stopped unsent.
         asking = forced_this_call
         unsent = False
 
