@@ -59,7 +59,14 @@ def _terraform_report():
         "valid": False,
         "error_count": 1,
         "warning_count": 0,
-        "diagnostics": [{"severity": "error", "summary": _REPORT, "detail": _REPORT}],
+        "diagnostics": [
+            {
+                "severity": "error",
+                "summary": _REPORT,
+                "detail": _REPORT,
+                "range": {"filename": "main.tf"},
+            }
+        ],
     }
     return json.dumps(
         {
@@ -234,6 +241,16 @@ def test_quarantine_off_returns_diagnostics_with_names_and_files_folded(
         items = await _tracked_call(attached, arguments, tracker, observer)
         reports = [item for item in items if _REPORT in (item.text or "")]
         assert reports
+        if kind == "terraform":
+            summary = next(
+                item
+                for item in items
+                if (item.text or "").startswith('{"type":"terraform_diagnostics"')
+            )
+            reference = "files[0] 'main.tf'" if not tainted or override is not None else "files[0]"
+            assert json.loads(summary.text)["diagnostics"] == [
+                {"file": reference, "severity": "error"}
+            ]
         expected = (
             "trusted"
             if file_level is SourceIntegrity.TRUSTED and (not tainted or override is not None)
@@ -410,6 +427,9 @@ def test_other_kind_reports_fold_argument_integrity(kind, tainted, level, overri
             await _taint(tracker)
         items = await _tracked_call(attached, arguments, tracker, "inner")
         report = next(item for item in items if _REPORT in (item.text or ""))
+        if kind == "shell":
+            reference = "files[0] 'main.sh'" if not tainted or override is not None else "files[0]"
+            assert any((item.text or "").startswith(f"{reference}: info SC2086.") for item in items)
         expected = (
             "trusted"
             if (not tainted or override is not None)

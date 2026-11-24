@@ -82,11 +82,11 @@ def _position(value: dict[str, Any]) -> None:
         raise ValueError("invalid source location")
 
 
-def _diagnostic(value: Any, paths: list[str]) -> dict[str, Any]:
+def _diagnostic(value: Any, references: dict[str, str]) -> dict[str, Any]:
     item = _mapping(value)
     _position(item)
     if (
-        item.get("file") not in paths
+        item.get("file") not in references
         or item.get("severity") not in SEVERITIES
         or not isinstance(item.get("rule"), str)
         or not item["rule"]
@@ -121,7 +121,7 @@ def _suppression(value: Any, flavor: ShellFlavor) -> None:
 def report_outcome(
     raw: bytes,
     flavor: ShellFlavor,
-    paths: list[str],
+    references: dict[str, str],
     policy: ShellPolicy,
     inventory_sha256: str = EMPTY_INVENTORY_SHA256,
     *,
@@ -148,7 +148,7 @@ def report_outcome(
     if envelope.get("dependency_inventory_sha256") != inventory_sha256:
         raise ValueError("unexpected host dependency inventory")
     reports = [_mapping(item) for item in _list(envelope.get("files"))]
-    if [item.get("path") for item in reports] != paths:
+    if [item.get("path") for item in reports] != list(references):
         raise ValueError("report does not cover the complete manifest")
     completed = True
     findings = False
@@ -168,9 +168,9 @@ def report_outcome(
         ):
             raise ValueError("invalid syntax phase")
         completed &= report["parsed"] and not report["policy_conflict"] and syntax["exit_code"] == 0
-        diagnostics = [_diagnostic(item, paths) for item in _list(report.get("diagnostics"))]
+        diagnostics = [_diagnostic(item, references) for item in _list(report.get("diagnostics"))]
         suppressed = [
-            _diagnostic(item, paths) for item in _list(report.get("suppressed_diagnostics"))
+            _diagnostic(item, references) for item in _list(report.get("suppressed_diagnostics"))
         ]
         declarations = _list(report.get("suppressions"))
         for declaration in declarations:
@@ -186,9 +186,9 @@ def report_outcome(
         )
         for item in effective:
             if item["rule"] in _CATALOG:
-                index = paths.index(item["file"])
+                reference = references[item["file"]]
                 summaries.add(
-                    f"files[{index}]: {item['severity']} {item['rule']}. {_CATALOG[item['rule']]}"
+                    f"{reference}: {item['severity']} {item['rule']}. {_CATALOG[item['rule']]}"
                 )
             else:
                 summaries.add("Additional analyzer findings are available in the untrusted report.")

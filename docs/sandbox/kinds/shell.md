@@ -14,7 +14,7 @@ PowerShell dependencies are supplied by the host image. Approved module and mana
 
 Validation completes only when every required syntax, lint and suppression-audit phase completes. A completed result is `clean` when no unsuppressed diagnostic reaches the host's threshold, or `findings` otherwise. Suppressions alone do not prevent `clean`. Missing dependencies that prevent analysis, syntax errors that stop linting, exhausted limits and malformed reports produce `completed=False` with no verdict.
 
-Trusted summaries select package-owned rule IDs, severities, fixed explanations and `files[N]` references. Raw messages, file names, locations, counts and suppression justifications remain workload output. A fixed readable indication accompanies reports containing suppressions. Hidden argument names withhold detailed reports. A clean result describes the configured static checks, not deployment success or runtime compatibility.
+Trusted summaries identify the script by its manifest position and include its caller-supplied name when the arguments are trusted and the name is visible and within the echo limit. For example, `files[2] 'deploy.sh': warning SC2086. Quote variable expansion to prevent splitting and globbing.` A withheld name appears as `files[2]`. Rule descriptions come from the package catalog. Raw messages, guest locations, counts and suppression justifications remain workload output. A fixed readable indication accompanies reports containing suppressions. Hidden argument names withhold detailed reports. A clean result describes the configured static checks, not deployment success or runtime compatibility.
 
 ## Isolation and qualification
 

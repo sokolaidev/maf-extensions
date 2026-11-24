@@ -189,7 +189,9 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
                             "type": "terraform_diagnostics",
                             "diagnostics": [
                                 {
-                                    "file": "files[1]" if case == "local-invalid" else "files[0]",
+                                    "file": "files[1] 'modules/child/main.tf'"
+                                    if case == "local-invalid"
+                                    else "files[0] 'main.tf'",
                                     "severity": "error",
                                 }
                             ],
