@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.1...maf-compaction-v0.19.2) (2026-11-24)
+
+
+### Fixes
+
+* **compaction:** do not ask a record merge whose required values cannot fit the answer budget ([#2961](https://github.com/sokolaidev/maf-extensions/issues/2961)) ([38639b4](https://github.com/sokolaidev/maf-extensions/commit/38639b4f35764c692dbae01c2e18f516792513c8))
+* **compaction:** do not send a pending record ask while the prompt its pass leaves fills the sending budget ([#2960](https://github.com/sokolaidev/maf-extensions/issues/2960)) ([af89fef](https://github.com/sokolaidev/maf-extensions/commit/af89feff699e0dd9472fe8b323c09567b5a49db0))
+* **compaction:** keep a batch's identity when the next pass covers or sheds the tool rounds between its records ([#2957](https://github.com/sokolaidev/maf-extensions/issues/2957)) ([c48ce5c](https://github.com/sokolaidev/maf-extensions/commit/c48ce5c2267b03db1dd3990fcdb85a3540b01d20))
+
 ## [0.19.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.0...maf-compaction-v0.19.1) (2026-11-24)
 
 
