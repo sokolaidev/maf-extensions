@@ -273,12 +273,19 @@ class _RecordMergeWork:
 
     def cancel(self) -> None:
         if self.strategy is not None and (self._task is not None or self._ready):
+            pending = int(self._task is not None and not self._task.done())
             self.strategy._merge_event(  # pyright: ignore[reportPrivateUsage]
-                "worker_closed",
-                phase="background",
-                pending=int(self._task is not None and not self._task.done()),
-                discarded=len(self._ready),
+                "worker_closed", phase="background", pending=pending, discarded=len(self._ready)
             )
+            if pending or self._ready:
+                # Each is a batch the summarizer will be asked again; without an observer this
+                # line is the only trace of it.
+                logger.info(
+                    "Background record merge closed with work unapplied: discarded=%d "
+                    "pending=%d; those batches are asked again later.",
+                    len(self._ready),
+                    pending,
+                )
         self._generation += 1
         for task in self._tasks:
             task.cancel()
@@ -297,7 +304,12 @@ class _RecordMergeWork:
 
     async def start(self, response: list[Message]) -> None:
         if not any(c.type == "function_call" for m in response for c in m.contents):
-            self.cancel()
+            # A reply without tool calls starts no work. What is ready stays for the end-of-run
+            # pass to apply, and close() ends the rest: cancelling here threw away answers that
+            # finished during the last model call, and their batches were asked again next run.
+            self._history = None
+            if self._task is None or self._task.done():
+                self.defer_merges = False
             return
         if self._history is None or self.strategy is None:
             # No worker can start, so the foreground keeps its merges.
@@ -1289,19 +1301,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         finally:
             self._chain_deadline.reset(token)
 
+    def _discard_ready_answer(self, item: _PreparedMerge, reason: str) -> None:
+        """Drop a ready background answer the pass cannot apply, and say so in the log.
+
+        The batch is asked again on a later sweep, so a host without an observer needs the line
+        to see that a summarizer answer was paid for and not kept.
+        """
+        self._merge_event("answer_discarded", phase="apply", reason=reason)
+        logger.info(
+            "Compaction discarded a ready background merge of %d records: %s.", item.count, reason
+        )
+
     async def _apply_record_answers(
         self, messages: list[Message], prepared: list[_PreparedMerge]
     ) -> bool:
         changed = False
         for item in prepared:
             if item.prompt != self.merge_prompt:
-                self._merge_event("answer_discarded", phase="apply", reason="prompt_changed")
+                self._discard_ready_answer(item, "prompt_changed")
                 continue
             batch = await off_loop(
                 _background_batch_with_sources, messages, item.count, item.sources
             )
             if batch is None:
-                self._merge_event("answer_discarded", phase="apply", reason="sources_unavailable")
+                self._discard_ready_answer(item, "sources_unavailable")
                 continue
             outcome = await self._consolidate(
                 messages,
