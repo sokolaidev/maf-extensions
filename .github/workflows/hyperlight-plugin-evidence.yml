@@ -1,0 +1,87 @@
+name: Hyperlight device-plugin evidence
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hyperlight-plugin-evidence.yml
+      - scripts/hyperlight_plugin_evidence.py
+      - tests/test_hyperlight_plugin_evidence.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/hyperlight-plugin-evidence.yml
+      - scripts/hyperlight_plugin_evidence.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    outputs:
+      artifact_attempt: ${{ steps.collect.outputs.artifact_attempt }}
+      archive_digest: ${{ steps.collect.outputs.archive_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OCI transport
+        run: |
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes skopeo
+          fi
+      - name: Collect and verify the upstream image evidence
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/hyperlight_plugin_evidence.py collect "$RUNNER_TEMP/evidence"
+          hash=$(sha256sum "$RUNNER_TEMP/evidence/hyperlight-device-plugin-evidence.zip" | cut -d ' ' -f 1)
+          echo "artifact_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "archive_digest=sha256:$hash" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hyperlight-plugin-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/hyperlight-device-plugin-evidence.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  retain:
+    needs: verify
+    if: github.repository == 'sokolaidev/maf-extensions' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hyperlight-plugin-evidence-${{ needs.verify.outputs.artifact_attempt }}
+          path: ${{ runner.temp }}/evidence
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
+      - name: Retain verified bytes and confirm the immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          EXPECTED_DIGEST: ${{ needs.verify.outputs.archive_digest }}
+          EVIDENCE_ATTEMPT: ${{ needs.verify.outputs.artifact_attempt }}
+        run: python3 scripts/hyperlight_plugin_evidence.py publish "$RUNNER_TEMP/evidence" --expected-digest "$EXPECTED_DIGEST" >> "$GITHUB_STEP_SUMMARY"
