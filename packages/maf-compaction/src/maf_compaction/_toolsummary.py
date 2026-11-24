@@ -3770,11 +3770,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 else:
                     changed = False
             except CompactionBudgetExceeded:
-                # A pass that cannot fit the prompt leaves no room for a record either.
                 if not asking:
                     raise
+                # Over the budget without the ask as well: a full prompt, so the ask waits. Over
+                # only with it: the refusal stays the failure it was.
                 unsent = True
-                raise _RecallPromptFull from None
+                check_record_budget([])
+                unsent = False
+                raise
             if asking:
                 # The ask was due before this pass; a prompt it leaves full fits no record, so
                 # the request is not sent at all.
