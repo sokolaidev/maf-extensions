@@ -31,6 +31,7 @@ from ._carryover import (
     apply_view,
 )
 from ._preserve import PRESERVE_REASON_KEY, PRESERVED_KEY
+from ._record_replay import RECORD_ANCHOR_EXCLUDE_REASON
 from ._shed import durable_message_id
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
@@ -56,7 +57,7 @@ _OWN_EXCLUSIONS = {
     CONSOLIDATE_EXCLUDE_REASON,
     USER_EXCLUDE_REASON,
     FOLD_EXCLUDE_REASON,
-    "tool_summary_anchored",
+    RECORD_ANCHOR_EXCLUDE_REASON,
 }
 _OWN_HOLDS = (
     PRESERVE_REASON,

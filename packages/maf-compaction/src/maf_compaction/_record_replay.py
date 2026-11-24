@@ -19,6 +19,7 @@ from agent_framework._compaction import (
     annotate_message_groups,
 )
 
+from ._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
 from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
 from ._shed import ShedGroupKeys, durable_message_id, unique_shed_groups
@@ -62,6 +63,14 @@ class SummaryReplayCache:
         return SummaryReplayCache(outputs=self.outputs, messages=self.messages)
 
 
+#: Why the record phase excludes a tool result a record covers.
+RECORD_ANCHOR_EXCLUDE_REASON: Final[str] = "tool_summary_anchored"
+#: Exclusions a pass makes of its own and redoes on every pass: a covered tool result and the
+#: over-budget shed. Between a batch's records they are fingerprinted as if included, since a
+#: record's answer does not depend on them and the next pass may mark them differently.
+PASS_EXCLUDE_REASONS: Final = frozenset({RECORD_ANCHOR_EXCLUDE_REASON, SHED_EXCLUDE_REASON})
+
+
 @dataclass
 class MessageKeyCache:
     """Share message fingerprints across the candidate views of one replay call.
@@ -81,10 +90,15 @@ class MessageKeyCache:
     entries: dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]] = field(
         default_factory=dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]]
     )
+    #: Serialized contents by contents identity, so the as-included fingerprint of a message
+    #: does not serialize contents its full fingerprint already did.
+    serialized: dict[int, tuple[list[Content], tuple[Content, ...], str]] = field(
+        default_factory=dict[int, tuple[list[Content], tuple[Content, ...], str]]
+    )
     shed_groups: ShedGroupKeys = field(default_factory=ShedGroupKeys)
     counts: TokenCounts = field(default_factory=TokenCounts)
 
-    def key(self, message: Message) -> str:
+    def key(self, message: Message, *, as_included: bool = False) -> str:
         properties = message.additional_properties
         contents = message.contents
         fields = (
@@ -96,8 +110,9 @@ class MessageKeyCache:
         )
         # Equal values of different types serialize differently; those are fingerprinted afresh.
         if not all(value is None or isinstance(value, str) for value in fields):
-            return _message_key(message)
-        slot = (*fields, bool(properties.get(EXCLUDED_KEY, False)), id(contents))
+            return _message_key(message, as_included=as_included)
+        excluded = False if as_included else bool(properties.get(EXCLUDED_KEY, False))
+        slot = (*fields, excluded, id(contents))
         entry = self.entries.get(slot)
         if (
             entry is not None
@@ -105,9 +120,23 @@ class MessageKeyCache:
             and all(held is content for held, content in zip(entry[1], contents, strict=True))
         ):
             return entry[2]
-        fingerprint = _message_key(message)
+        fingerprint = _message_key(
+            message, as_included=as_included, contents_json=self._contents_json(contents)
+        )
         self.entries[slot] = (contents, tuple(contents), fingerprint)
         return fingerprint
+
+    def _contents_json(self, contents: list[Content]) -> str:
+        held = self.serialized.get(id(contents))
+        if (
+            held is not None
+            and len(held[1]) == len(contents)
+            and all(kept is content for kept, content in zip(held[1], contents, strict=True))
+        ):
+            return held[2]
+        serialized = _serialize_contents(contents)
+        self.serialized[id(contents)] = (contents, tuple(contents), serialized)
+        return serialized
 
 
 @dataclass
@@ -545,8 +574,24 @@ def source_lineage(
     return _source_key(messages, groups, {}, keys)
 
 
-def _message_key(message: Message) -> str:
-    payload = [
+def _serialize_contents(contents: list[Content]) -> str:
+    return json.dumps(
+        [content.to_dict(exclude={"raw_representation"}) for content in contents],
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _message_key(
+    message: Message, *, as_included: bool = False, contents_json: str | None = None
+) -> str:
+    """Fingerprint a message; ``as_included`` reads its excluded flag as False.
+
+    The contents, the costly part, are serialized apart and spliced in, which gives the
+    bytes ``json.dumps`` gives the whole list, so a fingerprint is what it always was and
+    ``contents_json`` can be shared between a message's two fingerprints.
+    """
+    fields = [
         message.role,
         message.author_name,
         message.message_id
@@ -556,10 +601,35 @@ def _message_key(message: Message) -> str:
         else None,
         message.additional_properties.get(STANDS_IN_KEY),
         message.additional_properties.get(LINEAGE_KEY),
-        bool(message.additional_properties.get(EXCLUDED_KEY, False)),
-        [content.to_dict(exclude={"raw_representation"}) for content in message.contents],
+        False if as_included else bool(message.additional_properties.get(EXCLUDED_KEY, False)),
     ]
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    if contents_json is None:
+        contents_json = _serialize_contents(message.contents)
+    payload = json.dumps(fields, sort_keys=True, default=str)[:-1] + ", " + contents_json + "]"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _is_pass_exclusion(message: Message) -> bool:
+    """Whether ``message`` is excluded for a pass's own reason (:data:`PASS_EXCLUDE_REASONS`).
+
+    Never reasoning: replay authority over reasoning reads its inclusion, whoever excluded it.
+    """
+    properties = message.additional_properties
+    return (
+        bool(properties.get(EXCLUDED_KEY, False))
+        and properties.get(EXCLUDE_REASON_KEY) in PASS_EXCLUDE_REASONS
+        and not any(content.type == "text_reasoning" for content in message.contents)
+    )
+
+
+def window_message_key(message: Message) -> str:
+    """Fingerprint a message between a batch's records, a pass's own exclusion read as included.
+
+    The one rule for both places that fingerprint those messages: a batch's source key and the
+    gap a background snapshot collapses them into, so neither changes when a later pass covers or
+    sheds a tool round differently.
+    """
+    return _message_key(message, as_included=_is_pass_exclusion(message))
 
 
 def _reasoning_key(message: Message) -> str | None:
@@ -573,7 +643,18 @@ def _source_key(
     groups: list[dict[str, Any]],
     message_keys: dict[int, str],
     key_cache: MessageKeyCache | None = None,
+    window_keys: dict[int, str] | None = None,
 ) -> str | None:
+    """Fingerprint a batch: its records, the messages between them, and the layout.
+
+    A message between the records that a pass excluded of its own accord
+    (:func:`_is_pass_exclusion`) is fingerprinted as if included, so a later pass that covers or
+    sheds it differently still finds the batch, and a batch whose in-between messages are all
+    included keeps the key it always had. Every other exclusion there, and the records' own,
+    stays in the key. ``window_keys`` caches, by index for one unchanging history, the
+    as-if-included fingerprint of a pass exclusion and an empty string for any other message, so
+    the many windows of one replay decide each message once.
+    """
     for group in groups:
         members = messages[group["start_index"] : group["end_index"] + 1]
         if not any(
@@ -587,16 +668,37 @@ def _source_key(
         ):
             return None
     start, end = groups[0]["start_index"], groups[-1]["end_index"]
+    members = {
+        index for group in groups for index in range(group["start_index"], group["end_index"] + 1)
+    }
+    if window_keys is None:
+        window_keys = {}
+    keys: list[str] = []
     for index in range(start, end + 1):
+        message = messages[index]
+        if index not in members:
+            window_key = window_keys.get(index)
+            if window_key is None:
+                window_key = window_keys[index] = (
+                    (
+                        _message_key(message, as_included=True)
+                        if key_cache is None
+                        else key_cache.key(message, as_included=True)
+                    )
+                    if _is_pass_exclusion(message)
+                    else ""
+                )
+            if window_key:
+                keys.append(window_key)
+                continue
         if index not in message_keys:
             message_keys[index] = (
-                _message_key(messages[index])
-                if key_cache is None
-                else key_cache.key(messages[index])
+                _message_key(message) if key_cache is None else key_cache.key(message)
             )
+        keys.append(message_keys[index])
     payload = [
         [[group["start_index"] - start, group["end_index"] - start] for group in groups],
-        [message_keys[index] for index in range(start, end + 1)],
+        keys,
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -627,10 +729,11 @@ def replay_match(
         if not message.additional_properties.get(EXCLUDED_KEY, False)
         and any(content.type == "text_reasoning" for content in message.contents)
     }
+    window_keys: dict[int, str] = {}
     for count in sorted({count for _, count in certificates}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
-            key = _source_key(messages, run, message_keys, key_cache)
+            key = _source_key(messages, run, message_keys, key_cache, window_keys)
             if key is None:
                 continue
             for certificate, excluded in certificates.get((key, count), []):
