@@ -20,7 +20,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import MESSAGE_COUNTED, annotate_token_counts, structural_counter
-from ._record_replay import _message_key, source_lineage  # pyright: ignore[reportPrivateUsage]
+from ._record_replay import source_lineage, window_message_key
 from ._shed import durable_message_id
 from ._toolsummary import (
     RECALL_TOOL_NAME,
@@ -122,7 +122,7 @@ class BackgroundRecords:
                 message = history[index]
                 tokens += included_token_count([message])
                 if messages:
-                    gap.update(bytes.fromhex(_message_key(message)))
+                    gap.update(bytes.fromhex(window_message_key(message)))
                 include_reasoning(message)
             if end > last + 1:
                 messages.append(Message("system", [], message_id="gap-" + gap.hexdigest()))

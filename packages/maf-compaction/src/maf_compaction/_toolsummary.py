@@ -90,7 +90,12 @@ from ._preserve import (
     set_preserved,
     stands_in,
 )
-from ._record_replay import LINEAGE_KEY, MessageKeyCache, source_lineage
+from ._record_replay import (
+    LINEAGE_KEY,
+    RECORD_ANCHOR_EXCLUDE_REASON,
+    MessageKeyCache,
+    source_lineage,
+)
 from ._request import RECALL_PROMPT_KEY, request_tools
 from ._summary_links import has_summary_links
 from ._tool_result import (
@@ -2912,7 +2917,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if is_preserved(message):
                     set_preserved(message, preserved=False)
                 changed = (
-                    set_excluded(message, excluded=True, reason="tool_summary_anchored") or changed
+                    set_excluded(message, excluded=True, reason=RECORD_ANCHOR_EXCLUDE_REASON)
+                    or changed
                 )
         self._uncovered = uncovered
         self._unreachable = unreachable

@@ -399,10 +399,10 @@ async def test_cache_refresh_fingerprints_messages_once_and_windows_once_per_siz
         source_calls += 1
         return source_key(*args, **kwargs)
 
-    def message(value: Message) -> str:
+    def message(value: Message, **kwargs: Any) -> str:
         nonlocal message_calls
         message_calls += 1
-        return message_key(value)
+        return message_key(value, **kwargs)
 
     monkeypatch.setattr(composed_module, "source_key", source)
     monkeypatch.setattr(replay_module, "_message_key", message)
