@@ -3,10 +3,12 @@
 import asyncio
 import logging
 from contextlib import suppress
+from contextvars import ContextVar
 from copy import deepcopy
 
 import pytest
 from agent_framework import (
+    AgentMiddleware,
     AgentSession,
     CharacterEstimatorTokenizer,
     ChatResponse,
@@ -18,6 +20,7 @@ from agent_framework import (
     tool,
 )
 from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups
+from agent_framework.observability import OBSERVABILITY_SETTINGS
 from test_record_budget import (
     _VALUE,
     _history,
@@ -44,7 +47,6 @@ from maf_compaction import (
 from maf_compaction import _composed as composed_module
 from maf_compaction._composed import _RecordAnswer, _RecordMergeWork, _transcript
 from maf_compaction._preserve import set_preserved
-from maf_compaction._record_diagnostics import record_merge_observer
 from maf_compaction._toolsummary import (
     _distinctive_tokens,
     consolidatable_record_groups,
@@ -124,12 +126,12 @@ async def test_long_intervening_history_becomes_one_gap_and_is_revalidated(chang
 
 
 async def test_merge_observer_separates_preparation_and_application():
-    strategy, work, messages = await prepared()
     events = []
     with observe_record_merges(
         lambda phase, event, details: events.append((phase, event, details)),
         tracked_values=_values(0),
     ):
+        strategy, work, messages = await prepared()
         await work.start(tool_reply())
         await running(work)
         assert ("background", "answer_prepared") in [(p, e) for p, e, _ in events]
@@ -147,13 +149,12 @@ async def test_merge_observer_separates_preparation_and_application():
 
 
 async def test_observer_failure_preserves_merge_journal_and_worker_cleanup():
-    strategy, work, messages = await prepared()
-
     def fail(phase, event, details):
         if (phase, event) in {("apply", "answer_accepted"), ("background", "worker_closed")}:
             raise RuntimeError("observer failure")
 
     with observe_record_merges(fail):
+        strategy, work, messages = await prepared()
         await work.start(tool_reply())
         await running(work)
         assert await strategy(messages)
@@ -528,6 +529,33 @@ async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
     await work.close()
 
 
+async def test_snapshot_failure_reaches_run_observer_from_reader_task(monkeypatch):
+    tag = ContextVar("conversation", default="reader")
+    seen = []
+
+    def fail(*args):
+        seen.append(("snapshot", tag.get()))
+        tag.set("snapshot")
+        raise ValueError("snapshot failed")
+
+    def observe(phase, event, details):
+        if phase == "background":
+            seen.append((event, tag.get()))
+
+    token = tag.set("run")
+    try:
+        with observe_record_merges(observe):
+            _, work, _ = await prepared()
+    finally:
+        tag.reset(token)
+    monkeypatch.setattr(composed_module, "counted_history", fail)
+    await asyncio.create_task(work.start(tool_reply()))
+    assert seen == [("snapshot", "run"), ("worker_failed", "run")]
+    assert not work.defer_merges
+    assert work._task is None
+    await work.close()
+
+
 async def test_a_worker_stopped_at_its_deadline_says_so(caplog):
     strategy, work, _ = await prepared()
     strategy.chain_seconds = 1e-9
@@ -560,7 +588,7 @@ async def test_cancelled_lossy_answer_cannot_start_child_requests():
     assert not work._ready
 
 
-def background_harness(registry, model, lookup):
+def background_harness(registry, model, lookup, *outer_middleware):
     provider = SessionCompactionProvider(registry, tokenizer=TOKENIZER, before=False)
     agent = create_harness_agent(
         model,
@@ -571,6 +599,7 @@ def background_harness(registry, model, lookup):
         disable_tool_auto_approval=True,
         context_providers=[provider],
         middleware=[
+            *outer_middleware,
             make_session_record_merge_middleware(registry),
             SessionToolResultRecallMiddleware(registry, compact_before=True),
         ],
@@ -601,6 +630,87 @@ class ToolModel(Model):
             return response
 
         return answer()
+
+
+@pytest.mark.parametrize("early_close", [False, True])
+async def test_streamed_worker_uses_run_context(caplog, monkeypatch, early_close):
+    if early_close:
+        # Framework telemetry resets its own tokens in the first reader's task.
+        monkeypatch.setattr(OBSERVABILITY_SETTINGS, "enable_instrumentation", False)
+    tag = ContextVar("conversation", default="reader")
+    background, reader_events, requests, close_logs = [], [], [], []
+
+    def observe(phase, event, details):
+        if phase == "background":
+            background.append((event, tag.get(), details))
+
+    class BindRun(AgentMiddleware):
+        async def process(self, context, call_next):
+            token = tag.set("run")
+            try:
+                with observe_record_merges(observe):
+                    await call_next()
+            finally:
+                tag.reset(token)
+
+    class Summarizer(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            requests.append(tag.get())
+            return await super().get_response(messages, **kwargs)
+
+    def build():
+        stack = build_stack(Summarizer(), budget=100_000)
+        stack.strategy.record_budget_share = 0.001
+        return stack
+
+    def collect_close_log(record):
+        if record.getMessage().startswith("Background record merge closed"):
+            close_logs.append(tag.get())
+        return True
+
+    registry = SessionCompactionRegistry(build)
+    session = AgentSession()
+    session.state["in_memory"] = {"messages": _history(4)}
+
+    @tool
+    async def lookup() -> str:
+        """Look up one fact."""
+        await running(registry._merge_work[session.session_id][1])
+        return "lookup complete"
+
+    agent = background_harness(registry, ToolModel(), lookup, BindRun())
+    stream = agent.run("Continue.", session=session, stream=True)
+
+    async def close():
+        tag.set("closer")
+        await stream.close()
+        assert tag.get() == "closer"
+
+    with (
+        caplog.at_level(logging.INFO, logger="maf_compaction"),
+        caplog.filtering(collect_close_log),
+        observe_record_merges(lambda p, e, d: reader_events.append(p)),
+    ):
+        async with asyncio.timeout(10), stream:
+            if early_close:
+                async for update in stream:
+                    if any(c.type == "function_result" for c in update.contents):
+                        break
+                await asyncio.create_task(close())
+            else:
+                assert (await stream.get_final_response()).text == "answer"
+            assert tag.get() == "reader"
+
+    assert requests == ["run"]
+    assert {"worker_started", "answer_prepared"} <= {e for e, _, _ in background}
+    assert all(value == "run" for _, value, _ in background)
+    assert "background" not in reader_events
+    if early_close:
+        assert background[-1] == ("worker_closed", "run", {"pending": 0, "discarded": 1})
+        assert close_logs == ["run"]
+    else:
+        assert "apply" in reader_events
+    assert not registry._merge_work
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -917,28 +1027,27 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
     tokenizer = BatchTokenizer()
     model = _Summarizer()
     strategy = _strategy(model, budget=100_000, share=share, cap=None, tokenizer=tokenizer)
-    work = _RecordMergeWork()
-    work.bind(strategy, None)
-    messages = _history(30)
-    await strategy(messages)
-    if share is None:
-        work.remember(messages, 50)
     requests: list[str] = []
 
     def observe(phase: str, event: str, counts: object) -> None:
         if event == "request_prepared":
             requests.append(phase)
 
-    token = record_merge_observer.set(observe)
-    try:
-        await work.start(tool_reply())
-        await asyncio.wait_for(entered.wait(), 2)
-        # The search runs beside the pass on its own state: the pass is not held up waiting for
-        # it, and leaves the merging to it.
-        await asyncio.wait_for(strategy(messages), 2)
-    finally:
-        await work.close()
-        record_merge_observer.reset(token)
+    with observe_record_merges(observe):
+        work = _RecordMergeWork()
+        work.bind(strategy, None)
+        messages = _history(30)
+        await strategy(messages)
+        if share is None:
+            work.remember(messages, 50)
+        try:
+            await work.start(tool_reply())
+            await asyncio.wait_for(entered.wait(), 2)
+            # The search runs beside the pass on its own state: the pass is not held up waiting for
+            # it, and leaves the merging to it.
+            await asyncio.wait_for(strategy(messages), 2)
+        finally:
+            await work.close()
     assert set(requests) <= {"background"}
     assert len(model.requests) == len(requests)
 
