@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 import pytest
 from agent_framework import CharacterEstimatorTokenizer, Message
@@ -186,10 +187,11 @@ async def test_parallel_batches_are_checked_for_answer_room_once(
     strategy.user_turns.summary_limiter = SummaryRequestLimiter(
         _LIMITER_TOKENS, max_parallel_summary_requests=_PARALLEL
     )
-    checked: list[tuple[object, int]] = []
+    checked: list[tuple[Any, int]] = []
     check = strategy._merge_answer_overflow
 
-    def counted(*args: object) -> object:
+    # Any: the check took the history and the batch's groups before it took the transcript.
+    def counted(*args: Any) -> Any:
         first, second = args
         if isinstance(first, str):
             checked.append((first, second))
