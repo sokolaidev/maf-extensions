@@ -722,6 +722,13 @@ RECORD_ANSWER_BUDGET_SHARE: Final[float] = 0.8
 #: and record text, dense with identifiers and numbers, runs below the prose rate of 0.75.
 _RECORD_WORDS_PER_TOKEN: Final[float] = 0.6
 
+#: Why a merge batch is not asked when its required values cannot fit the answer budget.
+_SKIP_NO_ANSWER_ROOM: Final[str] = "required_values_over_budget"
+
+
+def _record_answer_tokens(max_tokens: int) -> int:
+    return int(max_tokens * RECORD_ANSWER_BUDGET_SHARE)
+
 
 def record_answer_budget(max_tokens: int) -> str:
     """Return the sentence that tells the summarizer how long its record may be.
@@ -738,7 +745,7 @@ def record_answer_budget(max_tokens: int) -> str:
     Returns:
         A sentence to append to a merge or rewrite prompt.
     """
-    budget = int(max_tokens * RECORD_ANSWER_BUDGET_SHARE)
+    budget = _record_answer_tokens(max_tokens)
     return (
         f" Your reply is cut off after {max_tokens:,} tokens, and a reply that is cut off is "
         f"discarded whole. Keep the record within about {budget:,} tokens, roughly "
@@ -1041,7 +1048,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             the admission deadline. In-flight requests may finish after it. Earlier user-turn
             summaries and local fallback work are outside it.
         record_merge_split_depth: Maximum recursive halvings of a lossy or truncated merge
-            batch, default two. Zero disables smaller retries. Every child holds at least
+            batch, or of one not asked because its required values cannot fit the answer
+            budget, default two. Zero disables smaller retries. Every child holds at least
             two records and shares the chain deadline.
         run_past_limit_factor: How many times the request cap a run of records may count and
             still be searched over longer runs from the same start. The default, one, ends the
@@ -1866,11 +1874,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def record_merges_skipped(self) -> int:
-        """Merges of the records not asked for, because a merge of the same records was refused.
+        """Merges not asked for after a refusal or for lack of answer room for required values.
 
-        Step a skipped for :meth:`_merge_records`'s reason, per pass. On the live path the store
-        pass skips what the copies pass refused, so :attr:`record_merges_rejected` counts each
-        refusal once. ``RECMERGESKIP`` in the flags.
+        Step a skipped for :meth:`_merge_records`'s reason, per pass, or because even the
+        cheapest values a batch must keep exceed the answer budget of its capped request; see
+        :meth:`_merge_batch`. On the live path the store pass skips what the copies pass
+        refused, so :attr:`record_merges_rejected` counts each refusal once. ``RECMERGESKIP``
+        in the flags.
         """
         return self._record_merges_skipped
 
@@ -3837,11 +3847,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if failed:
                     return changed, failed
             return changed, None
+        # A batch not asked here reaches ``_merge_batch`` without an answer, to be split there.
+        overflows = [
+            await off_loop(self._merge_answer_overflow, messages, groups)
+            for groups, _, _ in batches
+        ]
         tasks = [
             asyncio.create_task(self._ask(prompt=prompt, transcript=body))
-            if (body, len(groups), _digest(prompt)) not in self._refused_merges
+            if (body, len(groups), _digest(prompt)) not in self._refused_merges and overflow is None
             else None
-            for groups, body, _ in batches
+            for (groups, body, _), overflow in zip(batches, overflows, strict=True)
         ]
         active = [task for task in tasks if task is not None]
         changed = False
@@ -3906,7 +3921,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     ) -> tuple[bool, _MergeStop | None]:
         """Merge a batch or its smaller halves; return progress and any reason to stop asking.
 
-        Unfinished smaller batches are retained independently of their parent.
+        A batch whose required values cannot fit the answer budget is not asked, and is split
+        as a truncated answer would have it split. Unfinished smaller batches are retained
+        independently of their parent.
         """
         if answer is None:
             self._check_chain_deadline()
@@ -3916,9 +3933,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_event("batch_skipped", reason="sources_not_durable")
             return False, None
         key = transcript, len(groups), _digest(self.merge_prompt)
+        overflow = None
         if key in self._refused_merges:
             self._merge_event("batch_skipped", reason="previous_refusal")
             self._record_merges_skipped += 1
+        elif answer is None and (
+            overflow := await off_loop(self._merge_answer_overflow, messages, groups)
+        ):
+            self._merge_event("batch_skipped", reason=_SKIP_NO_ANSWER_ROOM)
+            self._record_merges_skipped += 1
+            logger.info(
+                "Compaction did not ask to merge a batch of %d records: its required values "
+                "cannot fit the answer budget; values_total=%d required=%d required_tokens=%d "
+                "answer_tokens=%d.",
+                len(groups),
+                *overflow,
+            )
         else:
             outcome = await self._consolidate(
                 messages,
@@ -3940,7 +3970,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if outcome in {"lossy", "incomplete"}:
                 self._split_merges.add(key)
         if (
-            key not in self._split_merges
+            (overflow is None and key not in self._split_merges)
             or depth >= self.record_merge_split_depth
             or len(groups) < 3
         ):
@@ -4082,6 +4112,25 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
             return None
         return cap
+
+    def _merge_answer_overflow(
+        self, messages: list[Message], groups: list[dict[str, Any]]
+    ) -> tuple[int, int, int, int] | None:
+        """Return values, required values, their fewest tokens and the answer budget, if over it.
+
+        Each required value is counted alone, cheapest first, as an unreachable record target is:
+        a lower bound on any answer that keeps them, so only a batch no answer can save is not
+        asked. None for a request without an output cap.
+        """
+        cap = self._record_output_cap()
+        if cap is None:
+            return None
+        self._sync_merge_coverage()
+        values = _record_values(record_bodies(messages, groups))
+        required = self._merge_coverage.required(len(values))
+        tokens = sum(sorted(map(self.tokenizer.count_tokens, values))[:required])
+        budget = _record_answer_tokens(cap)
+        return (len(values), required, tokens, budget) if tokens > budget else None
 
     async def _merge_records(
         self, messages: list[Message], start: _ChainStart | None = None
