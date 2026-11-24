@@ -893,10 +893,10 @@ async def test_cached_worker_is_discarded_when_its_session_or_stack_changes(chan
     class Waiting(_Summarizer):
         async def get_response(self, messages, **kwargs):
             entered.set()
-            try:
+            # A provider can still return an answer after its worker loses the session.
+            with suppress(asyncio.CancelledError):
                 await asyncio.Future()
-            except asyncio.CancelledError:
-                return await super().get_response(messages, **kwargs)
+            return await super().get_response(messages, **kwargs)
 
     def build():
         stack = build_stack(Waiting(), budget=100_000)
@@ -943,10 +943,9 @@ async def test_retained_parallel_wave_keeps_its_answer_when_a_sibling_fails(endi
             requests += 1
             if requests == 1:
                 entered.set()
-                try:
+                # Exercise a provider that returns its answer even after timeout cancellation.
+                with suppress(asyncio.CancelledError):
                     await release.wait()
-                except asyncio.CancelledError:
-                    pass
                 if ending == "provider_error":
                     raise RuntimeError("summary unavailable")
             response = await super().get_response(messages, **kwargs)

@@ -1359,7 +1359,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if self._merge_coverage.adaptive and self._merge_sweep_complete:
                     self._completed_merge_sweep = self._merge_sweep_key(messages)
         except _RunFinished:
-            pass
+            # Closing admission is expected. Prepared answers still belong to the foreground.
+            return
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             self._merge_event("deadline")
