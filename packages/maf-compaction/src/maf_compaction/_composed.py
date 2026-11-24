@@ -604,6 +604,10 @@ DEFAULT_RECORD_MERGE_PROMPT: Final[str] = (
 )
 
 
+def _rewrite_percent(attempt: int) -> int:
+    return round(100 * _HARDER_RATIO**attempt)
+
+
 def harder_record_prompt(attempt: int) -> str:
     """Return what the summarizer is asked on the ``attempt``-th rewrite of the record.
 
@@ -618,7 +622,7 @@ def harder_record_prompt(attempt: int) -> str:
     Returns:
         The system prompt.
     """
-    percent = round(100 * _HARDER_RATIO**attempt)
+    percent = _rewrite_percent(attempt)
     return (
         "Rewrite the compaction record below so that it is at most about "
         f"{percent}% of its current length. Keep every identifier, code, number, date, name and "
@@ -731,6 +735,10 @@ def _same_tool_segment_ends(tools: list[frozenset[str]]) -> list[int]:
 
 def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
+
+
+def _record_values(bodies: list[str]) -> set[str]:
+    return {value for body in bodies for value in _distinctive_tokens(body)}
 
 
 def _has_prefix(ordered: list[str], prefix: str) -> bool:
@@ -966,7 +974,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             in place of ``summary_options["max_tokens"]``, which otherwise bounds both the
             answer and the request. Set it for a summarizer whose merges compress, for example
             twice the output cap. Never more than ``max_summary_input_tokens``.
-        record_merge_max_records: Most records one merge batch may hold, at least two.
+        record_merge_max_records: Most records one merge or rewrite request may hold, at least two.
             ``None``, the default, bounds a batch by its request tokens alone. A batch of many
             small records fits the request limit yet holds more values than one answer keeps,
             so it is refused and split; the cap asks for the batches the summarizer can keep.
@@ -1771,7 +1779,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def record_rewrites_skipped(self) -> int:
-        """Harder rewrite attempts not made, because the same record was already refused at them.
+        """Harder rewrite attempts skipped after a refusal or for lack of room for required values.
 
         Step c, per attempt, as :attr:`record_rewrites` is: an attempt skipped here is neither
         tried nor refused, and costs nothing. See :meth:`_rewrite_records` for which attempts a
@@ -4156,7 +4164,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     async def _rewrite_records(self, messages: list[Message], start: _ChainStart) -> bool:
         """Step c: rewrite the record harder, up to :attr:`harder_attempts` times on this pass.
 
-        The oldest whole records that fit the request budget are handed over. With several,
+        The oldest whole records within both request limits are handed over. With several,
         a rewrite is a harder merge, and the prompt says so. Each attempt is judged against the
         records as they stand when it is made, so a kept attempt raises the bar for the next.
         A record whose result this model call carried in is not handed over, as step a does
@@ -4200,12 +4208,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._check_chain_deadline()
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            groups = await off_loop(self._bounded_records, messages, prompt)
+            groups, bodies = await off_loop(self._bounded_records, messages, prompt)
             if not groups:
                 continue
-            transcript = await off_loop(_transcript, messages, groups)
+            transcript = await off_loop(_numbered_records, bodies)
             key = (transcript, len(groups), policy)
-            if self._refused_rewrites.get(key, 0) >= attempt:
+            if self._refused_rewrites.get(key, 0) >= attempt or not await off_loop(
+                self._rewrite_target_fits, bodies, attempt, prompt
+            ):
                 self._record_rewrites_skipped += 1
                 continue
             self._record_rewrites += 1
@@ -4227,24 +4237,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     def _bounded_records(
-        self,
-        messages: list[Message],
-        prompt: str,
-        *,
-        min_items: int = 1,
-        groups: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        if groups is None:
-            groups = consolidatable_record_groups(messages)
+        self, messages: list[Message], prompt: str
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        groups = consolidatable_record_groups(messages)[: self.record_merge_max_records]
         bodies = record_bodies(messages, groups)
-        return bounded_prefix(
+        batch = bounded_prefix(
             groups,
-            render=lambda prefix: _transcript(messages, prefix, bodies=bodies[: len(prefix)]),
+            render=lambda prefix: _numbered_records(bodies[: len(prefix)]),
             prompt=prompt,
             tokenizer=self.tokenizer,
             limit=self._record_request_limit(),
-            min_items=min_items,
         )
+        return batch, bodies[: len(batch)]
+
+    def _rewrite_target_fits(self, bodies: list[str], attempt: int, prompt: str) -> bool:
+        """A built-in multi-record target must fit the shortest required distinct values."""
+        if len(bodies) == 1 or prompt != versioned_prompt(
+            harder_record_prompt(attempt), self.user_turns.prompt_version
+        ):
+            return True
+        self._sync_merge_coverage()
+        values = _record_values(bodies)
+        required = self._merge_coverage.required(len(values))
+        lengths = sorted(map(len, values))
+        minimum = sum(lengths[:required]) + max(0, required - 1)
+        return 100 * minimum <= _rewrite_percent(attempt) * sum(map(len, bodies))
 
     async def _consolidate(
         self,
@@ -4471,9 +4488,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _value_coverage(self, bodies: list[str], text: str) -> tuple[int, int, int]:
         """Return distinct source values, matched values and the required match count."""
         self._sync_merge_coverage()
-        values: set[str] = set()
-        for body in bodies:
-            values |= _distinctive_tokens(body)
+        values = _record_values(bodies)
         quoted = set(_record_tokens(text, fold_case=False))
         return (
             len(values),
