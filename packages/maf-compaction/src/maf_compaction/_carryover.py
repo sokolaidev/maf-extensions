@@ -473,10 +473,7 @@ def _removals_fit(view: list[Message], messages: list[Message], excluded: set[in
             if group is None or group["kind"] not in {"tool_call", "assistant_text"}:
                 return False
             start, end = group["start_index"], group["end_index"]
-            if previous_end is not None and (
-                start <= previous_end
-                or any(i not in excluded for i in range(previous_end + 1, start))
-            ):
+            if previous_end is not None and start <= previous_end:
                 return False
             previous_end = end
             text = AnchoredCompactionStrategy._note_for(history, group)  # pyright: ignore[reportPrivateUsage]
