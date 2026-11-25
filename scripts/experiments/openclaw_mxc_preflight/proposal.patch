@@ -815,10 +815,11 @@ diff --git a/extensions/mxc/test/readiness.test.ts b/extensions/mxc/test/readine
      );
    });
  
-@@ -179,25 +173,3 @@
+@@ -178,25 +172,3 @@
+     ).toThrow(/host check failed: probe ran without the pinned native environment/u);
    });
  });
- 
+-
 -describe("warnMxcHostPrepIfNeeded", () => {
 -  test("is a no-op on non-Windows platforms", () => {
 -    setPlatform("linux");
@@ -840,4 +841,3 @@ diff --git a/extensions/mxc/test/readiness.test.ts b/extensions/mxc/test/readine
 -    expect(warn.mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
 -  });
 -});
--

@@ -46,6 +46,7 @@ jobs:
           "$RUNNER_TEMP/proof-tools/node_modules/.bin/oxfmt" --write $(git diff --name-only | grep -v pnpm-lock.yaml)
           mkdir -p "$RUNNER_TEMP/focused/src" "$RUNNER_TEMP/focused/test"
           cp extensions/mxc/src/{mxc-spawn-launcher.mjs,readiness.ts,windows-env.ts,plugin-root.ts} "$RUNNER_TEMP/focused/src/"
+          cp extensions/mxc/{package.json,openclaw.plugin.json} "$RUNNER_TEMP/focused/"
           cp extensions/mxc/test/{mxc-spawn-launcher.test.ts,readiness.test.ts} "$RUNNER_TEMP/focused/test/"
           ln -s "$RUNNER_TEMP/proof-tools/node_modules" "$RUNNER_TEMP/focused/node_modules"
           printf '%s\n' 'export default { test: { include: ["test/*.test.ts"], maxWorkers: 1 } };' > "$RUNNER_TEMP/focused/vitest.config.mjs"
