@@ -74,8 +74,9 @@ from ._artifacts import (
     MARKER_ID_PREFIX,
     SHED_NOTES,
     TOOL_CALL,
-    exclude_compaction_echoes,
+    coalesce_shed_notes,
     is_marker,
+    normalize_compaction_artifacts,
 )
 from ._media import annotate_token_counts
 from ._offload import off_loop
@@ -339,7 +340,7 @@ class AnchoredCompactionStrategy:
         """
         if not messages:
             return False
-        echoes = exclude_compaction_echoes(messages)
+        normalized = normalize_compaction_artifacts(messages)
         repaired = repair_compacted_items(
             messages, lambda text: _SHORTENED.search(text) is not None
         )
@@ -349,7 +350,7 @@ class AnchoredCompactionStrategy:
         groups = group_messages(messages)
         band = self._middle_band(messages, groups)
         if not band:
-            return repaired or echoes
+            return repaired or normalized
 
         # Shortening results first is what keeps the conversation legible: the model still
         # sees that each call happened and roughly what it returned. Only when that is not
@@ -361,7 +362,7 @@ class AnchoredCompactionStrategy:
             # exists. Without this the ceiling check below reads the original sizes and sheds
             # groups that were already small enough.
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
-        return self.shed_to(messages, ceiling=ceiling) or changed or echoes
+        return self.shed_to(messages, ceiling=ceiling) or changed or normalized
 
     def shed_to(self, messages: list[Message], *, ceiling: int) -> bool:
         """Remove whole band groups to fit ``ceiling``, preserving anchors and marked messages.
@@ -369,9 +370,9 @@ class AnchoredCompactionStrategy:
         Unlike :meth:`compact_to`, this never rewrites a tool result in place.
         The prompt may still exceed the ceiling when nothing removable remains.
         """
+        changed = normalize_compaction_artifacts(messages)
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = exclude_compaction_echoes(messages)
         # Shedding is repeated because each pass adds notes of its own, which can leave the
         # prompt over the ceiling it just tried to meet. It ends: a pass that sheds excludes at
         # least one more group, excluded groups and notes are never shed, and the loop stops at
@@ -710,7 +711,8 @@ class AnchoredCompactionStrategy:
                 notes.append((group, note))
 
         self._insert_notes(messages, list(reversed(notes)))
-        if notes:
+        merged = changed and coalesce_shed_notes(messages)
+        if notes or merged:
             # Each note is itself a message with a cost. Counting it only on the next call
             # would let this one stop just above its ceiling and look as though it had met
             # it -- and on the following turn the strategy would shed one more group,
@@ -778,7 +780,10 @@ class AnchoredCompactionStrategy:
             True if any group was shed or had its note put back.
         """
         if not message_ids:
-            return False
+            if not coalesce_shed_notes(messages):
+                return False
+            annotate_token_counts(messages, tokenizer=self.tokenizer)
+            return True
         annotate_message_groups(messages)
         spans = group_messages(messages)
         removable = removable_spans(messages, spans)
@@ -820,6 +825,7 @@ class AnchoredCompactionStrategy:
             if (note := self._note_for(messages, group)) is not None:
                 notes.append((group, note))
         self._insert_notes(messages, list(reversed(notes)))
+        changed = coalesce_shed_notes(messages) or changed
         if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
