@@ -23,7 +23,10 @@ def tracker(body="", **extra):
 
 def observe(issue, signals, *, lane="scan", active=True, content="Evidence"):
     payload = issues.update(issue, "antivirus", lane, content, set(signals), active=active)
-    return tracker(**payload) if issue is None else issue | (payload or {})
+    if issue is None:
+        assert payload is not None
+        return tracker(**payload)
+    return issue | (payload or {})
 
 
 @pytest.mark.parametrize("reason", ["not_planned", "completed"])
