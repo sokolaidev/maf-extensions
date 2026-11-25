@@ -1,0 +1,77 @@
+name: Temporary OpenClaw MXC preflight proof
+on:
+  push:
+    branches: [antsok-openclaw-mxc-preflight-proof-2104]
+permissions:
+  contents: read
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.1
+      - name: Fetch pinned migration without executing its install hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/openclaw" "$RUNNER_TEMP/evidence"
+          curl --fail --location --retry 2 https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -o "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
+          cd "$RUNNER_TEMP/openclaw"
+          git init -q
+          git add extensions/mxc pnpm-lock.yaml
+          git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs --baseline | tee "$RUNNER_TEMP/evidence/baseline.md"
+          git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
+          git apply "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
+      - name: Production launcher boundary proof with inert SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/openclaw"
+          node --check extensions/mxc/src/mxc-spawn-launcher.mjs
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/proof.md"
+      - name: Format and run affected launcher and readiness suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/proof-tools" --ignore-scripts --no-audit --no-fund vitest@5.0.3 zod@4.6.7 oxfmt@0.72.0 pnpm@12.15.0
+          cd "$RUNNER_TEMP/openclaw"
+          "$RUNNER_TEMP/proof-tools/node_modules/.bin/oxfmt" --write $(git diff --name-only | grep -v pnpm-lock.yaml)
+          mkdir -p "$RUNNER_TEMP/focused/src" "$RUNNER_TEMP/focused/test"
+          cp extensions/mxc/src/{mxc-spawn-launcher.mjs,readiness.ts,windows-env.ts,plugin-root.ts} "$RUNNER_TEMP/focused/src/"
+          cp extensions/mxc/test/{mxc-spawn-launcher.test.ts,readiness.test.ts} "$RUNNER_TEMP/focused/test/"
+          ln -s "$RUNNER_TEMP/proof-tools/node_modules" "$RUNNER_TEMP/focused/node_modules"
+          printf '%s\n' 'export default { test: { include: ["test/*.test.ts"], maxWorkers: 1 } };' > "$RUNNER_TEMP/focused/vitest.config.mjs"
+          cd "$RUNNER_TEMP/focused"
+          "$RUNNER_TEMP/proof-tools/node_modules/.bin/vitest" run --config vitest.config.mjs | tee "$RUNNER_TEMP/evidence/focused-tests.txt"
+      - name: Regenerate dependency lock with install scripts disabled
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/openclaw"
+          "$RUNNER_TEMP/proof-tools/node_modules/.bin/pnpm" install --lockfile-only --ignore-scripts --no-frozen-lockfile
+      - name: Retain formatted patch and proof
+        if: always()
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/openclaw"
+          git diff --check
+          git diff -- extensions/mxc pnpm-lock.yaml > "$RUNNER_TEMP/evidence/proposal.patch"
+          sha256sum "$RUNNER_TEMP/evidence/proposal.patch"
+          git diff --stat
+          echo 'PATCH_BEGIN'
+          cat "$RUNNER_TEMP/evidence/proposal.patch"
+          echo 'PATCH_END'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: openclaw-mxc-preflight-proof
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
