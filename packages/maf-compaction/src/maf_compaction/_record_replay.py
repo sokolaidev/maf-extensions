@@ -21,7 +21,7 @@ from agent_framework._compaction import (
 
 from ._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
 from ._anchored import split_combined_notes
-from ._artifacts import is_marker
+from ._artifacts import USER_FOLD_EXCLUDE_REASON, USER_SUMMARY_EXCLUDE_REASON, is_marker
 from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
 from ._shed import ShedGroupKeys, durable_message_id, unique_shed_groups
@@ -71,6 +71,12 @@ RECORD_ANCHOR_EXCLUDE_REASON: Final[str] = "tool_summary_anchored"
 #: over-budget shed. Between a batch's records they are fingerprinted as if included, since a
 #: record's answer does not depend on them and the next pass may mark them differently.
 PASS_EXCLUDE_REASONS: Final = frozenset({RECORD_ANCHOR_EXCLUDE_REASON, SHED_EXCLUDE_REASON})
+
+#: The user phase's own exclusions: a turn it summarised and a summary a fold superseded. Read
+#: as included only in a background snapshot's gaps (:func:`window_message_key` with ``users``).
+USER_PASS_EXCLUDE_REASONS: Final = frozenset(
+    {USER_SUMMARY_EXCLUDE_REASON, USER_FOLD_EXCLUDE_REASON}
+)
 
 
 @dataclass
@@ -611,27 +617,32 @@ def _message_key(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _is_pass_exclusion(message: Message) -> bool:
+def _is_pass_exclusion(message: Message, *, users: bool = False) -> bool:
     """Whether ``message`` is excluded for a pass's own reason (:data:`PASS_EXCLUDE_REASONS`).
 
+    With ``users``, the user phase's reasons (:data:`USER_PASS_EXCLUDE_REASONS`) count too.
     Never reasoning: replay authority over reasoning reads its inclusion, whoever excluded it.
     """
     properties = message.additional_properties
+    reason = properties.get(EXCLUDE_REASON_KEY)
     return (
         bool(properties.get(EXCLUDED_KEY, False))
-        and properties.get(EXCLUDE_REASON_KEY) in PASS_EXCLUDE_REASONS
+        and (reason in PASS_EXCLUDE_REASONS or (users and reason in USER_PASS_EXCLUDE_REASONS))
         and not any(content.type == "text_reasoning" for content in message.contents)
     )
 
 
-def window_message_key(message: Message) -> str:
+def window_message_key(message: Message, *, users: bool = False) -> str:
     """Fingerprint a message between a batch's records, a pass's own exclusion read as included.
 
     The one rule for both places that fingerprint those messages: a batch's source key and the
     gap a background snapshot collapses them into, so neither changes when a later pass covers or
-    sheds a tool round differently.
+    sheds a tool round differently. ``users`` also reads the user phase's exclusions as
+    included, for the gaps alone: the phase runs before a pass applies ready background answers,
+    after the worker snapshotted the list. A kept edit's key keeps reading them, so an edit is
+    not put back across a summary that has changed since.
     """
-    return _message_key(message, as_included=_is_pass_exclusion(message))
+    return _message_key(message, as_included=_is_pass_exclusion(message, users=users))
 
 
 def _reasoning_key(message: Message) -> str | None:

@@ -19,7 +19,7 @@ from agent_framework._compaction import (
     included_token_count,
 )
 
-from ._artifacts import is_marker
+from ._artifacts import is_marker, is_user_summary
 from ._media import MESSAGE_COUNTED, annotate_token_counts, structural_counter
 from ._record_replay import source_lineage, window_message_key
 from ._shed import durable_message_id
@@ -122,16 +122,17 @@ class BackgroundRecords:
             gap = hashlib.sha256()
             tokens = 0
             # A shed's note is not part of the gap, as it is not part of a batch's key: the list
-            # snapshotted after a pass's shed carries notes the next pass's copy does not yet.
+            # snapshotted after a pass's shed carries notes the next pass's copy does not yet. A
+            # user summary is not either: the next pass folds turns before it applies answers.
             hashed = 0
             for index in range(end - 1, last, -1):
                 message = history[index]
                 tokens += included_token_count([message])
-                if is_marker(message):
+                if is_marker(message) or is_user_summary(message):
                     continue
                 hashed += 1
                 if messages:
-                    gap.update(bytes.fromhex(window_message_key(message)))
+                    gap.update(bytes.fromhex(window_message_key(message, users=True)))
                 include_reasoning(message)
             if hashed:
                 messages.append(Message("system", [], message_id="gap-" + gap.hexdigest()))

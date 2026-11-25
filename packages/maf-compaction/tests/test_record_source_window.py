@@ -14,6 +14,7 @@ from agent_framework._compaction import (
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     annotate_message_groups,
+    group_messages,
     included_token_count,
 )
 from test_background_record_merges import running, tool_reply
@@ -22,13 +23,20 @@ from test_record_budget import (
     _history,
     _record_pair,
     _sent,
+    _size,
     _strategy,
     _Summarizer,
     _values,
 )
 
 from maf_compaction._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
-from maf_compaction._artifacts import MARKER_ID_PREFIX, SHED_NOTES, TOOL_CALL, is_marker
+from maf_compaction._artifacts import (
+    MARKER_ID_PREFIX,
+    SHED_NOTES,
+    TOOL_CALL,
+    is_marker,
+    is_user_summary,
+)
 from maf_compaction._background_records import BackgroundRecords
 from maf_compaction._composed import (
     DEFAULT_RECORD_MERGE_PROMPT,
@@ -416,3 +424,37 @@ async def test_two_dependent_edits_kept_under_the_key_with_notes_both_replay(mon
 
     assert cold._replay_record_edits(later)
     assert [str(m[1]) for m in _sent(later)] == merged
+
+
+def _user_turns_between_records() -> list[Message]:
+    """Two records with a long user turn and a reply between them, as a long conversation has."""
+    messages = _history(2)
+    messages[4:4] = [
+        Message("user", ["First facts. " * 100], message_id="middle0"),
+        Message("assistant", ["Intervening narration."], message_id="narration"),
+    ]
+    return messages
+
+
+async def test_a_background_answer_applies_after_the_user_phase_folds_a_turn_between_its_records():
+    """The worker snapshots the list before the next pass's user phase, which summarises a turn
+    between the records before that pass applies ready answers. The answer is applied (#2108)."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _user_turns_between_records()
+    _size(messages)
+    work.remember(messages, strategy._budget)
+    await work.start(tool_reply())
+    await running(work)
+    assert work._ready, "the premise: the worker prepared an answer"
+
+    group = next(
+        g for g in group_messages(messages) if messages[g["start_index"]].message_id == "middle0"
+    )
+    strategy.user_turns._replace(messages, [group], "Summary. " * 40, summary_id="summary_0")
+    assert any(is_user_summary(m) for m in messages), "the premise: the turn is summarised"
+
+    assert await work.apply_ready(messages)
+    assert strategy.records_merged == 1
+    await work.close()

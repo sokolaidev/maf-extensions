@@ -43,7 +43,13 @@ from agent_framework._compaction import (
     set_excluded,
 )
 
-from ._artifacts import normalize_compaction_artifacts
+from ._artifacts import (
+    USER_FOLD_EXCLUDE_REASON,
+    USER_SUMMARY_EXCLUDE_REASON,
+    is_user_summary,
+    normalize_compaction_artifacts,
+)
+from ._artifacts import USER_SUMMARY_MARKER as _USER_SUMMARY_MARKER
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._offload import off_loop
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
@@ -57,7 +63,6 @@ from ._summary_input import (
     versioned_prompt,
 )
 from ._summary_limiter import SummaryRateLimited, SummaryRequestLimiter
-from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator
@@ -263,7 +268,7 @@ DEFAULT_KEEP_TAIL_USER_TURNS: Final[int] = 1
 #: conversation cannot know; and together with the summary links it identifies earlier output,
 #: which decides whether there is new material to compact at all -- or, in the boundary modes,
 #: where the band begins.
-USER_SUMMARY_MARKER: Final[str] = "[earlier turns in this conversation, compacted]"
+USER_SUMMARY_MARKER: Final[str] = _USER_SUMMARY_MARKER
 
 #: Prefix of the ``message_id`` given to every summary this strategy inserts.
 #:
@@ -281,12 +286,12 @@ FOLD_ID_PREFIX: Final[str] = f"{SUMMARY_ID_PREFIX}fold_"
 #:
 #: Named after the framework's own ``"summarized"``, and distinct from it, so a conversation
 #: read back says which of the two strategies claimed a message.
-EXCLUDE_REASON: Final[str] = "user_turn_summarized"
+EXCLUDE_REASON: Final[str] = USER_SUMMARY_EXCLUDE_REASON
 
 #: Reason recorded on the standing summaries a fold supersedes, distinct from
 #: :data:`EXCLUDE_REASON` so a conversation read back says whether a message was a turn the
 #: strategy summarised or a summary it folded.
-FOLD_EXCLUDE_REASON: Final[str] = "user_summaries_folded"
+FOLD_EXCLUDE_REASON: Final[str] = USER_FOLD_EXCLUDE_REASON
 
 #: The exclusions a summary of this strategy's stands in for, which replay keeps paired with it.
 _SUPERSEDED_REASONS: Final[frozenset[str]] = frozenset({EXCLUDE_REASON, FOLD_EXCLUDE_REASON})
@@ -367,11 +372,7 @@ def _is_summary(message: Message) -> bool:
 
     Hosts must preserve the links through storage and keep them separate from user text.
     """
-    return (
-        message.role == "user"
-        and has_summary_links(message)
-        and (message.text or "").startswith(USER_SUMMARY_MARKER)
-    )
+    return is_user_summary(message)
 
 
 def _is_standing_summary(message: Message) -> bool:
