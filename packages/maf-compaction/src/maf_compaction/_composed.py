@@ -498,10 +498,11 @@ class _RecordMergeWork:
             self._worker = None
             self._task = None
             if worker is not None:
-                if worker._background_requests and worker._background_requests.closed:  # pyright: ignore[reportPrivateUsage]
-                    # A late answer may have arrived while the first answers were being applied.
+                # The worker can publish its last answers while the foreground applies the first.
+                if self._ready:
                     tail, self._ready = self._ready, []
                     changed = await strategy._apply_record_answers(messages, tail) or changed  # pyright: ignore[reportPrivateUsage]
+                if worker._background_requests and worker._background_requests.closed:  # pyright: ignore[reportPrivateUsage]
                     self.defer_merges = False
                 changed = (
                     await strategy._apply_completed_merge_sweep(  # pyright: ignore[reportPrivateUsage]

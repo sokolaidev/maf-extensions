@@ -1,5 +1,6 @@
 """A background merge answer that is ready when the run ends is applied, not asked again."""
 
+import asyncio
 import json
 import logging
 from collections import Counter
@@ -49,6 +50,40 @@ async def test_a_reply_without_tool_calls_keeps_what_is_ready_for_the_next_pass(
     assert await work.apply_ready(messages)
     assert strategy.records_merged == 1
     await work.close()
+
+
+async def test_worker_finishing_during_application_commits_both_batches(monkeypatch):
+    second_request = asyncio.Event()
+    applying = asyncio.Event()
+
+    class Summarizer(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            if len(self.merges) == 1:
+                second_request.set()
+                await applying.wait()
+            return await super().get_response(messages, **kwargs)
+
+    model = Summarizer()
+    strategy, work, messages = await prepared(model)
+    strategy.record_merge_max_records = 2
+    try:
+        await work.start(tool_reply())
+        worker = running(work)
+        await asyncio.wait_for(second_request.wait(), timeout=10)
+        assert len(work._ready) == 1
+        apply = strategy._apply_record_answers
+
+        async def apply_after_worker_finishes(history, answers):
+            applying.set()
+            await worker
+            return await apply(history, answers)
+
+        monkeypatch.setattr(strategy, "_apply_record_answers", apply_after_worker_finishes)
+        assert await work.apply_ready(messages)
+        assert strategy.records_merged == len(model.merges) == 2
+        assert not work._ready
+    finally:
+        await work.close()
 
 
 async def test_closing_with_work_unapplied_says_so_in_the_log(caplog):
