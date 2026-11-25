@@ -2424,6 +2424,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         *,
         replay: bool = False,
         keys: MessageKeyCache | None = None,
+        lineage: str | None = None,
     ) -> None:
         """Put one record carrying ``text`` in place of the records ``groups`` span.
 
@@ -2456,6 +2457,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 :func:`consolidatable_record_groups`.
             keys: The fingerprints and token counts of the replay call putting this edit back,
                 so a history is not serialized again behind every record it gets back.
+            lineage: The replacement's lineage, for a replay that matched the edit by the key
+                it was accepted under; by default it is the sources' key as they stand. A later
+                edit that consumed the replacement, and its held output, name that lineage.
 
         Raises:
             ValueError: When a result carries more than bare text, a group contains unrelated
@@ -2504,7 +2508,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 for message in messages[group["start_index"] : group["end_index"] + 1]
             )
         )
-        lineage = source_lineage(messages, groups, keys=keys)
+        if lineage is None:
+            lineage = source_lineage(messages, groups, keys=keys)
         # Taken while the sources are still active: once excluded, a record between them that
         # stays would end what the earlier ones covered.
         active = _active_record_groups(messages, spans, recall_results)
