@@ -321,7 +321,7 @@ jobs:
 
       - name: Format
         if: needs.changes.outputs.code == 'true'
-        run: uv run ruff format --check .
+        run: uv run ruff format --check --diff .
 
       - name: Commas in collection literals
         if: needs.changes.outputs.code == 'true'
