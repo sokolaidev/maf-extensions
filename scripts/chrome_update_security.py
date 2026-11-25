@@ -114,7 +114,7 @@ def validate(directory: Path, receipt: dict[str, Any]) -> dict[str, Any]:
     return expected
 
 
-def requirement(expected: dict[str, Any]) -> dict[str, str] | None:
+def requirement(expected: dict[str, Any]) -> dict[str, Any] | None:
     """Describe a verified security update without treating newer versions as requirements."""
     if not expected["findings"]:
         return None
@@ -122,6 +122,10 @@ def requirement(expected: dict[str, Any]) -> dict[str, str] | None:
     advisories = ", ".join(sorted({row["id"] for row in expected["findings"]}))
     return {
         "kind": "security",
+        "findings": [
+            {key: row[key] for key in ("id", "severity", "fixedVersion")}
+            for row in expected["findings"]
+        ],
         "reason": (
             f"Current published {PROFILE} {identity['version']} ({identity['registryDigest']}) "
             f"has applicable High/Critical Chrome findings: {advisories}. "

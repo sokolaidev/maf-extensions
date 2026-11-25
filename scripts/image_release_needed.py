@@ -723,18 +723,7 @@ def reconcile(
             old = decode(match[1])
             if not isinstance(old, dict):
                 raise ValueError("Release request has no recoverable state")
-    signals = image_issue.findings_signals(
-        state["reasons"].get("vulnerabilities", {}).get("findings", [])
-    )
-    for key in ("route", "requirements"):
-        if key in state["reasons"]:
-            signals.add(f"{key}:{json.dumps(state['reasons'][key], sort_keys=True)}")
-    if (
-        not state["resolved"]
-        and state.get("candidateEvidence")
-        and not state.get("candidateFindings")
-    ):
-        signals.add("candidate:scan-passed")
+    signals = image_issue.release_signals(state)
     payload = image_issue.update(
         issue,
         profile,

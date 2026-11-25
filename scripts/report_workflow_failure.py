@@ -100,29 +100,35 @@ def failed_only_at(job: dict, step_name: str) -> bool:
     )
 
 
-def scan_findings_only() -> bool:
-    """Suppress only verified gate failures; unavailable job metadata preserves the alert."""
+def attempt_jobs() -> dict[str, dict]:
+    """Require unambiguous job metadata from this workflow attempt."""
     repo = os.environ["GITHUB_REPOSITORY"]
     run, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
-    try:
-        pages = json.loads(
-            gh(
-                f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
-                "--paginate",
-                "--slurp",
-            )
+    pages = json.loads(
+        gh(
+            f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
+            "--paginate",
+            "--slurp",
         )
-        if not isinstance(pages, list) or not pages:
-            return False
-        jobs = {}
-        for page in pages:
-            if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
-                return False
-            for job in page["jobs"]:
-                name = job["name"]
-                if not isinstance(name, str) or name in jobs:
-                    return False
-                jobs[name] = job
+    )
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("Missing attempt jobs")
+    jobs = {}
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise ValueError("Invalid attempt jobs")
+        for job in page["jobs"]:
+            name = job["name"]
+            if not isinstance(name, str) or name in jobs:
+                raise ValueError("Ambiguous attempt job")
+            jobs[name] = job
+    return jobs
+
+
+def scan_findings_only() -> bool:
+    """Suppress only verified gate failures; unavailable job metadata preserves the alert."""
+    try:
+        jobs = attempt_jobs()
         if any(
             jobs.get(name, {}).get("conclusion") != "success"
             for name in (
@@ -159,7 +165,7 @@ def monitor_findings_only() -> bool:
         jobs = json.loads(os.environ.get("MONITOR_JOB_RESULTS", "{}"))
     except ValueError:
         return False
-    return (
+    confirmed = (
         isinstance(report, dict)
         and isinstance(jobs, dict)
         and report.get("attention") is True
@@ -169,7 +175,17 @@ def monitor_findings_only() -> bool:
         and jobs.get("begin") == jobs.get("finish") == "success"
         and jobs.get("scan") in {"success", "skipped"}
         and jobs.get("result") == "failure"
+        and os.environ.get("MONITOR_VULNERABILITY_ONLY") == "true"
     )
+    if not confirmed:
+        return False
+    try:
+        return failed_only_at(
+            attempt_jobs().get("result", {}),
+            "Require healthy current releases and complete monitoring delivery",
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def main(argv: list[str] | None = None) -> None:

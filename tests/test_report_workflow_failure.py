@@ -86,7 +86,11 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     assert reporter["permissions"] == {
         "contents": "read",
         "issues": "write",
-        **({"actions": "read"} if name == "image-security.yml" else {}),
+        **(
+            {"actions": "read"}
+            if name in {"image-security.yml", "container-image-monitor.yml"}
+            else {}
+        ),
     }
     assert all(
         workflow["jobs"][source].get("permissions", {}).get("issues") is None
@@ -479,6 +483,22 @@ def test_monitor_suppression_requires_explicit_operational_health(
     monkeypatch, operational, stage_failed
 ):
     monitor_state(monkeypatch)
+    monkeypatch.setenv("MONITOR_VULNERABILITY_ONLY", "true")
+    monkeypatch.setattr(
+        report,
+        "attempt_jobs",
+        lambda: {
+            "result": {
+                "conclusion": "failure",
+                "steps": [
+                    {
+                        "name": "Require healthy current releases and complete monitoring delivery",
+                        "conclusion": "failure",
+                    }
+                ],
+            }
+        },
+    )
     value = json.loads(report.os.environ["MONITOR_NOTIFICATION"])
     value["operationalAttention"] = operational
     monkeypatch.setenv("MONITOR_NOTIFICATION", json.dumps(value))

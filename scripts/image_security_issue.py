@@ -70,6 +70,23 @@ def lanes(issue: dict | None) -> dict[str, Any]:
     return json.loads(match[1]) if match else {}
 
 
+def release_signals(state: dict) -> set[str]:
+    """Identify actionable release constraints independently of explanatory prose."""
+    reasons = state.get("reasons", {})
+    signals = findings_signals(reasons.get("vulnerabilities", {}).get("findings", []))
+    if "route" in reasons:
+        signals.add(f"route:{json.dumps(reasons['route'], sort_keys=True)}")
+    for entry in reasons.get("requirements", {}).get("packages", []):
+        signals.add(f"requirement:{entry['package']}:{entry['minimumVersion']}")
+    if (
+        not state.get("resolved", False)
+        and state.get("candidateEvidence")
+        and not state.get("candidateFindings")
+    ):
+        signals.add("candidate:scan-passed")
+    return signals
+
+
 def notice(issue: dict | None, signals: set[str]) -> str | None:
     """Notify only about added findings or remediation opportunities, never refreshed evidence."""
     saved = lanes(issue)
@@ -119,10 +136,16 @@ def update(
     *,
     active: bool = True,
     related: list[dict] | None = None,
+    observation: tuple[str, int, int] | None = None,
 ) -> dict[str, str] | None:
     """Refresh evidence quietly; reopen the same dismissed issue only for new actionable facts."""
     saved = lanes(issue)
     old_body = (issue or {}).get("body") or ""
+    legacy_release = re.search(r"<!-- image-release-state\n(.*?)\n-->", old_body, re.DOTALL)
+    if not saved and legacy_release:
+        state = json.loads(legacy_release[1])
+        if isinstance(state, dict) and "reasons" in state:
+            remember(saved, "release", release_signals(state), not state["resolved"])
     recovered = bool(saved) and not any(value["active"] for value in saved.values())
     legacy_active = any(
         value.get("state", "open") == "open"
@@ -136,6 +159,8 @@ def update(
     # Legacy trackers lack structured alert state. Preserve their dismissal on adoption.
     novel = bool(saved and signals - known)
     remember(saved, lane, signals, active)
+    if observation is not None:
+        saved[lane]["observation"] = observation
     start, end = f"<!-- image-issue-section:{lane} -->", f"<!-- /image-issue-section:{lane} -->"
     section = f"{start}\n{content}\n{end}"
     pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)

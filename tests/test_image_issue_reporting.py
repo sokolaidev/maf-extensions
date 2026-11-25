@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import check_container_monitor_result as monitor_gate  # noqa: E402
+import chrome_update_security as chrome_security  # noqa: E402
 import image_release_needed as release  # noqa: E402
 import image_security_issue as shared  # noqa: E402
 import plan_go_remediation as go  # noqa: E402
@@ -39,6 +45,9 @@ def scan(run_id, *, clean=False):
         "antivirus": {
             "build.json": {"profile": "antivirus", "run_id": run_id, "run_attempt": "1"},
             "assessment.json": {
+                "assessedAt": (
+                    datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=int(run_id))
+                ).isoformat(),
                 "outcome": "clean" if clean else "vulnerable",
                 "findings": [] if clean else [FINDING],
             },
@@ -87,6 +96,92 @@ class IssueAPI:
 
 
 class TestImageIssueReporting(unittest.TestCase):
+    def test_stale_scan_cannot_replace_newer_findings_or_recovery(self):
+        for current_clean in (False, True):
+            with self.subTest(current_clean=current_clean):
+                api = IssueAPI()
+                with patch.object(attention, "gh", api.gh):
+                    attention.notify("scan", RUN, scan("1"), "example/repo", "1", "1")
+                    current = scan("3", clean=current_clean)
+                    attention.notify("scan", RUN, current, "example/repo", "3", "1")
+                    before = copy.deepcopy(api.items)
+                    writes = len(api.writes)
+                    stale = scan("2", clean=not current_clean)
+                    attention.notify("scan", RUN, stale, "example/repo", "2", "1")
+                    attention.notify("scan", RUN, current, "example/repo", "3", "1")
+                self.assertEqual(api.items, before)
+                self.assertEqual(len(api.writes), writes)
+
+    def test_release_requirements_ignore_prose_and_removal_but_detect_new_constraints(self):
+        packages = [
+            {"package": "one", "minimumVersion": "1.0.0", "reason": "Original reason"},
+            {"package": "two", "minimumVersion": "2.0.0", "reason": "Another reason"},
+        ]
+        state = {"reasons": {"requirements": {"packages": packages}}}
+        known = shared.release_signals(state)
+        tracker = observe(None, "release", known) | {"state": "closed"}
+        packages[0]["reason"] = "Clarified reason"
+        packages.pop()
+        signals = shared.release_signals(state)
+        self.assertLess(signals, known)
+        self.assertEqual(observe(tracker, "release", signals)["state"], "closed")
+        self.assertIsNone(shared.notice(tracker | {"state": "open"}, signals))
+        packages[0]["minimumVersion"] = "1.1.0"
+        self.assertEqual(
+            observe(tracker, "release", shared.release_signals(state))["state"], "open"
+        )
+
+    def test_legacy_release_dismissal_survives_partial_remediation_adoption(self):
+        state = {
+            "resolved": False,
+            "reasons": {
+                "vulnerabilities": {"findings": [FINDING, FINDING | {"id": "CVE-other"}]}
+            },
+        }
+        legacy = {
+            "number": 1,
+            "state": "closed",
+            "body": "<!-- image-release-needed:antivirus -->\n<!-- image-release-state\n"
+            + json.dumps(state)
+            + "\n-->",
+        }
+        adopted = observe(legacy, "platform", {"finding:CVE-test"})
+        self.assertEqual(adopted["state"], "closed")
+        refreshed = observe(adopted, "release", shared.release_signals(state))
+        self.assertEqual(refreshed["state"], "closed")
+        self.assertIn("finding:CVE-other", shared.lanes(refreshed)["release"]["signals"])
+        state["reasons"]["vulnerabilities"]["findings"].append(FINDING | {"id": "CVE-new"})
+        self.assertEqual(
+            observe(refreshed, "release", shared.release_signals(state))["state"], "open"
+        )
+
+    def test_chrome_advisory_signals_ignore_image_identity_and_installed_version(self):
+        expected = {
+            "evidence": {"version": "1.0.0", "registryDigest": "sha256:" + "a" * 64},
+            "after": "158.0.0.1-1",
+            "findings": [
+                {"id": "CVE-2026-12345", "severity": "High", "fixedVersion": "158.0.0.1"}
+            ],
+        }
+        values = {
+            "receipt.json": {"before": "157.0.0.1-1", "package": {"version": "158.0.0.1-1"}},
+            "delivery-requirement.json": chrome_security.requirement(expected),
+        }
+        api = IssueAPI()
+        with patch.object(attention, "gh", api.gh):
+            attention.notify("chrome", RUN, values, "example/repo", "1", "1")
+            api.items[0]["state"] = "closed"
+            expected["evidence"] = {"version": "1.0.1", "registryDigest": "sha256:" + "b" * 64}
+            values["receipt.json"]["before"] = "157.0.0.2-1"
+            values["delivery-requirement.json"] = chrome_security.requirement(expected)
+            attention.notify("chrome", RUN, values, "example/repo", "2", "1")
+            self.assertEqual(api.items[0]["state"], "closed")
+            self.assertEqual(api.comments, [])
+            expected["findings"][0]["severity"] = "Critical"
+            values["delivery-requirement.json"] = chrome_security.requirement(expected)
+            attention.notify("chrome", RUN, values, "example/repo", "3", "1")
+        self.assertEqual(api.items[0]["state"], "open")
+
     def test_existing_canonical_state_imports_open_legacy_activity(self):
         legacy = {
             "number": 9,
@@ -279,6 +374,88 @@ def jobs():
 
 
 class TestWorkflowAlertDelivery(unittest.TestCase):
+    def test_monitor_suppression_requires_gate_proof_and_no_other_step_failure(self):
+        gate = "Require healthy current releases and complete monitoring delivery"
+        health = {
+            "attention": True,
+            "operationalAttention": False,
+            "summary": "Findings",
+            "problems": "CVE",
+        }
+        environment = {
+            "MONITOR_NOTIFICATION": json.dumps(health),
+            "MONITOR_JOB_RESULTS": json.dumps(
+                {
+                    "begin": "success",
+                    "scan": "success",
+                    "finish": "success",
+                    "result": "failure",
+                }
+            ),
+            "MONITOR_VULNERABILITY_ONLY": "true",
+        }
+        for damage in (None, "setup", "download", "missing-proof", "jobs-api"):
+            with self.subTest(damage=damage):
+                job = {
+                    "name": "result",
+                    "conclusion": "failure",
+                    "steps": [{"name": gate, "conclusion": "failure"}],
+                }
+                if damage in {"setup", "download"}:
+                    job["steps"].append({"name": damage, "conclusion": "failure"})
+                with patch.dict(workflow.os.environ, environment):
+                    if damage == "missing-proof":
+                        workflow.os.environ["MONITOR_VULNERABILITY_ONLY"] = "false"
+                    with patch.object(
+                        workflow,
+                        "gh",
+                        return_value=json.dumps([{"jobs": [job]}]),
+                        side_effect=OSError("Unavailable") if damage == "jobs-api" else None,
+                    ):
+                        self.assertEqual(workflow.monitor_findings_only(), damage is None)
+
+    def test_monitor_gate_proof_requires_readable_vulnerability_only_diagnostics(self):
+        health = {
+            "attention": True,
+            "operationalAttention": False,
+            "summary": "Findings",
+            "problems": "CVE",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for damage in (None, "missing", "malformed", "operational", "job-failed"):
+                with self.subTest(damage=damage):
+                    diagnostics, output = root / "diagnostics.json", root / "output"
+                    diagnostics.write_text(
+                        "null"
+                        if damage == "malformed"
+                        else json.dumps(health | {"operationalAttention": damage == "operational"}),
+                        encoding="utf-8",
+                    )
+                    output.write_text("", encoding="utf-8")
+                    with (
+                        patch.dict(
+                            monitor_gate.os.environ,
+                            {
+                                "BEGIN": "failure" if damage == "job-failed" else "success",
+                                "SCAN": "success",
+                                "FINISH": "success",
+                                "ATTENTION": "true",
+                                "MONITOR_DIAGNOSTICS": str(
+                                    root / "missing" if damage == "missing" else diagnostics
+                                ),
+                                "GITHUB_OUTPUT": str(output),
+                                "GITHUB_STEP_SUMMARY": "",
+                            },
+                        ),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        self.assertEqual(monitor_gate.main(), 1)
+                    self.assertEqual(
+                        output.read_text("utf-8"),
+                        f"vulnerability_only={str(damage is None).lower()}\n",
+                    )
+
     def setUp(self):
         environment = patch.dict(
             workflow.os.environ,

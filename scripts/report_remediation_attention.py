@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import html
 import json
 import os
@@ -13,7 +12,7 @@ import tempfile
 import zipfile
 from collections import Counter
 from collections.abc import Collection
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import IO, Any
 
 import image_security_issue as image_issue
@@ -236,18 +235,26 @@ def pending(values: dict, kind: str) -> list[dict]:
         requirement = values.get("delivery-requirement.json", {})
         if requirement.get("kind") == "security":
             receipt = values.get("receipt.json", {})
-            rows.append(
+            advisories = requirement.get("findings") or [
                 {
-                    "profile": "document-export",
-                    "id": "Chrome security update",
-                    "component": "chrome",
-                    "installed": receipt.get("before", "see evidence"),
-                    "fix": {
-                        "versions": [receipt.get("package", {}).get("version", "see evidence")]
-                    },
-                    "reason": f"{requirement.get('reason', 'A security update was authorized')} PR delivery did not complete. Inspect delivery settings, credentials and logs.",
+                    "id": identifier,
+                    "fixedVersion": receipt.get("package", {}).get("version", "see evidence"),
                 }
-            )
+                for identifier in sorted(set(re.findall(r"CVE-[\w-]+", requirement.get("reason", ""))))
+                or ["Chrome security update"]
+            ]
+            for advisory in advisories:
+                rows.append(
+                    {
+                        "profile": "document-export",
+                        "id": advisory["id"],
+                        "severity": advisory.get("severity", "unknown"),
+                        "component": "chrome",
+                        "installed": receipt.get("before", "see evidence"),
+                        "fix": {"versions": [advisory["fixedVersion"]]},
+                        "reason": f"{requirement.get('reason', 'A security update was authorized')} PR delivery did not complete. Inspect delivery settings, credentials and logs.",
+                    }
+                )
     return rows
 
 
@@ -307,6 +314,15 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         marker = f"<!-- image-remediation-attention:{profile} -->"
         lane = f"<!-- image-remediation-workflow:{kind} -->"
         tracker = image_issue.select(issues, profile)
+        observation = None
+        if kind == "scan":
+            collected = datetime.fromisoformat(values[profile]["assessment.json"]["assessedAt"])
+            if collected.tzinfo is None:
+                raise ValueError("Scan ordering requires a timezone-aware observation")
+            observation = (collected.astimezone(UTC).isoformat(), int(run_id), int(attempt))
+            previous = image_issue.lanes(tracker).get(kind, {}).get("observation")
+            if previous is not None and observation <= tuple(previous):
+                continue
         if not findings and (tracker is None or kind not in image_issue.lanes(tracker)):
             continue
         stable = sorted({json.dumps(row, sort_keys=True) for row in findings})
@@ -353,9 +369,6 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         for row in findings:
             if "Publish a replacement image" in row["reason"]:
                 signals.add(f"publish:{row['id']}")
-            if kind == "chrome":
-                signals.add(f"advisory:chrome:{hashlib.sha256(row['reason'].encode()).hexdigest()}")
-                signals.update(f"finding:{v}" for v in re.findall(r"CVE-[\w-]+", row["reason"]))
         payload = image_issue.update(
             tracker,
             profile,
@@ -364,6 +377,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             signals,
             active=bool(findings),
             related=image_issue.matches(issues, profile),
+            observation=observation,
         )
         message = image_issue.notice(tracker, signals)
         if message and tracker is not None:

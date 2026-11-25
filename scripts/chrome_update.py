@@ -246,7 +246,7 @@ def declared_requirement(reason: str | None, justification: str) -> dict[str, st
 
 def authorize(
     root: Path, work: Path, client: GitHub, reason: str | None, justification: str
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Retain the delivery requirement before the workflow can mint write credentials."""
     requirement = declared_requirement(reason, justification)
     receipt, _ = validate(root, work)

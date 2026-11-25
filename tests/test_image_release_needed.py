@@ -1801,7 +1801,9 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
     state = desired(record=vulnerable_record(), observed=candidate())
     tracker.reconcile(client, "graphviz", state, None)
     again = desired(
-        record=vulnerable_record(), observed=candidate(evidence="run/2"), previous=state
+        record=vulnerable_record(),
+        observed=candidate(evidence="run/2", observedAt="2026-01-02T00:00:01Z"),
+        previous=state,
     )
     tracker.reconcile(client, "graphviz", again, client.items[0])
     assert len(client.items) == 1
@@ -1811,7 +1813,7 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
     tracker.reconcile(client, "graphviz", again, client.items[0])
     assert len(client.calls) == 2
     changed = desired(
-        observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
+        observed=candidate(version="3", observedAt="2026-01-02T00:00:02Z"), previous=again
     )
     tracker.reconcile(client, "graphviz", changed, client.items[0])
     assert len(client.calls) == 3

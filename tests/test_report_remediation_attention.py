@@ -175,8 +175,7 @@ def test_chrome_advisory_changes_notify_again_with_unchanged_versions(monkeypatc
     values["delivery-requirement.json"]["reason"] = "Updated vendor advisory for CVE-second"
     report.notify("chrome", source_run(), values, "example/repo", "127", "1")
     report.notify("chrome", source_run(), values, "example/repo", "128", "1")
-    assert len(comments) == 2
-    assert "Chrome security advisory changed" in comments[-1]["body"]
+    assert len(comments) == 1
 
 
 def test_chrome_authorized_security_update_without_pr_notifies():
