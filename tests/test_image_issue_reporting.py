@@ -134,9 +134,7 @@ class TestImageIssueReporting(unittest.TestCase):
     def test_legacy_release_dismissal_survives_partial_remediation_adoption(self):
         state = {
             "resolved": False,
-            "reasons": {
-                "vulnerabilities": {"findings": [FINDING, FINDING | {"id": "CVE-other"}]}
-            },
+            "reasons": {"vulnerabilities": {"findings": [FINDING, FINDING | {"id": "CVE-other"}]}},
         }
         legacy = {
             "number": 1,
@@ -159,9 +157,7 @@ class TestImageIssueReporting(unittest.TestCase):
         expected = {
             "evidence": {"version": "1.0.0", "registryDigest": "sha256:" + "a" * 64},
             "after": "158.0.0.1-1",
-            "findings": [
-                {"id": "CVE-2026-12345", "severity": "High", "fixedVersion": "158.0.0.1"}
-            ],
+            "findings": [{"id": "CVE-2026-12345", "severity": "High", "fixedVersion": "158.0.0.1"}],
         }
         values = {
             "receipt.json": {"before": "157.0.0.1-1", "package": {"version": "158.0.0.1-1"}},

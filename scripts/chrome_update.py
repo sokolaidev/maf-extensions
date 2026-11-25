@@ -300,8 +300,8 @@ def main() -> None:
                 ):
                     raise ValueError("Chrome delivery lacks a verified security requirement")
                 report["securityEvidence"] = expected
-            report["requirement"] = requirement
-            write(args.work / "delivery-requirement.json", report["requirement"])
+            report["requirement"] = {key: requirement[key] for key in ("kind", "reason")}
+            write(args.work / "delivery-requirement.json", requirement)
             result = publish(
                 client,
                 receipt,

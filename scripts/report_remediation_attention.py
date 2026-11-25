@@ -240,7 +240,9 @@ def pending(values: dict, kind: str) -> list[dict]:
                     "id": identifier,
                     "fixedVersion": receipt.get("package", {}).get("version", "see evidence"),
                 }
-                for identifier in sorted(set(re.findall(r"CVE-[\w-]+", requirement.get("reason", ""))))
+                for identifier in sorted(
+                    set(re.findall(r"CVE-[\w-]+", requirement.get("reason", "")))
+                )
                 or ["Chrome security update"]
             ]
             for advisory in advisories:

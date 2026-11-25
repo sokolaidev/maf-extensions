@@ -98,14 +98,7 @@ def notice(issue: dict | None, signals: set[str]) -> str | None:
         return None
     generation = sum(value.get("generation", 0) for value in saved.values())
     digest = hashlib.sha256(json.dumps([generation, added]).encode()).hexdigest()
-    details = html.escape(
-        "\n".join(
-            "Chrome security advisory changed; see the Chrome evidence section."
-            if value.startswith("advisory:chrome:")
-            else value
-            for value in added
-        )
-    ).replace("@", "&#64;")[:8000]
+    details = html.escape("\n".join(added)).replace("@", "&#64;")[:8000]
     return f"<!-- image-security-change:{digest} -->\nNew findings or remediation opportunities:\n\n<pre>{details}</pre>\n\nThe issue body retains the latest evidence from each reporter."
 
 
