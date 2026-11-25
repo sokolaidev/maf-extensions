@@ -20,6 +20,7 @@ from agent_framework._compaction import (
 )
 
 from ._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
+from ._artifacts import is_marker
 from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
 from ._shed import ShedGroupKeys, durable_message_id, unique_shed_groups
@@ -644,14 +645,20 @@ def _source_key(
     message_keys: dict[int, str],
     key_cache: MessageKeyCache | None = None,
     window_keys: dict[int, str] | None = None,
+    *,
+    skip_notes: bool = True,
 ) -> str | None:
     """Fingerprint a batch: its records, the messages between them, and the layout.
 
     A message between the records that a pass excluded of its own accord
     (:func:`_is_pass_exclusion`) is fingerprinted as if included, so a later pass that covers or
     sheds it differently still finds the batch, and a batch whose in-between messages are all
-    included keeps the key it always had. Every other exclusion there, and the records' own,
-    stays in the key. ``window_keys`` caches, by index for one unchanging history, the
+    included keeps the key it always had. A shed's note between them (:func:`is_marker`) is left
+    out, and so is its place in the layout: a pass puts the notes back only when it sheds, so the
+    list a background worker snapshots carries them and the next pass's copy does not yet. With
+    no note there the key is what it always was; ``skip_notes=False`` gives a note's window its
+    key from before, for an edit accepted then. Every other exclusion there, and the records'
+    own, stays in the key. ``window_keys`` caches, by index for one unchanging history, the
     as-if-included fingerprint of a pass exclusion and an empty string for any other message, so
     the many windows of one replay decide each message once.
     """
@@ -674,9 +681,13 @@ def _source_key(
     if window_keys is None:
         window_keys = {}
     keys: list[str] = []
+    positions: dict[int, int] = {}
     for index in range(start, end + 1):
         message = messages[index]
         if index not in members:
+            if skip_notes and is_marker(message):
+                continue
+            positions[index] = len(keys)
             window_key = window_keys.get(index)
             if window_key is None:
                 window_key = window_keys[index] = (
@@ -691,16 +702,25 @@ def _source_key(
             if window_key:
                 keys.append(window_key)
                 continue
+        positions[index] = len(keys)
         if index not in message_keys:
             message_keys[index] = (
                 _message_key(message) if key_cache is None else key_cache.key(message)
             )
         keys.append(message_keys[index])
     payload = [
-        [[group["start_index"] - start, group["end_index"] - start] for group in groups],
+        [[positions[group["start_index"]], positions[group["end_index"]]] for group in groups],
         keys,
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _notes_before(messages: list[Message]) -> list[int]:
+    """How many shed notes precede each index, so a window's are counted in constant time."""
+    counts = [0]
+    for message in messages:
+        counts.append(counts[-1] + is_marker(message))
+    return counts
 
 
 def replay_match(
@@ -730,13 +750,24 @@ def replay_match(
         and any(content.type == "text_reasoning" for content in message.contents)
     }
     window_keys: dict[int, str] = {}
+    notes: list[int] | None = None
     for count in sorted({count for _, count in certificates}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
             key = _source_key(messages, run, message_keys, key_cache, window_keys)
             if key is None:
                 continue
-            for certificate, excluded in certificates.get((key, count), []):
+            found = certificates.get((key, count), [])
+            if notes is None:
+                notes = _notes_before(messages)
+            # A note between the records: an edit accepted before notes were skipped has the
+            # window's older key.
+            if notes[run[-1]["end_index"] + 1] > notes[run[0]["start_index"]]:
+                legacy = _source_key(
+                    messages, run, message_keys, key_cache, window_keys, skip_notes=False
+                )
+                found = [*found, *certificates.get((legacy, count), [])] if legacy else found
+            for certificate, excluded in found:
                 if not any(
                     identity in excluded
                     for index, identity in included_reasoning.items()
