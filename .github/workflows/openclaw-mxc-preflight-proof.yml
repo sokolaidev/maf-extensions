@@ -37,6 +37,7 @@ jobs:
           cd "$RUNNER_TEMP/openclaw"
           node --check extensions/mxc/src/mxc-spawn-launcher.mjs
           node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/proof.md"
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs --cleanup-regression | tee "$RUNNER_TEMP/evidence/cleanup.md"
       - name: Format and run affected launcher and readiness suites
         shell: bash
         run: |
@@ -111,6 +112,8 @@ jobs:
           if ($launcherHash -ne 'e69dfa4fb9578f989c48d014e501d2a94e51765597d066ff0f48d8f679187627') { throw 'Unexpected patched launcher bytes' }
           node $proof $launcher | Tee-Object -FilePath (Join-Path $evidence 'proof.md')
           if ($LASTEXITCODE -ne 0) { throw 'Windows fixture proof failed' }
+          node $proof $launcher --cleanup-regression | Tee-Object -FilePath (Join-Path $evidence 'cleanup.md')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows cleanup regression failed' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
