@@ -120,6 +120,41 @@ def remember(saved: dict[str, Any], lane: str, signals: set[str], active: bool) 
     saved[lane] = {**state, "generation": previous.get("generation", 0) + int(changed)}
 
 
+def fit_body(body: str, saved: dict[str, Any], limit: int) -> str:
+    """Compact reporter displays together, preserving state, evidence links and outside notes."""
+    compact = "<!-- image-issue-compact -->"
+    if len(body) <= limit and compact not in body:
+        return body
+    if compact not in body:
+        body = compact + "\n\n" + body
+    sections = re.compile(
+        r"(<!-- image-issue-section:([a-z-]+) -->)(.*?)(<!-- /image-issue-section:\2 -->)",
+        re.DOTALL,
+    )
+    rendered = {}
+    previews = {}
+    for match in sections.finditer(body):
+        lane, content = match[2], match[3]
+        metadata = "\n".join(re.findall(r"<!--.*?-->", content, re.DOTALL))
+        links = "\n".join(dict.fromkeys(re.findall(r"\[[^\]\n]*\]\([^\s)]*\)", content)))
+        state = saved.get(lane, {})
+        status = (
+            "Pending maintainer action" if state.get("active") else "No pending reporter action"
+        )
+        rendered[lane] = (
+            f"{match[1]}\n### {lane} evidence\n\n{status}. "
+            "Report shortened to fit the shared issue; linked evidence retains the full details.\n\n"
+            f"{links}\n\n{metadata}\n\n<pre>"
+        )
+        previews[lane] = html.escape("\n".join(state.get("signals", [])[:20])).replace("@", "&#64;")
+    minimal = sections.sub(lambda match: rendered[match[2]] + "</pre>\n" + match[4], body)
+    allowance = max(0, min(2000, (limit - len(minimal)) // max(1, len(rendered))))
+    return sections.sub(
+        lambda match: rendered[match[2]] + previews[match[2]][:allowance] + "</pre>\n" + match[4],
+        body,
+    )
+
+
 def update(
     issue: dict | None,
     profile: str,
@@ -192,7 +227,8 @@ def update(
         if reference not in body:
             body += f"\n\n{reference}"
     encoded = json.dumps(saved, sort_keys=True).replace("<", "\\u003c").replace(">", "\\u003e")
-    body += f"\n\n<!-- image-security-issue-state\n{encoded}\n-->"
+    state_block = f"\n\n<!-- image-security-issue-state\n{encoded}\n-->"
+    body = fit_body(body, saved, 60_000 - len(state_block)) + state_block
     if len(body) > 60_000:
         raise ValueError("Image issue exceeds the issue size limit")
     payload = {"title": f"Image security needs attention: {profile}", "body": body}

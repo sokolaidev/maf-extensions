@@ -96,6 +96,40 @@ class IssueAPI:
 
 
 class TestImageIssueReporting(unittest.TestCase):
+    def test_large_shared_reports_preserve_evidence_state_and_recovery_updates(self):
+        tracker = None
+        for lane in ("scan", "platform", "go", "chrome"):
+            tracker = observe(
+                tracker,
+                lane,
+                {f"finding:{lane}"},
+                content=f"[Retained {lane} evidence](https://example.com/{lane})\n" + "x" * 20_000,
+            )
+            if lane == "scan":
+                tracker["body"] = "Maintainer note: investigate exposure.\n\n" + tracker["body"]
+        state = {
+            "resolved": False,
+            "reasons": {"vulnerabilities": {"findings": [FINDING]}},
+        }
+        content = "<!-- image-release-state\n" + json.dumps(state) + "\n-->\n"
+        content += "[Release evidence](https://example.com/release)\n" + "y" * 30_000
+        tracker = observe(tracker, "release", {"finding:CVE-test"}, content=content)
+        self.assertLessEqual(len(tracker["body"]), 60_000)
+        self.assertIn("Maintainer note: investigate exposure.", tracker["body"])
+        match = release.STATE.search(tracker["body"])
+        assert match is not None
+        self.assertEqual(json.loads(match[1]), state)
+        self.assertEqual(len(shared.lanes(tracker)), 5)
+        for lane in ("scan", "platform", "go", "chrome", "release"):
+            self.assertIn(f"https://example.com/{lane}", tracker["body"])
+        self.assertEqual(
+            observe(tracker, "release", {"finding:CVE-test"}, content=content), tracker
+        )
+        recovered = observe(tracker, "release", set(), active=False, content="Verified replacement")
+        self.assertFalse(shared.lanes(recovered)["release"]["active"])
+        self.assertTrue(shared.lanes(recovered)["platform"]["active"])
+        self.assertEqual(recovered["state"], "open")
+
     def test_other_reporter_updates_do_not_duplicate_a_partially_delivered_scan_notice(self):
         api = IssueAPI()
         with patch.object(attention, "gh", api.gh):
