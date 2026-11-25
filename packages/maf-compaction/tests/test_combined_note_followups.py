@@ -6,16 +6,22 @@ import json
 
 import pytest
 from agent_framework import ChatContext, ChatResponse, Content, Message
-from agent_framework._compaction import EXCLUDE_REASON_KEY, EXCLUDED_KEY
+from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
+    EXCLUDED_KEY,
+    project_included_messages,
+)
 from test_prompt_recall import recall
-from test_record_budget import _history, _record_pair, _sent, _strategy, _Summarizer
+from test_record_budget import TOKENIZER, _history, _record_pair, _sent, _strategy, _Summarizer
 from test_record_source_window import _note
 
 from maf_compaction import _anchored as anchored
 from maf_compaction import _record_replay as replay
-from maf_compaction._anchored import EXCLUDE_REASON, MARKER_ID_PREFIX
+from maf_compaction._anchored import EXCLUDE_REASON, MARKER_ID_PREFIX, AnchoredCompactionStrategy
 from maf_compaction._artifacts import coalesce_shed_notes, is_marker
+from maf_compaction._carryover import CarriedView, Handed
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript
+from maf_compaction._saved_view import resume_saved_view, save_view
 from maf_compaction._toolsummary import consolidatable_record_groups
 
 pytestmark = pytest.mark.anyio
@@ -223,3 +229,89 @@ async def test_an_edit_matched_by_the_current_key_never_builds_the_older_list(
     _assert_replays(strategy, messages)
 
     assert not built
+
+
+def test_an_id_a_combined_note_replaced_is_not_given_out_again() -> None:
+    """Round ``x_1``'s note ``…group_x_1`` is combined into round ``a``'s. Round ``x``, shed
+    later and finding ``…group_x`` taken, gets ``…group_x_2`` as it did before notes were
+    combined, not the freed ``…group_x_1``: that would stand twice once the note is split back."""
+    messages = _history(0)
+    closing = messages.pop()
+    taken = Message("user", ["Look again."], message_id=f"{MARKER_ID_PREFIX}group_x")
+    messages = [
+        *messages,
+        taken,
+        *_record_pair(0),
+        *_named_round("a"),
+        *_named_round("x_1"),
+        *_record_pair(1),
+        *_named_round("x"),
+        *_record_pair(2),
+        closing,
+    ]
+    shedding = AnchoredCompactionStrategy(max_input_tokens=4000, tokenizer=TOKENIZER)
+    assert shedding.shed_again(messages, {"a", "a_res", "x_1", "x_1_res"})
+    assert shedding.shed_again(messages, {"x", "x_res"})
+
+    live = [m.message_id for m in messages if is_marker(m)]
+    split = anchored.split_combined_notes(messages)
+    assert split is not None
+    ids = [m.message_id for m in split[0] if is_marker(m)]
+
+    assert live == [f"{MARKER_ID_PREFIX}group_a", f"{MARKER_ID_PREFIX}group_x_2"]
+    assert len(ids) == len(set(ids)) == 3
+
+
+def _named_round(name: str) -> list[Message]:
+    """A tool round whose call message id, and so its group id, is ``name``."""
+    return [
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id=name, name="lookup", arguments={})],
+            message_id=name,
+        ),
+        Message(
+            "tool",
+            [Content.from_function_result(call_id=name, result=f"{name} output")],
+            message_id=f"{name}_res",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("passes", ["one shed", "two sheds"])
+@pytest.mark.parametrize("merged", [False, True], ids=["no merge", "a kept merge"])
+async def test_a_saved_view_resumed_across_combined_notes_sends_the_same_request(
+    passes: str, merged: bool
+) -> None:
+    """The rounds between two records shed at once or a pass apart, their notes combined, the
+    records merged or not: the view saved from that list is resumed on a fresh copy and sends
+    the same messages, in the same order."""
+    history = _two_rounds_between_two_records()
+    previous = _reloaded(history)
+    handed = Handed.take(previous)
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None, policy="shed")
+    if passes == "one shed":
+        assert strategy.tool_results.fallback.shed_again(
+            previous, {"ta_call", "ta_res", "tb_call", "tb_res"}
+        )
+    else:
+        _shed(strategy, previous, "ta")
+        _shed(strategy, previous, "tb")
+    assert sum(is_marker(m) for m in previous) == 1, "the premise: the notes are combined"
+    if merged:
+        assert await _merge_first_two(strategy, previous) == "accepted"
+    saved = save_view(CarriedView(handed, previous), {})
+    assert saved
+
+    current = _reloaded(history)
+
+    assert resume_saved_view(json.loads(json.dumps(saved)), {}, current, Handed.take(current))
+    assert _request(current) == _request(previous)
+
+
+def _reloaded(messages: list[Message]) -> list[Message]:
+    return [Message.from_dict(json.loads(m.to_json())) for m in messages]
+
+
+def _request(messages: list[Message]) -> list[tuple[str | None, str]]:
+    return [(m.message_id, m.text) for m in project_included_messages(messages)]

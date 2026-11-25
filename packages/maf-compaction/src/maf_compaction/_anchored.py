@@ -862,7 +862,14 @@ def _insert_notes(messages: list[Message], notes: list[tuple[dict[str, Any], str
             SUMMARY_OF_GROUP_IDS_KEY, []
         )
     }
-    taken = {message.message_id for message in messages if message.message_id}
+    # A combined note keeps the ids of the notes it replaced: one given out again would stand
+    # twice in the list split back for an older key, and differ from the id a shed gave before.
+    taken: set[str] = set()
+    for message in messages:
+        if message.message_id:
+            taken.add(message.message_id)
+        if NOTE_PARTS_KEY in message.additional_properties:
+            taken.update(part["id"] for part in note_parts(message))
     pending: list[tuple[int, Message]] = []
     for group, note in notes:
         group_id = group["group_id"]
