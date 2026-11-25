@@ -238,3 +238,34 @@ def test_a_fingerprint_is_byte_for_byte_what_it_was() -> None:
     for message in [*_interleaved(), *covered]:
         assert _message_key(message) == before(message)  # pyright: ignore[reportPrivateUsage]
         assert cache.key(message) == before(message)
+
+
+def _with_later_reasoning(messages: list[Message]) -> list[Message]:
+    """Retained reasoning after every record: the guard decides which records are eligible."""
+    closing = messages.pop()
+    thinking = Message(
+        "assistant",
+        [Content.from_text_reasoning(text="planning the next step"), Content.from_text("next")],
+        message_id="later_reasoning",
+    )
+    return [*messages, thinking, closing]
+
+
+async def test_an_answer_captured_over_budget_applies_in_a_pass_that_fits():
+    """The snapshot lifted the reasoning guard; a pass that fits applies its answer with the
+    records the snapshot saw, instead of finding none and discarding it (#2108)."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None, policy="shed")
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _with_later_reasoning(_interleaved())
+    await strategy(messages)
+    # The snapshot and the worker's search are over budget, as on a long conversation.
+    work._budget = 1
+    await work.start(tool_reply())
+    await running(work)
+    assert work._ready, "the premise: the worker prepared an answer"
+    assert (work._ready[0].captured_guarded, work._ready[0].searched_guarded) == (False, False)
+    # The pass that applies it fits, so its own guard is on.
+    assert await work.apply_ready(messages)
+    assert strategy.records_merged == 1
+    await work.close()

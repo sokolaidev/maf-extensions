@@ -118,6 +118,8 @@ from ._toolsummary import (
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    _reasoning_prefix_guard_on,  # pyright: ignore[reportPrivateUsage]
+    _reasoning_prefix_guarded,  # pyright: ignore[reportPrivateUsage]
     _reasoning_prefix_yields_to_budget,  # pyright: ignore[reportPrivateUsage]
     _record_has_external_hold,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
@@ -181,10 +183,22 @@ def _first_batch_with_sources(
 
 
 def _background_batch_with_sources(
-    messages: list[Message], count: int, sources: str
+    messages: list[Message],
+    count: int,
+    sources: str,
+    *,
+    captured_guarded: bool | None = None,
+    searched_guarded: bool | None = None,
 ) -> list[dict[str, Any]] | None:
-    records = BackgroundRecords.capture(messages)
-    groups = consolidatable_record_groups(records.messages)
+    """Find a background answer's batch, choosing records as the snapshot and its search did.
+
+    Which records are eligible depends on the reasoning-prefix guard, and the gaps between them
+    are part of the key. A pass whose guard differs from the snapshot's would key other gaps.
+    """
+    with _guard_as(captured_guarded):
+        records = BackgroundRecords.capture(messages)
+    with _guard_as(searched_guarded):
+        groups = consolidatable_record_groups(records.messages)
     batch = _first_batch_with_sources(records.messages, groups, count, sources)
     if batch is None:
         return None
@@ -271,6 +285,10 @@ class _PreparedMerge:
     transcript: str
     answer: _RecordAnswer
     prompt: str
+    #: The reasoning-prefix guard when the snapshot was captured and when the worker keyed the
+    #: batch; None where the answer was prepared without a snapshot of its own.
+    captured_guarded: bool | None = None
+    searched_guarded: bool | None = None
 
 
 class _RecordMergeWork:
@@ -382,17 +400,17 @@ class _RecordMergeWork:
         strategy = self.strategy
         budget = self._budget
 
-        def snapshot() -> BackgroundRecords:
+        def snapshot() -> tuple[BackgroundRecords, bool]:
             if not has_records(history) and not has_records(response):
-                return BackgroundRecords([], {}, 0, {})
+                return BackgroundRecords([], {}, 0, {}), _reasoning_prefix_guard_on()
             messages = counted_history(history, response, strategy.tokenizer)
             with _yielding_when(
                 over_budget=included_token_count(messages) > budget, policy=strategy.overflow_policy
             ):
-                return BackgroundRecords.capture(messages)
+                return BackgroundRecords.capture(messages), _reasoning_prefix_guard_on()
 
         try:
-            records = await off_loop(self._in_run_context, snapshot)
+            records, captured_guarded = await off_loop(self._in_run_context, snapshot)
         except Exception as error:
             self.defer_merges = False
             self._in_run_context(strategy._merge_event, "worker_failed", phase="background")  # pyright: ignore[reportPrivateUsage]
@@ -405,9 +423,25 @@ class _RecordMergeWork:
         prompt = self.strategy.merge_prompt
         self._in_run_context(strategy._merge_event, "worker_started", phase="background")  # pyright: ignore[reportPrivateUsage]
 
-        def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
+        def ready(
+            sources: str,
+            count: int,
+            transcript: str,
+            answer: _RecordAnswer,
+            searched_guarded: bool,
+        ) -> None:
             if generation == self._generation:
-                self._ready.append(_PreparedMerge(sources, count, transcript, answer, prompt))
+                self._ready.append(
+                    _PreparedMerge(
+                        sources,
+                        count,
+                        transcript,
+                        answer,
+                        prompt,
+                        captured_guarded=captured_guarded,
+                        searched_guarded=searched_guarded,
+                    )
+                )
                 if record_merge_observer.get() is not None:
                     worker._merge_event(  # pyright: ignore[reportPrivateUsage]
                         "answer_prepared", records=count, batch=_digest(f"{sources}:{answer.text}")
@@ -858,6 +892,11 @@ def _is_excluded(message: Message) -> bool:
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
 
 
+def _guard_as(guarded: bool | None) -> AbstractContextManager[None]:
+    """Hold the reasoning-prefix guard at ``guarded``; None leaves the current scope's."""
+    return nullcontext() if guarded is None else _reasoning_prefix_guarded(guarded)
+
+
 def _yielding_when(*, over_budget: bool, policy: str) -> AbstractContextManager[None]:
     """The reasoning-prefix guard yields only over budget under the ``"shed"`` policy.
 
@@ -1305,7 +1344,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _record_worker(
         self,
         budget: int,
-        ready: Callable[[str, int, str, _RecordAnswer], None],
+        ready: Callable[[str, int, str, _RecordAnswer, bool], None],
         current: Callable[[], bool],
     ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker = _worker_copy(
@@ -1329,7 +1368,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker._saved_view = None
         worker._request_budget = ContextVar("background_record_budget", default=budget)
         worker._chain_deadline = ContextVar("background_record_deadline", default=None)
-        worker._record_answer_ready = ready
+        # Read where the worker keys the batch: ``ready`` itself runs in the run's context.
+        worker._record_answer_ready = lambda sources, count, transcript, answer: ready(
+            sources, count, transcript, answer, _reasoning_prefix_guard_on()
+        )
         worker._record_work_current = current
         worker._background_requests = _BackgroundRequests(self.user_turns.summary_timeout_seconds)
         return worker
@@ -1385,7 +1427,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         finally:
             self._chain_deadline.reset(token)
 
-    def _discard_ready_answer(self, item: _PreparedMerge, reason: str) -> None:
+    def _discard_ready_answer(self, item: _PreparedMerge, reason: str, detail: str = "") -> None:
         """Drop a ready background answer the pass cannot apply, and say so in the log.
 
         The batch is asked again on a later sweep, so a host without an observer needs the line
@@ -1393,7 +1435,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         self._merge_event("answer_discarded", phase="apply", reason=reason)
         logger.info(
-            "Compaction discarded a ready background merge of %d records: %s.", item.count, reason
+            "Compaction discarded a ready background merge of %d records: %s%s.",
+            item.count,
+            reason,
+            f" ({detail})" if detail else "",
+        )
+
+    @staticmethod
+    def _unavailable_detail(messages: list[Message], item: _PreparedMerge) -> str:
+        """Counts only: how the answer's guard compares with the pass's, and what is eligible."""
+        applying_guarded = _reasoning_prefix_guard_on()
+        with _guard_as(item.captured_guarded):
+            eligible = len(consolidatable_record_groups(messages))
+        return (
+            f"guard captured={item.captured_guarded} searched={item.searched_guarded} "
+            f"pass={applying_guarded}; eligible records={eligible}"
         )
 
     async def _apply_record_answers(
@@ -1405,21 +1461,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._discard_ready_answer(item, "prompt_changed")
                 continue
             batch = await off_loop(
-                _background_batch_with_sources, messages, item.count, item.sources
+                partial(
+                    _background_batch_with_sources,
+                    captured_guarded=item.captured_guarded,
+                    searched_guarded=item.searched_guarded,
+                ),
+                messages,
+                item.count,
+                item.sources,
             )
             if batch is None:
-                self._discard_ready_answer(item, "sources_unavailable")
+                detail = await off_loop(self._unavailable_detail, messages, item)
+                self._discard_ready_answer(item, "sources_unavailable", detail)
                 continue
-            outcome = await self._consolidate(
-                messages,
-                batch,
-                prompt=self.merge_prompt,
-                transcript=item.transcript,
-                answer=item.answer,
-                remember_lossy=True,
-                merge_phase="apply",
-                prepared_sources=item.sources,
-            )
+            # Judged on the records the snapshot found eligible, whatever this pass's guard.
+            with _guard_as(item.captured_guarded):
+                outcome = await self._consolidate(
+                    messages,
+                    batch,
+                    prompt=self.merge_prompt,
+                    transcript=item.transcript,
+                    answer=item.answer,
+                    remember_lossy=True,
+                    merge_phase="apply",
+                    prepared_sources=item.sources,
+                )
             if outcome == "accepted":
                 self._records_merged += 1
                 changed = True
