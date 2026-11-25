@@ -13,7 +13,7 @@ from test_record_source_window import _note
 
 from maf_compaction import _anchored as anchored
 from maf_compaction import _record_replay as replay
-from maf_compaction._anchored import EXCLUDE_REASON
+from maf_compaction._anchored import EXCLUDE_REASON, MARKER_ID_PREFIX
 from maf_compaction._artifacts import coalesce_shed_notes, is_marker
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript
 from maf_compaction._toolsummary import consolidatable_record_groups
@@ -148,3 +148,59 @@ async def test_combining_the_notes_before_the_newest_record_still_forces_a_due_r
     await middleware.process(context, answer)
 
     assert middleware._force_next
+
+
+def _colliding_rounds() -> list[Message]:
+    """Round ``a`` whose note id a stored message already holds, then round ``a_1``."""
+    messages = _history(0)
+    closing = messages.pop()
+    taken = Message("user", ["Look again."], message_id=f"{MARKER_ID_PREFIX}group_a")
+    rounds = []
+    for name in ("a", "a_1"):
+        rounds += [
+            Message(
+                "assistant",
+                [Content.from_function_call(call_id=name, name="lookup", arguments={})],
+                message_id=name,
+            ),
+            Message(
+                "tool",
+                [Content.from_function_result(call_id=name, result=f"{name} output")],
+                message_id=f"{name}_res",
+            ),
+        ]
+    return [*messages, taken, *_record_pair(0), *rounds, *_record_pair(1), closing]
+
+
+async def test_a_merge_kept_on_notes_with_collided_ids_still_replays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shed one pass at a time, round ``a``'s note is ``…group_a_1`` and round ``a_1``'s is
+    ``…group_a_1_1``. Splitting their combined note gives those ids back, not ones allocated
+    afresh, so a merge kept under the key covering them is still matched."""
+    current = replay._source_key
+    with monkeypatch.context() as before:
+        before.setattr(
+            replay,
+            "_source_key",
+            lambda *args, **kwargs: current(*args, **{**kwargs, "skip_notes": False}),
+        )
+        before.setattr(anchored, "coalesce_shed_notes", lambda messages: False)
+        strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+        messages = _colliding_rounds()
+        for name in ("a", "a_1"):
+            assert strategy.tool_results.fallback.shed_again(messages, {name, f"{name}_res"})
+        ids = [m.message_id for m in messages if is_marker(m)]
+        assert ids == [f"{MARKER_ID_PREFIX}group_a_1", f"{MARKER_ID_PREFIX}group_a_1_1"]
+        assert await _merge_first_two(strategy, messages) == "accepted"
+    merged = _sent_without_notes(messages)
+
+    cold = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    later = _colliding_rounds()
+    for name in ("a", "a_1"):
+        assert cold.tool_results.fallback.shed_again(later, {name, f"{name}_res"})
+    assert sum(is_marker(m) for m in later) == 1, "the premise: the notes are combined"
+
+    assert cold._replay_record_edits(later)
+    assert _sent_without_notes(later) == merged

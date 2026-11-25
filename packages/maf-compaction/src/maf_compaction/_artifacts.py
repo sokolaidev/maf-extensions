@@ -4,7 +4,7 @@ import re
 from copy import copy
 from functools import cache
 from itertools import groupby
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from agent_framework import Content, Message
 from agent_framework._compaction import (
@@ -99,6 +99,28 @@ def _is_bare_text(content: Content) -> bool:
     )
 
 
+#: On a combined note: the notes it replaced, each with its id, text and source links, so the
+#: list as it was before can be rebuilt with the ids they were given then (see
+#: :func:`~._anchored.split_combined_notes`).
+NOTE_PARTS_KEY: Final[str] = "maf_compaction_note_parts"
+
+
+def note_parts(note: Message) -> list[dict[str, Any]]:
+    """The single notes ``note`` stands for: itself, or the parts a combined note recorded."""
+    parts = note.additional_properties.get(NOTE_PARTS_KEY)
+    if isinstance(parts, list):
+        return cast("list[dict[str, Any]]", parts)
+    links = note.additional_properties[GROUP_ANNOTATION_KEY]
+    return [
+        {
+            "id": note.message_id,
+            "text": note.text,
+            SUMMARY_OF_GROUP_IDS_KEY: list(links[SUMMARY_OF_GROUP_IDS_KEY]),
+            SUMMARY_OF_MESSAGE_IDS_KEY: list(links[SUMMARY_OF_MESSAGE_IDS_KEY]),
+        }
+    ]
+
+
 def coalesce_shed_notes(messages: list[Message]) -> bool:
     """Replace adjacent notes in the included prompt, retaining excluded sources in history."""
     included = (i for i, m in enumerate(messages) if not m.additional_properties.get(EXCLUDED_KEY))
@@ -135,7 +157,11 @@ def coalesce_shed_notes(messages: list[Message]) -> bool:
         merged = copy(notes[0])
         merged.contents = [Content.from_text(text)]
         # A new group annotation makes the framework count the replacement's own text.
-        merged.additional_properties = {**merged.additional_properties, GROUP_ANNOTATION_KEY: links}
+        merged.additional_properties = {
+            **merged.additional_properties,
+            GROUP_ANNOTATION_KEY: links,
+            NOTE_PARTS_KEY: [part for note in notes for part in note_parts(note)],
+        }
         replacements[run[0]] = merged
         removed.update(run[1:])
     if not removed:

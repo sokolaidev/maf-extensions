@@ -73,11 +73,13 @@ from ._artifacts import (
     ASSISTANT_TEXT,
     ECHO_EXCLUDE_REASON,
     MARKER_ID_PREFIX,
+    NOTE_PARTS_KEY,
     SHED_NOTES,
     TOOL_CALL,
     coalesce_shed_notes,
     is_marker,
     normalize_compaction_artifacts,
+    note_parts,
 )
 from ._media import annotate_token_counts
 from ._offload import off_loop
@@ -917,11 +919,22 @@ def split_combined_notes(
     }
     if not combined:
         return None
-    wanted = {group_id for index in combined for group_id in _noted_group_ids(messages[index])}
+    # A combined note that recorded its parts gets them back as they were; only one written
+    # before parts were recorded is rebuilt from its groups, ids allocated afresh.
+    wanted = {
+        group_id
+        for index in combined
+        if NOTE_PARTS_KEY not in messages[index].additional_properties
+        for group_id in _noted_group_ids(messages[index])
+    }
     originals: dict[int, int] = {}
     view: list[Message] = []
+    #: Each recorded part, with where its combined note stood should its group be gone.
+    parts: list[tuple[dict[str, Any], int]] = []
     for index, message in enumerate(messages):
         if index in combined:
+            if NOTE_PARTS_KEY in message.additional_properties:
+                parts.extend((part, len(view)) for part in note_parts(message))
             continue
         owned = copy(message)
         owned.additional_properties = dict(message.additional_properties)
@@ -933,6 +946,29 @@ def split_combined_notes(
             )
         originals[id(owned)] = index
         view.append(owned)
+    if parts:
+        # A shed leaves each note just before the first message of the group it stands for.
+        at = {m.message_id: i for i, m in enumerate(view) if m.message_id}
+        placed: list[tuple[int, int, dict[str, Any]]] = []
+        for order, (part, fallback) in enumerate(parts):
+            sources: list[str] = part[SUMMARY_OF_MESSAGE_IDS_KEY]
+            placed.append((at.get(sources[0], fallback) if sources else fallback, order, part))
+        placed.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for position, _, part in placed:
+            view.insert(
+                position,
+                Message(
+                    role="assistant",
+                    contents=[part["text"]],
+                    message_id=part["id"],
+                    additional_properties={
+                        GROUP_ANNOTATION_KEY: {
+                            SUMMARY_OF_MESSAGE_IDS_KEY: list(part[SUMMARY_OF_MESSAGE_IDS_KEY]),
+                            SUMMARY_OF_GROUP_IDS_KEY: list(part[SUMMARY_OF_GROUP_IDS_KEY]),
+                        }
+                    },
+                ),
+            )
     annotate_message_groups(view)
     notes: list[tuple[dict[str, Any], str]] = []
     for group in group_messages(view):
