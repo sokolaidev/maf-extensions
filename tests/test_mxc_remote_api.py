@@ -589,6 +589,20 @@ def client(certs, address, name="a", hostname="localhost"):
     return api.Client(address, context, hostname)
 
 
+def test_profile_mismatch_leaves_session_available_to_compatible_host(tmp_path, certificates):
+    with running(tmp_path / "runner", certificates) as (_, address):
+        a = client(certificates, address)
+        b = client(certificates, address, "b")
+        different = replace(SESSION, profile=PROFILE | {"runtime": "other"}).digest
+        with pytest.raises(api.Refused, match="profile differs"):
+            a.call("acquire", "session", guest="guest-a", profile=different)
+        owner = b.call("acquire", "session", guest="guest-b", profile=SESSION.digest)["owner"]
+        assert remote.Authority._decode_owner(owner).generation == 1
+        assert b.call("acquire", "session", guest="guest-b", profile=SESSION.digest) == {
+            "owner": owner
+        }
+
+
 def test_tls_publish_restart_retry_and_verified_takeover(tmp_path, certificates):
     root = tmp_path / "runner"
     with running(root, certificates) as (_, address):
@@ -613,7 +627,9 @@ def test_tls_publish_restart_retry_and_verified_takeover(tmp_path, certificates)
             with pytest.raises(api.Refused, match="not confirmed"):
                 b.call("acquire", "session", guest="guest-b")
             authority.confirm_fence("stop", lambda _: True)
-        replacement = b.call("acquire", "session", guest="guest-b")["owner"]
+        with pytest.raises(api.Refused, match="profile differs"):
+            b.call("acquire", "session", guest="incompatible", profile="0" * 64)
+        replacement = b.call("acquire", "session", guest="guest-b", profile=SESSION.digest)["owner"]
         assert b.call("restore", "session", owner=replacement) == {
             "call": "call",
             "files": {"index.json": encoded(b"checkpoint")},

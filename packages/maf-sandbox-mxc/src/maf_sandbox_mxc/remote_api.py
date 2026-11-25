@@ -406,7 +406,9 @@ class Coordinator:
         config = self.sessions[session]
         with self.authority() as authority:
             if operation == "acquire":
-                _fields(args, {"guest"})
+                _fields(args, {"guest", "profile"} if "profile" in args else {"guest"})
+                if "profile" in args and _text(args["profile"]) != config.digest:
+                    raise Refused("execution host profile differs from the configured session")
                 resource = Resource(grant.host, grant.boot, _name(_text(args["guest"])))
                 owner = authority.acquire(session, config.digest, resource)
                 with authority.guard(owner):
