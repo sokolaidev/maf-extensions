@@ -674,3 +674,53 @@ async def test_rewrite_uses_separate_bar_without_retaining_a_refused_rewrite() -
         assert (outcome == "accepted") == accepted
         assert not strategy.session_state()["merge_coverage"]["answers"]
         assert strategy.record_values_omitted == (2 if accepted else 0)
+
+
+async def test_an_answer_prepared_over_budget_relaxes_coverage_in_a_pass_that_fits() -> None:
+    """Retained reasoning follows the records. The worker's snapshot and sweep are over budget,
+    so the guard is lifted there; the applying pass fits, so its own guard is on. The lossy
+    answer is cached with the lifted guard and the completed sweep spends it (#2968)."""
+    summarizer = _Summarizer(merge=_lossy)
+    strategy = _configured(summarizer, share=0.00001, merge_coverage_floor=0.7)
+    strategy.overflow_policy = "shed"
+    strategy.max_input_tokens = 100_000
+    messages = _records()
+    messages[-1:-1] = [
+        Message("assistant", [Content.from_text_reasoning(text="Compare the records.")])
+    ]
+    _size(messages)
+    assert not consolidatable_record_groups(messages), "the premise: the guard bars every record"
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, 1)
+    await work.start(tool_reply())
+    try:
+        await running(work)
+        assert len(summarizer.merges) == 3
+        assert not strategy._over(messages)
+        await strategy._last_resort(messages)
+        assert strategy.records_merged == 1
+        assert strategy.current_merge_coverage_share == 0.75
+        assert len(summarizer.merges) == 3
+    finally:
+        await work.close()
+
+
+@pytest.mark.parametrize(
+    ("stored", "restored"),
+    [(False, [False]), (True, [True]), ("missing", [None]), ("no", [])],
+    ids=["lifted", "guarded", "saved before the field", "not a bool"],
+)
+def test_a_cached_answer_keeps_its_guard_across_restore(stored: Any, restored: list[Any]) -> None:
+    cache = MergeCoverage(0.8, 0.6, 0.05, 10_000)
+    cache.bind("prompt")
+    cache.remember(LossyMerge("sources", 2, "answer", 10, 7, guarded=False))
+    state = json.loads(json.dumps(cache.snapshot()))
+    if stored == "missing":
+        del state["answers"][0]["guarded"]
+    else:
+        state["answers"][0]["guarded"] = stored
+    again = MergeCoverage(0.8, 0.6, 0.05, 10_000)
+    again.bind("prompt")
+    again.restore(state)
+    assert [answer.guarded for answer in again.answers] == restored

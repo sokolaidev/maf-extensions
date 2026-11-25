@@ -1196,18 +1196,29 @@ _REASONING_PREFIX_GUARD: ContextVar[bool] = ContextVar("reasoning_prefix_guard",
 
 
 @contextmanager
-def _reasoning_prefix_yields_to_budget() -> Generator[None]:
-    """Let record edits change the prefix of retained reasoning within this scope."""
-    token = _REASONING_PREFIX_GUARD.set(False)
+def _reasoning_prefix_guarded(guarded: bool) -> Generator[None]:
+    """Set the guard within this scope, whichever way an enclosing scope set it."""
+    token = _REASONING_PREFIX_GUARD.set(guarded)
     try:
         yield
     finally:
         _REASONING_PREFIX_GUARD.reset(token)
 
 
+@contextmanager
+def _reasoning_prefix_yields_to_budget() -> Generator[None]:
+    """Let record edits change the prefix of retained reasoning within this scope."""
+    with _reasoning_prefix_guarded(False):
+        yield
+
+
+def _reasoning_prefix_guard_on() -> bool:
+    return _REASONING_PREFIX_GUARD.get()
+
+
 def _last_reasoning_index(messages: Sequence[Message], *, excluding: Collection[int] = ()) -> int:
     """Locate the last retained reasoning block, whose prefix must remain unchanged."""
-    if not _REASONING_PREFIX_GUARD.get():
+    if not _reasoning_prefix_guard_on():
         return -1
     return next(
         (
