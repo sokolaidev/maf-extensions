@@ -6,15 +6,23 @@ import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 const source = path.resolve(process.argv[2]);
 const baseline = process.argv.includes("--baseline");
+const cleanupRegression = process.argv.includes("--cleanup-regression");
 const launcherSha256 = createHash("sha256").update(readFileSync(source)).digest("hex");
 if (baseline) assert.equal(launcherSha256, "dd70a621b515c8055368a86f42103dedbec864f5f346855b2213aa9a5c143510");
 const root = mkdtempSync(path.join(tmpdir(), "openclaw-preflight-proof-"));
 const launcher = path.join(root, "launcher.mjs");
 copyFileSync(source, launcher);
+if (cleanupRegression) {
+  const text = readFileSync(launcher, "utf8");
+  const deadline = "const PROBE_TIMEOUT_MS = 30_000;";
+  assert.equal(text.split(deadline).length, 2);
+  writeFileSync(launcher, text.replace(deadline, "const PROBE_TIMEOUT_MS = 120_000;"));
+}
 const sdkRoot = path.join(root, "node_modules/@microsoft/mxc-sdk");
 mkdirSync(sdkRoot, { recursive: true });
 writeFileSync(path.join(sdkRoot, "package.json"), JSON.stringify({ type: "module", exports: { "./v1": "./fixture.mjs" } }));
@@ -60,7 +68,9 @@ const env = {
   PROOF_PID: probePid,
 };
 const rows = [];
+let probeHasExited = false;
 function reset() {
+  probeHasExited = false;
   writeFileSync(path.join(native, "mxc_ffi.dll"), "inert-dll");
   writeFileSync(path.join(native, "wxc-exec.exe"), "inert-executor");
   writeFileSync(events, "");
@@ -79,11 +89,49 @@ function request(name) {
 function history() {
   return readFileSync(events, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
-function assertGone() {
+function ownedProbePid() {
   const pid = Number(readFileSync(probePid, "utf8"));
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.ok(Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid, "Invalid fixture probe PID");
+  return pid;
 }
-async function run(name, pty = false) {
+function assertGone() {
+  const pid = ownedProbePid();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  probeHasExited = true;
+}
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === "ESRCH") return false; throw error; }
+}
+async function stopOwnedProbe() {
+  if (probeHasExited || !existsSync(probePid)) return;
+  const pid = ownedProbePid();
+  try { process.kill(pid, "SIGKILL"); }
+  catch (error) { if (error.code !== "ESRCH") throw error; }
+  const deadline = Date.now() + 5000;
+  while (isAlive(pid) && Date.now() < deadline) await delay(10);
+  assertGone();
+}
+async function withWatchdog(operation, cleanup, timeoutMs = 40_000) {
+  let timer;
+  let expired = false;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      cleanup().then(() => reject(new Error("Replay watchdog expired")), reject);
+    }, timeoutMs);
+  });
+  try {
+    let result;
+    try { result = await Promise.race([operation, timeout]); }
+    catch (error) { if (expired) await timeout; throw error; }
+    if (expired) await timeout;
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function run(name, pty = false, watchdogMs = 40_000) {
   reset();
   const dir = mkdtempSync(path.join(root, "payload-"));
   const file = path.join(dir, "payload.json");
@@ -92,13 +140,27 @@ async function run(name, pty = false) {
   const stdout = [], stderr = [];
   child.stdout.on("data", (x) => stdout.push(x));
   child.stderr.on("data", (x) => stderr.push(x));
-  const timer = setTimeout(() => child.kill("SIGKILL"), 40_000);
-  const [code] = await once(child, "close");
-  clearTimeout(timer);
-  return { code, stderr: Buffer.concat(stderr).toString(), stdout: Buffer.concat(stdout).toString(), events: history() };
+  const closed = once(child, "close");
+  const cleanup = async () => {
+    try { await stopOwnedProbe(); }
+    finally { child.kill("SIGKILL"); await closed; }
+  };
+  try {
+    const [code] = await withWatchdog(closed, cleanup, watchdogMs);
+    return { code, stderr: Buffer.concat(stderr).toString(), stdout: Buffer.concat(stdout).toString(), events: history() };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }
 try {
-  if (baseline) {
+  if (cleanupRegression) {
+    await assert.rejects(run("hang", false, 2000), /Replay watchdog expired/);
+    assertGone();
+    assert.equal(history().filter((x) => x.kind === "spawn").length, 0);
+    rows.push(`| fixture | copied launcher deadline extended; SHA-256 ${createHash("sha256").update(readFileSync(launcher)).digest("hex")} | control |`);
+    rows.push("| watchdog | delayed supervisor; fixture probe terminated and exit verified | passed |");
+  } else if (baseline) {
     const result = await run("fallback");
     assert.equal(result.code, 0);
     assert.equal(result.events.filter((x) => x.kind === "probe").length, 0);
@@ -142,7 +204,10 @@ try {
     const abort = new AbortController();
     const observer = watch(root, () => { if (existsSync(probePid)) abort.abort(); });
     try {
-      await assert.rejects(probeRequest(request("hang"), abort.signal), /preflight cancelled/);
+      await assert.rejects(
+        withWatchdog(probeRequest(request("hang"), abort.signal), stopOwnedProbe),
+        /preflight cancelled/,
+      );
       assertGone();
       assert.equal(history().filter((x) => x.kind === "spawn").length, 0);
     } finally {
@@ -155,5 +220,6 @@ try {
   }
   console.log(`# MXC preflight launcher proof\n\nNode: ${process.version}; platform: ${process.platform}.\nLauncher SHA-256: ${launcherSha256}.\n\nInert SDK and synthetic native files only. No MXC library or workload executed.\n\n| Path | Contract | Result |\n| --- | --- | --- |\n${rows.join("\n")}\n`);
 } finally {
+  await stopOwnedProbe();
   rmSync(root, { recursive: true, force: true });
 }
