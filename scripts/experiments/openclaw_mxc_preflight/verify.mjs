@@ -22,12 +22,13 @@ mkdirSync(native, { recursive: true });
 const events = path.join(root, "events.txt");
 const probePid = path.join(root, "probe-pid.txt");
 writeFileSync(path.join(sdkRoot, "fixture.mjs"), `
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const event = (value) => appendFileSync(process.env.PROOF_EVENTS, JSON.stringify(value) + "\\n");
 export function probe(request) {
   event({ kind: "probe", request });
-  writeFileSync(process.env.PROOF_PID, String(process.pid));
+  writeFileSync(process.env.PROOF_PID + ".pending", String(process.pid));
+  renameSync(process.env.PROOF_PID + ".pending", process.env.PROOF_PID);
   switch (request.environment.CASE) {
     case "fallback": return { tier: "appcontainer-dacl", needsDaclAugmentation: true, warnings: [] };
     case "null": return null;

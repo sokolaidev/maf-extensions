@@ -24,7 +24,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
           cd "$RUNNER_TEMP/openclaw"
           git init -q
-          git add extensions/mxc pnpm-lock.yaml
+          git add extensions/mxc
+          git add -f pnpm-lock.yaml
           git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
           node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs --baseline | tee "$RUNNER_TEMP/evidence/baseline.md"
           git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
