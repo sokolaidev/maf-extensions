@@ -230,7 +230,7 @@ async def test_ambiguous_content_needs_interpretation(source, candidate, role):
 async def test_before_send_measures_prepared_answer_once_at_application():
     strategy, work, messages = await prepared()
     try:
-        work.start(tool_reply())
+        await work.start(tool_reply())
         await running(work)
 
         async def judge(batch):
