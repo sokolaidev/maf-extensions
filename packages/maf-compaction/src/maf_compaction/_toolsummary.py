@@ -75,8 +75,8 @@ from ._artifacts import (
     RECORD_PREAMBLE,
     WRITTEN_RECORD_KEY,
     WRITTEN_RECORD_PREFIX,
-    exclude_compaction_echoes,
     is_written_record,
+    normalize_compaction_artifacts,
 )
 from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
@@ -2198,14 +2198,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        echoes = await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        normalized = await off_loop(_annotate_for_pass, messages, self.tokenizer)
         return (
             await self.compact_against(
                 messages,
                 prompt_tokens=included_token_count(messages),
                 trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
             )
-            or echoes
+            or normalized
         )
 
     async def compact_against(
@@ -4038,7 +4038,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if forced_this_call or not messages or self.recall_disabled:
             self._force_next = False
             return
-        await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        if await off_loop(_annotate_for_pass, messages, self.tokenizer):
+            record_index = find_record_index(messages)
         try:
             budget = request_budget() if request_budget is not None else None
         except CompactionBudgetExceeded:
@@ -4144,8 +4145,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
 
 def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> bool:
-    """Exclude echoes before measuring the standalone strategy trigger."""
-    echoes = exclude_compaction_echoes(messages)
+    """Normalize generated notes before measuring the standalone strategy trigger."""
+    changed = normalize_compaction_artifacts(messages)
     annotate_message_groups(messages)
     annotate_token_counts(messages, tokenizer=tokenizer)
-    return echoes
+    return changed

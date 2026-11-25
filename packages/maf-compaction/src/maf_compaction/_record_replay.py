@@ -20,6 +20,7 @@ from agent_framework._compaction import (
 )
 
 from ._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
+from ._anchored import split_combined_notes
 from ._artifacts import is_marker
 from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
@@ -749,31 +750,71 @@ def replay_match(
         if not message.additional_properties.get(EXCLUDED_KEY, False)
         and any(content.type == "text_reasoning" for content in message.contents)
     }
+
+    def consider(found: list[tuple[str, set[str]]], run: list[dict[str, Any]], count: int) -> None:
+        for certificate, excluded in found:
+            if not any(
+                identity in excluded
+                for index, identity in included_reasoning.items()
+                if index > run[-1]["end_index"]
+            ):
+                matches.setdefault((certificate, count), []).append(run)
+
     window_keys: dict[int, str] = {}
-    notes: list[int] | None = None
     for count in sorted({count for _, count in certificates}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
             key = _source_key(messages, run, message_keys, key_cache, window_keys)
-            if key is None:
+            if key is not None:
+                consider(certificates.get((key, count), []), run, count)
+    # Only an edit no window matched is looked for again, by the older key a window holding a
+    # note had before notes were skipped: a session whose edits all match pays nothing more.
+    unmatched = {
+        (key, count): found
+        for (key, count), found in certificates.items()
+        if not any((certificate, count) in matches for certificate, _ in found)
+    }
+    if not unmatched:
+        return _unambiguous(matches)
+    notes = _notes_before(messages)
+    split: tuple[list[Message], dict[int, int]] | None | bool = False
+    split_keys: dict[int, str] = {}
+    split_windows: dict[int, str] = {}
+    for count in sorted({count for _, count in unmatched}, reverse=True):
+        for start in range(len(groups) - count + 1):
+            run = groups[start : start + count]
+            if notes[run[-1]["end_index"] + 1] == notes[run[0]["start_index"]]:
                 continue
-            found = certificates.get((key, count), [])
-            if notes is None:
-                notes = _notes_before(messages)
-            # A note between the records: an edit accepted before notes were skipped has the
-            # window's older key.
-            if notes[run[-1]["end_index"] + 1] > notes[run[0]["start_index"]]:
+            if split is False:
+                # Built once, for the first window holding a note.
+                split = split_combined_notes(messages)
+            window = range(run[0]["start_index"], run[-1]["end_index"] + 1)
+            if split and any(index not in split[1] for index in window):
+                view, at = split
+                legacy = _source_key(
+                    view,
+                    [
+                        {**g, "start_index": at[g["start_index"]], "end_index": at[g["end_index"]]}
+                        for g in run
+                    ],
+                    split_keys,
+                    None,
+                    split_windows,
+                    skip_notes=False,
+                )
+            else:
                 legacy = _source_key(
                     messages, run, message_keys, key_cache, window_keys, skip_notes=False
                 )
-                found = [*found, *certificates.get((legacy, count), [])] if legacy else found
-            for certificate, excluded in found:
-                if not any(
-                    identity in excluded
-                    for index, identity in included_reasoning.items()
-                    if index > run[-1]["end_index"]
-                ):
-                    matches.setdefault((certificate, count), []).append(run)
+            if legacy is not None:
+                consider(unmatched.get((legacy, count), []), run, count)
+    return _unambiguous(matches)
+
+
+def _unambiguous(
+    matches: dict[tuple[str, int], list[list[dict[str, Any]]]],
+) -> tuple[list[dict[str, Any]], tuple[str, int]] | None:
+    """The earliest, then widest, edit that exactly one window matched."""
     candidates = [(runs[0], key) for key, runs in matches.items() if len(runs) == 1]
     return min(
         candidates,

@@ -14,12 +14,16 @@ from agent_framework._compaction import (
     annotate_message_groups,
     annotate_token_counts,
     group_messages,
+    included_token_count,
+    project_included_messages,
     set_excluded,
 )
-from test_anchored import TOKENIZER, _conversation
+from test_anchored import TOKENIZER, _conversation, _tool_turn
+from test_completed_turns import _strategy as composed_strategy
 
 from maf_compaction import _anchored as anchored_module
 from maf_compaction._anchored import EXCLUDE_REASON, MARKER_ID_PREFIX, AnchoredCompactionStrategy
+from maf_compaction._artifacts import SHED_NOTES, TOOL_CALL, is_compaction_echo, is_marker
 from maf_compaction._preserve import set_preserved
 
 
@@ -241,3 +245,87 @@ def test_batch_reads_the_history_a_bounded_number_of_times_and_never_inserts() -
     assert messages.iterations <= 2
     assert messages.splices == 1
     assert len(messages) == 301
+
+
+def test_new_notes_follow_visible_runs_and_extend_idempotently() -> None:
+    first, second, third, fourth = (_tool_turn(i, 10)[:2] for i in range(4))
+    barrier = Message("user", ["Continue."], message_id="keep")
+    messages = [*first, *second, barrier, *third, *fourth]
+    sources = list(messages)
+    strategy = _strategy()
+    source_ids = {m.message_id for m in [*first, *third, *fourth] if m.message_id}
+    assert strategy.shed_again(messages, source_ids)
+    visible = project_included_messages(messages)
+    assert [m.text for m in visible if is_marker(m)] == [
+        SHED_NOTES[TOOL_CALL],
+        "[compacted: 2 earlier tool calls and their results]",
+    ]
+    assert visible[1:4] == [*second, barrier]
+    source_ids.update(m.message_id for m in second if m.message_id)
+    assert strategy.shed_again(messages, source_ids)
+    left, kept, right = project_included_messages(messages)
+    assert kept is barrier
+    assert left.text == right.text == "[compacted: 2 earlier tool calls and their results]"
+    for marker, members in [(left, [*first, *second]), (right, [*third, *fourth])]:
+        links = marker.additional_properties[GROUP_ANNOTATION_KEY]
+        assert links[SUMMARY_OF_GROUP_IDS_KEY] == [g["group_id"] for g in group_messages(members)]
+        assert links[SUMMARY_OF_MESSAGE_IDS_KEY] == [m.message_id for m in members]
+        assert not is_compaction_echo(marker)
+    assert [id(m) for m in messages if not is_marker(m)] == [id(m) for m in sources]
+    echo = Message("assistant", [left.text], message_id="anchored_imitation")
+    assert is_compaction_echo(left.text) and is_compaction_echo(echo)
+    assert not is_compaction_echo(f"Quoted {left.text}")
+    messages.append(echo)
+    assert strategy.shed_to(messages, ceiling=1_000_000)
+    assert project_included_messages(messages) == [left, barrier, right]
+    assert not strategy.shed_again(messages, source_ids)
+
+
+@pytest.mark.anyio
+async def test_composed_pass_merges_2176_stored_notes_before_budget_decisions() -> None:
+    count = 2176
+    messages = [m for i in range(count) for m in _tool_turn(i, 0)[:2]]
+    groups = group_messages(messages)
+    source_ids = [m.message_id for m in messages]
+    for m in messages:
+        set_excluded(m, excluded=True, reason=EXCLUDE_REASON)
+    _strategy()._insert_notes(messages, [(g, SHED_NOTES[TOOL_CALL]) for g in reversed(groups)])
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+    before = included_token_count(messages)
+    assert len(project_included_messages(messages)) == count
+    strategy = composed_strategy(budget=1_000)
+    assert before > strategy.max_input_tokens
+    assert await strategy(messages)
+    [note] = project_included_messages(messages)
+    assert is_marker(note)
+    assert note.text == "[compacted: 2176 earlier tool calls and their results]"
+    links = note.additional_properties[GROUP_ANNOTATION_KEY]
+    assert links[SUMMARY_OF_GROUP_IDS_KEY] == [g["group_id"] for g in groups]
+    assert links[SUMMARY_OF_MESSAGE_IDS_KEY] == source_ids
+    after = included_token_count(messages)
+    assert 0 < after < 100
+    annotate_token_counts(messages, tokenizer=TOKENIZER, force_retokenize=True)
+    assert included_token_count(messages) == after
+    assert not await strategy(messages)
+
+
+@pytest.mark.parametrize("protected_note", [False, True])
+def test_shed_to_keeps_an_included_barrier_between_runs(protected_note: bool) -> None:
+    messages = [m for i in range(5) for m in _tool_turn(i, 500)[:2]]
+    if protected_note:
+        assert _strategy().shed_again(messages, {"a_call_2", "t_res_2"})
+        barrier = next(m for m in messages if is_marker(m))
+    else:
+        barrier = Message("developer", ["Keep formatting."], message_id="keep")
+        messages.insert(4, barrier)
+    set_preserved(barrier, preserved=True)
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=1, tokenizer=TOKENIZER, keep_head_groups=0, keep_tail_groups=0
+    )
+    assert strategy.shed_to(messages, ceiling=1)
+    left, kept, right = project_included_messages(messages)
+    assert kept is barrier
+    assert left.text == "[compacted: 2 earlier tool calls and their results]"
+    count = 2 if protected_note else 3
+    assert right.text == f"[compacted: {count} earlier tool calls and their results]"
+    assert not strategy.shed_to(messages, ceiling=1)

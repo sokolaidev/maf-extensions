@@ -41,6 +41,7 @@ from agent_framework._compaction import (
 )
 
 from ._anchored import AnchoredCompactionStrategy, _is_marker  # pyright: ignore[reportPrivateUsage]
+from ._artifacts import shed_note_text
 from ._media import MESSAGE_COUNTED
 from ._preserve import _ATTRIBUTION_KEY, removable_spans  # pyright: ignore[reportPrivateUsage]
 from ._request import RECALL_PROMPT_KEY
@@ -464,13 +465,24 @@ def _removals_fit(view: list[Message], messages: list[Message], excluded: set[in
     for note in notes:
         links = note.additional_properties[GROUP_ANNOTATION_KEY]
         group_ids = links[SUMMARY_OF_GROUP_IDS_KEY]
-        if len(group_ids) != 1 or (group := by_id.get(group_ids[0])) is None:
-            return False
-        sources = history[group["start_index"] : group["end_index"] + 1]
-        if (
-            group["kind"] not in {"tool_call", "assistant_text"}
-            or links[SUMMARY_OF_MESSAGE_IDS_KEY] != [message.message_id for message in sources]
-            or note.text != AnchoredCompactionStrategy._note_for(history, group)  # pyright: ignore[reportPrivateUsage]
+        source_ids: list[str | None] = []
+        texts: list[str] = []
+        previous_end: int | None = None
+        for group_id in group_ids:
+            group = by_id.get(group_id)
+            if group is None or group["kind"] not in {"tool_call", "assistant_text"}:
+                return False
+            start, end = group["start_index"], group["end_index"]
+            if previous_end is not None and start <= previous_end:
+                return False
+            previous_end = end
+            text = AnchoredCompactionStrategy._note_for(history, group)  # pyright: ignore[reportPrivateUsage]
+            if text is None:
+                return False
+            texts.append(text)
+            source_ids.extend(m.message_id for m in history[start : end + 1])
+        if links[SUMMARY_OF_MESSAGE_IDS_KEY] != source_ids or note.text != shed_note_text(
+            texts, len(group_ids)
         ):
             return False
     return True

@@ -59,7 +59,7 @@ from ._anchored import (
     AnchoredCompactionStrategy,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
-from ._artifacts import exclude_compaction_echoes
+from ._artifacts import coalesce_shed_notes, normalize_compaction_artifacts
 from ._background_records import BackgroundRecords, counted_history, has_records
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts, structural_counter
@@ -2190,7 +2190,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
         if tokens is None:
             steady = None
-            await off_loop(self._annotate_messages, messages)
         changed, sources, entry_tokens = await self._compact_annotated(
             messages, steady=steady, tokens=tokens or 0
         )
@@ -2245,20 +2244,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
             return False
-        await off_loop(self._annotate_messages, messages)
         changed, _, _ = await self._compact_annotated(messages)
+        return changed
+
+    def _prepare_pass(self, messages: list[Message]) -> bool:
+        changed = normalize_compaction_artifacts(messages)
+        self._annotate_messages(messages)
         return changed
 
     async def _compact_annotated(
         self, messages: list[Message], *, steady: SettledTools | None = None, tokens: int = 0
     ) -> _PassResult:
-        echoes = steady is None and await off_loop(exclude_compaction_echoes, messages)
+        normalized = steady is None and await off_loop(self._prepare_pass, messages)
         refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
         with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
             changed, sources, entry_tokens = await self._compact(
                 messages, steady=steady, tokens=tokens
             )
-        return changed or echoes, sources, entry_tokens
+        return changed or normalized, sources, entry_tokens
 
     async def _compact(
         self,
@@ -2384,7 +2387,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
-        changed = False
+        changed = coalesce_shed_notes(messages)
         if self._over(messages) and self.overflow_policy == "shed":
             included = [message for message in messages if not _is_excluded(message)]
             start = _ChainStart.take(messages)

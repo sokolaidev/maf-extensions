@@ -17,6 +17,7 @@ from agent_framework._compaction import (
     apply_compaction,
     project_included_messages,
 )
+from test_anchored import _tool_turn
 from test_call_carryover import _budget, _Composed, _Layered, _Rebuilding, _registry, _transcript
 from test_record_budget import TOKENIZER, _strategy, _Summarizer
 from test_user_summary_replay import history as user_history
@@ -200,8 +201,8 @@ async def test_first_call_matches_replay_after_insertions_shift_source_positions
     assert await _call(restored, _reload(history), json.loads(json.dumps(saved))) == expected
     assert [mid for mid, _, _ in expected].count(earlier_note.message_id) == 1
     if change == "following role":
-        texts = next(contents for mid, _, contents in expected if mid == "anchored_group_reply")
-        assert texts[0]["text"] == "[compacted: an earlier assistant reply]"
+        texts = next(contents for mid, _, contents in expected if mid == "anchored_group_call")
+        assert texts[0]["text"] == "[compacted: 2 earlier conversation groups]"
     elif change == "mixed attribution":
         assert {"call", "result"} <= {mid for mid, _, _ in expected}
     elif not stored_note:
@@ -387,6 +388,26 @@ def test_changed_following_message_replays_the_reply_note(original_tail: bool) -
     assert [m.to_dict() for m in current] == before
     assert anchored.shed_again(current, ["a"])
     assert any(m.text == "[compacted: an earlier assistant reply]" for m in current)
+
+
+def test_a_saved_tool_run_validates_every_source_group() -> None:
+    history = [m for i in range(3) for m in _tool_turn(i, 10)[:2]]
+    previous = _reload(history)
+    handed = Handed.take(previous)
+    anchored = AnchoredCompactionStrategy(max_input_tokens=4000, tokenizer=TOKENIZER)
+    assert anchored.shed_again(previous, {m.message_id for m in previous if m.message_id})
+    [note] = project_included_messages(previous)
+    saved = save_view(CarriedView(handed, previous), {})
+    assert saved
+    current = _reload(history)
+    assert resume_saved_view(saved, {}, current, Handed.take(current))
+    assert [m.text for m in project_included_messages(current)] == [note.text]
+
+    current = _reload(history)
+    current[-1].additional_properties["_attribution"] = "loaded"
+    before = [m.to_dict() for m in current]
+    assert resume_saved_view(saved, {}, current, Handed.take(current)) is None
+    assert [m.to_dict() for m in current] == before
 
 
 @pytest.mark.parametrize("change", ["mixed attribution", "later result", "larger group"])
