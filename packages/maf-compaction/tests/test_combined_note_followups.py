@@ -204,3 +204,22 @@ async def test_a_merge_kept_on_notes_with_collided_ids_still_replays(
 
     assert cold._replay_record_edits(later)
     assert _sent_without_notes(later) == merged
+
+
+async def test_an_edit_matched_by_the_current_key_never_builds_the_older_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge kept under the key without notes is matched by it, so the list as it was before
+    notes were combined is never built, however many notes its window holds."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    messages = _two_rounds_between_two_records()
+    _shed(strategy, messages, "ta")
+    assert await _merge_first_two(strategy, messages) == "accepted"
+    _shed(strategy, messages, "tb")
+    built: list[int] = []
+    split = replay.split_combined_notes
+    monkeypatch.setattr(replay, "split_combined_notes", lambda m: built.append(len(m)) or split(m))
+
+    _assert_replays(strategy, messages)
+
+    assert not built

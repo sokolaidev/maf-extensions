@@ -953,10 +953,14 @@ def split_combined_notes(
         for order, (part, fallback) in enumerate(parts):
             sources: list[str] = part[SUMMARY_OF_MESSAGE_IDS_KEY]
             placed.append((at.get(sources[0], fallback) if sources else fallback, order, part))
-        placed.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        placed.sort(key=lambda item: (item[0], item[1]))
+        # One forward pass: each part goes in ahead of the message at its position.
+        spliced: list[Message] = []
+        cursor = 0
         for position, _, part in placed:
-            view.insert(
-                position,
+            spliced.extend(view[cursor:position])
+            cursor = max(cursor, position)
+            spliced.append(
                 Message(
                     role="assistant",
                     contents=[part["text"]],
@@ -967,8 +971,10 @@ def split_combined_notes(
                             SUMMARY_OF_GROUP_IDS_KEY: list(part[SUMMARY_OF_GROUP_IDS_KEY]),
                         }
                     },
-                ),
+                )
             )
+        spliced.extend(view[cursor:])
+        view = spliced
     annotate_message_groups(view)
     notes: list[tuple[dict[str, Any], str]] = []
     for group in group_messages(view):
