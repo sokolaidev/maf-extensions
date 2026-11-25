@@ -914,7 +914,7 @@ index a940827..f66c11c 100644
 -  });
 -});
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 310eaa5..880a8ab 100644
+index 310eaa5..320d487 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
 @@ -1879,8 +1879,8 @@ importers:
@@ -945,7 +945,7 @@ index 310eaa5..880a8ab 100644
  
    '@microsoft/teams.api@2.1.0':
      resolution: {integrity: sha512-tS7NRqxpyzrgCwHCZh4xUys1Waon/cEtVb801Yx6DekOIOZaOgHA4KFuspM6FvlErzTt5tm6GGlXDstm4dkHbw==}
-@@ -13267,7 +13273,7 @@ snapshots:
+@@ -13267,7 +13272,7 @@ snapshots:
      dependencies:
        '@chevrotain/types': 13.2.0
  

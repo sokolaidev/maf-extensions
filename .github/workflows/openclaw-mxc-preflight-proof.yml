@@ -102,10 +102,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Baseline reproduction failed' }
           Set-Location $subject
           git init -q
+          git config core.autocrlf false
           git apply --check --include=extensions/mxc/src/mxc-spawn-launcher.mjs $patch
           if ($LASTEXITCODE -ne 0) { throw 'Patch check failed' }
           git apply --include=extensions/mxc/src/mxc-spawn-launcher.mjs $patch
           if ($LASTEXITCODE -ne 0) { throw 'Patch application failed' }
+          $launcherHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $launcher).Hash.ToLowerInvariant()
+          if ($launcherHash -ne 'e69dfa4fb9578f989c48d014e501d2a94e51765597d066ff0f48d8f679187627') { throw 'Unexpected patched launcher bytes' }
           node $proof $launcher | Tee-Object -FilePath (Join-Path $evidence 'proof.md')
           if ($LASTEXITCODE -ne 0) { throw 'Windows fixture proof failed' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
