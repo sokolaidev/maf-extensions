@@ -7,10 +7,36 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, Final, cast
 
-from agent_framework import FunctionTool, TokenizerProtocol
+from agent_framework import FunctionTool, Message, SessionContext, TokenizerProtocol
 from agent_framework import tool as function_tool
 
+from ._summary_links import has_summary_links
+
 RECALL_PROMPT_KEY: Final[str] = "_maf_recall_prompt"
+
+
+def as_compaction_context(message: Message) -> Message:
+    """Attribute derived request context so input-history sinks do not append it."""
+    context = SessionContext(input_messages=[])
+    context.extend_messages("maf_compaction_context", [message])
+    return context.context_messages["maf_compaction_context"][0]
+
+
+def attribute_compaction_context(
+    messages: Sequence[Message], original_contents: Mapping[int, object]
+) -> None:
+    """Keep derived summaries out of the finalized request's new-input history."""
+    from ._toolsummary import _is_written_record  # pyright: ignore[reportPrivateUsage]
+
+    for message in messages:
+        if (
+            id(message.contents) not in original_contents
+            and "_attribution" not in message.additional_properties
+            and (has_summary_links(message) or _is_written_record(message))
+        ):
+            message.additional_properties.update(
+                as_compaction_context(message).additional_properties
+            )
 
 
 def request_tools(options: Mapping[str, Any]) -> list[Any]:

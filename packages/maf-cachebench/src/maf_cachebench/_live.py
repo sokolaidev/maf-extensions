@@ -17,12 +17,9 @@ history contains that strategy's own replies, a strategy that compacts badly pro
 worse reply, which becomes worse history, which it compacts again. Replay cannot show that
 compounding at all; here it is the thing being measured.
 
-Compaction is wired the way ``create_harness_agent`` wires it, which is not the obvious
-way. A ``CompactionProvider``'s ``before_strategy`` is a no-op under per-service-call
-history persistence: the agent skips ``HistoryProvider.before_run``, so the provider only
-ever sees an empty context. The before phase has to travel as the agent's
-``compaction_strategy`` instead, which runs per model call inside the client. Only the
-after phase belongs on the provider.
+Compaction runs at the chat-client boundary on every model call and on stored history
+after the turn. Recall and usage observation run inside per-service-call history
+persistence, so a rejected recall can retry without loading the same history twice.
 """
 
 from __future__ import annotations
@@ -55,6 +52,7 @@ from agent_framework._compaction import project_included_messages
 from maf_compaction import (
     DEFAULT_RECORD_MAX_TOKENS,
     DEFAULT_RECORD_TARGET_TOKENS,
+    CompactionMiddlewareProvider,
     RecallGate,
     SessionCompactionProvider,
     SessionCompactionRegistry,
@@ -1407,6 +1405,10 @@ def build_live_agent(
             SessionToolResultRecallMiddleware(registry, compact_before=True),
             *extra_middleware,
         ]
+    request_middleware = CompactionMiddlewareProvider(
+        [item for item in extra_middleware if isinstance(item, ChatMiddleware)] + [recorder]
+    )
+    extra_middleware = [item for item in extra_middleware if not isinstance(item, ChatMiddleware)]
     if kind == "harness":
         # The harness resolves both phases itself from the strategies handed in, so it gets
         # the same object twice. Its optional providers are switched off: each adds tools
@@ -1423,14 +1425,15 @@ def build_live_agent(
             disable_compaction=strategy is None or registry is not None,
             before_compaction_strategy=strategy if registry is None else None,
             after_compaction_strategy=strategy if registry is None else None,
-            context_providers=[session_provider] if session_provider is not None else [],
+            context_providers=[request_middleware]
+            + ([session_provider] if session_provider is not None else []),
             tokenizer=tokenizer,
             disable_todo=True,
             disable_mode=True,
             disable_file_memory=True,
             disable_web_search=True,
             disable_tool_auto_approval=True,
-            middleware=[*extra_middleware, recorder],
+            middleware=extra_middleware,
             # Deliberately empty: every option travels per turn instead. An option baked
             # in here cannot be dropped when a provider rejects it without rebuilding the
             # agent, which would discard the session the conversation lives in.
@@ -1441,12 +1444,11 @@ def build_live_agent(
             agent.context_providers.insert(1, session_provider)
         return agent
 
-    providers: list[Any] = [history]
+    providers: list[Any] = [history, request_middleware]
     if session_provider is not None:
         providers.append(session_provider)
     elif strategy is not None:
-        # before_strategy is deliberately None: on a provider it would never run. The
-        # before phase travels as the agent's compaction_strategy below.
+        # The chat-client strategy handles every model call, including the first.
         providers.append(
             CompactionProvider(
                 before_strategy=None,
@@ -1463,7 +1465,7 @@ def build_live_agent(
         context_providers=providers,
         compaction_strategy=strategy if registry is None else None,
         require_per_service_call_history_persistence=True,
-        middleware=[*extra_middleware, recorder],
+        middleware=extra_middleware,
         default_options={},
     )
 
