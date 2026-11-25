@@ -440,6 +440,18 @@ def test_scan_only_suppresses_delivered_vulnerability_failures(monkeypatch, dama
             ],
         },
     ]
+    jobs.append(
+        {
+            "name": "Image security checks",
+            "conclusion": "failure",
+            "steps": [
+                {
+                    "name": "Require successful selection and selected scans",
+                    "conclusion": "failure",
+                },
+            ],
+        }
+    )
     if damage == "build":
         jobs[3]["steps"][0].update(name="Build the selected image", conclusion="failure")
     elif damage == "evidence":

@@ -79,7 +79,8 @@ def notice(issue: dict | None, signals: set[str]) -> str | None:
     added = sorted(signals - known)
     if not added:
         return None
-    digest = hashlib.sha256(json.dumps(added).encode()).hexdigest()
+    generation = sum(value.get("generation", 0) for value in saved.values())
+    digest = hashlib.sha256(json.dumps([generation, added]).encode()).hexdigest()
     details = html.escape(
         "\n".join(
             "Chrome security advisory changed; see the Chrome evidence section."
@@ -101,6 +102,14 @@ def already_notified(comments: list[dict], message: str) -> bool:
     )
 
 
+def remember(saved: dict[str, Any], lane: str, signals: set[str], active: bool) -> None:
+    """Advance receipt identity on state changes, including removals, but not evidence refreshes."""
+    previous = saved.get(lane, {})
+    state = {"signals": sorted(signals), "active": active}
+    changed = any(previous.get(key) != value for key, value in state.items())
+    saved[lane] = {**state, "generation": previous.get("generation", 0) + int(changed)}
+
+
 def update(
     issue: dict | None,
     profile: str,
@@ -115,16 +124,18 @@ def update(
     saved = lanes(issue)
     old_body = (issue or {}).get("body") or ""
     recovered = bool(saved) and not any(value["active"] for value in saved.values())
-    if not saved and any(
+    legacy_active = any(
         value.get("state", "open") == "open"
         and f"<!-- image-remediation-attention:{profile} -->" in (value.get("body") or "")
+        and not lanes(value)
         for value in ([issue] if issue else []) + (related or [])
-    ):
-        saved["legacy-remediation"] = {"signals": [], "active": True}
+    )
+    if legacy_active:
+        remember(saved, "legacy-remediation", set(), True)
     known = {signal for value in saved.values() for signal in value["signals"]}
     # Legacy trackers lack structured alert state. Preserve their dismissal on adoption.
     novel = bool(saved and signals - known)
-    saved[lane] = {"signals": sorted(signals), "active": active}
+    remember(saved, lane, signals, active)
     start, end = f"<!-- image-issue-section:{lane} -->", f"<!-- /image-issue-section:{lane} -->"
     section = f"{start}\n{content}\n{end}"
     pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
@@ -156,9 +167,9 @@ def update(
     payload = {"title": f"Image security needs attention: {profile}", "body": body}
     if issue is not None:
         pending = any(value["active"] for value in saved.values())
-        if not pending and issue.get("state") != "closed":
+        if not pending and lane == "release" and issue.get("state") != "closed":
             payload.update(state="closed", state_reason="completed")
-        elif active and issue.get("state") == "closed" and (novel or recovered):
+        elif issue.get("state") == "closed" and (legacy_active or (active and (novel or recovered))):
             payload.update(state="open")
         if all(issue.get(key) == value for key, value in payload.items()):
             return None

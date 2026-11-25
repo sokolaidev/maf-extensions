@@ -1804,12 +1804,17 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
         record=vulnerable_record(), observed=candidate(evidence="run/2"), previous=state
     )
     tracker.reconcile(client, "graphviz", again, client.items[0])
-    assert len(client.items) == len(client.calls) == 1
+    assert len(client.items) == 1
+    assert len(client.calls) == 2
+    assert "run/2" in client.items[0]["body"]
+    assert client.calls[-1][1] == "PATCH"
+    tracker.reconcile(client, "graphviz", again, client.items[0])
+    assert len(client.calls) == 2
     changed = desired(
         observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
     )
     tracker.reconcile(client, "graphviz", changed, client.items[0])
-    assert len(client.calls) == 2
+    assert len(client.calls) == 3
     assert client.calls[-1][1] == "PATCH"
 
 

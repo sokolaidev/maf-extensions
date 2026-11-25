@@ -621,15 +621,6 @@ def resolved_state(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def stable(state: dict[str, Any]) -> dict[str, Any]:
-    """Evidence URLs may advance without changing the actionable request."""
-    result = copy.deepcopy(state)
-    result.pop("candidateEvidence", None)
-    for reason in result["reasons"].values():
-        reason.pop("evidence", None)
-    return result
-
-
 def body(profile: str, state: dict[str, Any]) -> str:
     """Keep machine-owned request state reviewable and bounded by GitHub's issue limit."""
     reasons = state["reasons"]
@@ -732,8 +723,6 @@ def reconcile(
             old = decode(match[1])
             if not isinstance(old, dict):
                 raise ValueError("Release request has no recoverable state")
-            if stable(old) == stable(state):
-                state = old
     signals = image_issue.findings_signals(
         state["reasons"].get("vulnerabilities", {}).get("findings", [])
     )

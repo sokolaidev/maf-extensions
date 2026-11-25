@@ -149,7 +149,7 @@ def collect(kind: str, repo: str, run_id: str, attempt: str) -> tuple[dict, dict
 def scan_rows(values: dict, run_id: str, attempt: str) -> list[dict]:
     """Preserve reviewed non-applicability when explaining a failing build scan."""
     assessment = values.get("assessment.json", {})
-    if assessment.get("outcome") != "vulnerable":
+    if assessment.get("outcome") not in {"clean", "vulnerable"}:
         return []
     build = values["build.json"]
     if str(build["run_id"]) != run_id or str(build["run_attempt"]) != attempt:
@@ -178,6 +178,8 @@ def scan_rows(values: dict, run_id: str, attempt: str) -> list[dict]:
         (r["id"], r["severity"]) for r in assessment["findings"]
     ):
         raise ValueError("Findings differ from the retained applicability assessment")
+    if (assessment["outcome"] == "clean") != (not rows):
+        raise ValueError("Scan outcome differs from the retained findings")
     return rows
 
 
@@ -223,6 +225,7 @@ def pending(values: dict, kind: str) -> list[dict]:
             {
                 "profile": finding["profile"],
                 "id": finding["id"],
+                "severity": finding.get("severity", "unknown"),
                 "component": finding.get("component", finding.get("module", "unknown")),
                 "installed": finding["installed"],
                 "fix": fix,
@@ -271,6 +274,24 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             "versions": sorted(set(row["fix"].get("versions") or [])),
         }
         grouped.setdefault(row["profile"], []).append(row)
+    if kind == "scan":
+        for profile, data in values.items():
+            if data.get("assessment.json", {}).get("outcome") in {"clean", "vulnerable"}:
+                if data["build.json"]["profile"] != profile:
+                    raise ValueError("Retained findings belong to another profile")
+                grouped.setdefault(profile, [])
+    elif kind in {"platform", "go"}:
+        plan = values.get("plan.json", {})
+        if plan.get("schemaVersion") == 1 and isinstance(plan.get("findings"), list):
+            for record in plan.get("evidence", []):
+                grouped.setdefault(record["profile"], [])
+    elif (
+        values.get("delivery-requirement.json", {}).get("kind") == "security"
+        and values.get("publication.json", {}).get("status") in {"created", "updated", "unchanged"}
+        and values.get("publication.json", {}).get("url")
+        and values.get("receipt.json", {}).get("package", {}).get("version")
+    ):
+        grouped.setdefault("document-export", [])
     if not grouped:
         print("No retained findings require a new maintainer notification.")
         return
@@ -286,6 +307,8 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         marker = f"<!-- image-remediation-attention:{profile} -->"
         lane = f"<!-- image-remediation-workflow:{kind} -->"
         tracker = image_issue.select(issues, profile)
+        if not findings and (tracker is None or kind not in image_issue.lanes(tracker)):
+            continue
         stable = sorted({json.dumps(row, sort_keys=True) for row in findings})
         state = notification_marker(json.dumps(stable))
         lines = [
@@ -306,14 +329,17 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
                 + " |"
             )
         details = "\n".join(lines)
+        if not findings:
+            details = "No pending findings in this workflow's retained evidence. A delivered source PR does not establish published-image recovery; other reporter sections remain independent."
         if len(stable) > 40:
             details += f"\n\nShowing 40 of {len(stable)} finding/component records; the linked artifacts retain all findings."
         context = ""
         for name in ("deferral.json", "competing-pulls.json", "publication.json"):
             if name in values:
                 context += f"\n\n{cell(name)}: {cell(json.dumps(values[name], sort_keys=True))}"
+        status = "needs maintainer action" if findings else "has no pending action in this workflow"
         message = (
-            f"{marker}\n{lane}\n\n**Describe the bug**\nImage `{profile}` needs maintainer action after {cell(run['name'])}. "
+            f"{marker}\n{lane}\n\n**Describe the bug**\nImage `{profile}` {status} after {cell(run['name'])}. "
             f"[Run, logs and retained evidence]({run_url}).\n\n{details}{context}\n\n"
             "**To Reproduce**\nInspect the linked attempt's plan, qualification and delivery artifacts, or its build inventory and applicability assessment.\n\n"
             "**Expected behavior**\nDeliver a qualified source fix, publish a qualified replacement when only a rebuild is needed, or record the remaining blocker and follow-up.\n\n"
@@ -336,6 +362,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             kind,
             message,
             signals,
+            active=bool(findings),
             related=image_issue.matches(issues, profile),
         )
         message = image_issue.notice(tracker, signals)

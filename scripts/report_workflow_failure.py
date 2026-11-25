@@ -87,43 +87,66 @@ def gh(*args: str, body: dict[str, str] | None = None) -> str:
     return result.stdout
 
 
+def failed_only_at(job: dict, step_name: str) -> bool:
+    """Require a completed job whose sole unsuccessful step is the expected gate."""
+    steps = job.get("steps")
+    return (
+        job.get("conclusion") == "failure"
+        and isinstance(steps, list)
+        and bool(steps)
+        and {step["name"] for step in steps if step["conclusion"] not in {"success", "skipped"}}
+        == {step_name}
+        and all(step["conclusion"] in {"success", "skipped", "failure"} for step in steps)
+    )
+
+
 def scan_findings_only() -> bool:
-    """Suppress the aggregate alert only after the per-image reporter successfully delivered."""
+    """Suppress only verified gate failures; unavailable job metadata preserves the alert."""
     repo = os.environ["GITHUB_REPOSITORY"]
     run, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
-    pages = json.loads(
-        gh(
-            f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
-            "--paginate",
-            "--slurp",
+    try:
+        pages = json.loads(
+            gh(
+                f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
+                "--paginate",
+                "--slurp",
+            )
         )
-    )
-    jobs = {job["name"]: job for page in pages for job in page["jobs"]}
-    if any(
-        jobs.get(name, {}).get("conclusion") != "success"
-        for name in (
-            "Select image security profiles",
-            "Report findings requiring maintainer action",
+        if not isinstance(pages, list) or not pages:
+            return False
+        jobs = {}
+        for page in pages:
+            if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+                return False
+            for job in page["jobs"]:
+                name = job["name"]
+                if not isinstance(name, str) or name in jobs:
+                    return False
+                jobs[name] = job
+        if any(
+            jobs.get(name, {}).get("conclusion") != "success"
+            for name in (
+                "Select image security profiles",
+                "Report findings requiring maintainer action",
+            )
+        ):
+            return False
+        if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {"success", "skipped"}:
+            return False
+        if not failed_only_at(
+            jobs.get("Image security checks", {}), "Require successful selection and selected scans"
+        ):
+            return False
+        scans = [job for name, job in jobs.items() if name.startswith("Image security (")]
+        failing = [job for job in scans if job["conclusion"] == "failure"]
+        return bool(failing) and all(
+            job["conclusion"] == "success"
+            or failed_only_at(job, "Enforce image vulnerability applicability")
+            for job in scans
         )
-    ):
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        print("Image security suppression could not be verified; reporting the workflow failure.")
         return False
-    if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {"success", "skipped"}:
-        return False
-    scans = [job for name, job in jobs.items() if name.startswith("Image security (")]
-    failing = [job for job in scans if job["conclusion"] == "failure"]
-    return bool(failing) and all(
-        job["conclusion"] == "success"
-        or (
-            job["conclusion"] == "failure"
-            and {
-                step["name"]
-                for step in job["steps"]
-                if step["conclusion"] not in {"success", "skipped"}
-            }
-            == {"Enforce image vulnerability applicability"}
-        )
-        for job in scans
-    )
 
 
 def monitor_findings_only() -> bool:
@@ -137,6 +160,8 @@ def monitor_findings_only() -> bool:
         isinstance(report, dict)
         and isinstance(jobs, dict)
         and report.get("attention") is True
+        and isinstance(report.get("summary"), str)
+        and isinstance(report.get("problems"), str)
         and report.get("operationalAttention") is False
         and jobs.get("begin") == jobs.get("finish") == "success"
         and jobs.get("scan") in {"success", "skipped"}
