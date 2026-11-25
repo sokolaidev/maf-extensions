@@ -289,7 +289,7 @@ class Worker:
             if session in self.hosts:
                 raise api.Refused("test generation already configured")
             encoded = self.transport.call(
-                "acquire", session, guest=session, profile=self.config.digest
+                "acquire", session, guest=session, expected_profile=self.config.digest
             )["owner"]
             owner = Authority._decode_owner(encoded)
             host = remote_host.Host(
