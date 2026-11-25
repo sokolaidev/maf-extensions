@@ -1664,7 +1664,7 @@ provides-extras = ["openai", "foundry", "mistral", "ollama", "tiktoken"]
 
 [[package]]
 name = "maf-compaction"
-version = "0.19.2"
+version = "0.19.3"
 source = { editable = "packages/maf-compaction" }
 dependencies = [
     { name = "agent-framework-core" },
