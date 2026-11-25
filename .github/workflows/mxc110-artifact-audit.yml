@@ -1,0 +1,118 @@
+name: Temporary MXC 1.1.0 artifact audit
+on:
+  push:
+    branches: [antsok-mxc110-artifact-audit-20261125]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verify public archives and inspect packaged contracts
+        shell: python
+        run: |
+          import base64, hashlib, io, json, os, pathlib, tarfile, urllib.request, zipfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "mxc110-audit"
+          root.mkdir()
+          def get_json(url):
+              with urllib.request.urlopen(url, timeout=60) as response:
+                  return json.load(response)
+          def download(url, target, maximum):
+              digest = hashlib.sha256()
+              size = 0
+              with urllib.request.urlopen(url, timeout=120) as response, target.open("wb") as output:
+                  while block := response.read(1024 * 1024):
+                      size += len(block)
+                      if size > maximum:
+                          raise RuntimeError("download exceeds bound")
+                      output.write(block)
+                      digest.update(block)
+              return size, digest.hexdigest()
+          sdk = get_json("https://registry.npmjs.org/@microsoft%2fmxc-sdk/1.1.0")
+          expected = "sha512-tSOPZ14ddCiXHc4hVNQp5Yi22HSQEfXh58Z4O/tLzERi+23rfRmMrJoxVK5jZYhlll68u4eF/UlQSaXWyUMj4w=="
+          assert sdk["version"] == "1.1.0" and sdk["dist"]["integrity"] == expected
+          wheel = root / "sdk.tgz"
+          size, tarsha = download(sdk["dist"]["tarball"], wheel, 1024 * 1024 * 1024)
+          h = hashlib.sha512()
+          with wheel.open("rb") as stream:
+              while block := stream.read(1024 * 1024):
+                  h.update(block)
+          assert "sha512-" + base64.b64encode(h.digest()).decode() == expected
+          lines = ["# MXC 1.1.0 published artifact audit", "", "Archive inspection only; no SDK installation or native execution.", "", f"Run: {os.environ['GITHUB_RUN_ID']}; source: {os.environ['GITHUB_SHA']}", "", f"Npm archive: {size} bytes; SHA-256 {tarsha}; SHA-512 integrity matched.", ""]
+          native = {}
+          with tarfile.open(wheel, "r:gz") as archive:
+              manifest_file = archive.extractfile("package/package.json")
+              assert manifest_file is not None
+              manifest = json.load(manifest_file)
+              assert manifest["version"] == "1.1.0" and "./v1" in manifest["exports"]
+              for name in ["package/dist/v1/index.js", "package/dist/v1/probe.js", "package/dist/v1/container.js", "package/dist/bindings/process-container-pty.js"]:
+                  source_file = archive.extractfile(name)
+                  assert source_file is not None
+                  data = source_file.read(2 * 1024 * 1024 + 1)
+                  assert len(data) <= 2 * 1024 * 1024
+                  lines.append(f"- {name}: SHA-256 {hashlib.sha256(data).hexdigest()}")
+                  code = data.decode()
+                  for needle in ["prepareContainerRequest", "mxc_ffi", "probe", "spawnProcessContainerWithPty", "leastPrivilege"]:
+                      if needle in code:
+                          lines.append(f"  - Contains identifier: {needle}")
+              for name in ["wxc-exec.exe", "mxc_ffi.dll"]:
+                  member = "package/bin/x64/" + name
+                  source_file = archive.extractfile(member)
+                  assert source_file is not None
+                  data = source_file.read(256 * 1024 * 1024 + 1)
+                  assert len(data) <= 256 * 1024 * 1024 and data[:2] == b"MZ"
+                  digest = hashlib.sha256(data).hexdigest()
+                  native[name] = digest
+                  (root / name).write_bytes(data)
+                  lines.append(f"- {member}: {len(data)} bytes; SHA-256 {digest}")
+          zip_path = root / "native.zip"
+          zsize, zsha = download("https://github.com/microsoft/mxc/releases/download/v1.1.0/mxc-release-binaries.zip", zip_path, 1024 * 1024 * 1024)
+          assert zsize == 533829612
+          assert zsha == "31a44963e288e3af23bc2e7e350608ed28f7c76b922ee7a7f1758a486dda37b3"
+          lines.extend(["", f"Native ZIP: {zsize} bytes; SHA-256 {zsha}; advertised digest matched.", ""])
+          with zipfile.ZipFile(zip_path) as archive:
+              for name, expected_digest in native.items():
+                  matches = []
+                  candidates = []
+                  for info in archive.infolist():
+                      if pathlib.PurePosixPath(info.filename.replace("\\", "/")).name != name:
+                          continue
+                      assert info.file_size <= 256 * 1024 * 1024
+                      with archive.open(info) as entry:
+                          digest = hashlib.file_digest(entry, "sha256").hexdigest()
+                      candidates.append((info.filename, digest))
+                      if digest == expected_digest:
+                          matches.append(info.filename)
+                  lines.append(f"- {name}: matching release ZIP entries: {matches}")
+                  lines.append(f"  - Candidate entry hashes: {candidates}")
+                  assert matches, f"npm/release native bytes differ: {name}"
+          for package in ["@microsoft%2fmxc-sdk", "@openclaw%2fmxc-sandbox"]:
+              metadata = get_json("https://registry.npmjs.org/" + package + "/latest")
+              lines.append(f"- Current npm {metadata['name']}: {metadata['version']}; MXC dependency: {metadata.get('dependencies', {}).get('@microsoft/mxc-sdk', 'n/a')}")
+          report = root / "evidence.md"
+          report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(report.read_text())
+          
+      - name: Inspect Windows signatures without executing native code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'mxc110-audit'
+          $report = Join-Path $root 'evidence.md'
+          foreach ($name in @('wxc-exec.exe', 'mxc_ffi.dll')) {
+            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $root $name)
+            $line = '- ' + $name + ' Authenticode: ' + $signature.Status + '; signer: ' + $signature.SignerCertificate.Subject + '; thumbprint: ' + $signature.SignerCertificate.Thumbprint
+            Add-Content -LiteralPath $report -Value $line -Encoding utf8
+            Write-Output $line
+            if ($signature.Status -ne 'Valid') { throw "Signature not valid: $name" }
+          }
+          Get-Content -LiteralPath $report >> $env:GITHUB_STEP_SUMMARY
+      - name: Retain bounded Markdown evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mxc110-artifact-audit
+          path: ${{ runner.temp }}/mxc110-audit/evidence.md
+          if-no-files-found: error
+          retention-days: 30
