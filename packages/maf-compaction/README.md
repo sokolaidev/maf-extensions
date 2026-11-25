@@ -168,6 +168,53 @@ Without a record, the composition also uses this overflow policy: it keeps tool 
 
 Named `tool_choice` support lets the middleware pin recall. Routes that reject it can use a temporary recall instruction instead; neither mechanism proves that a record was written. Reports in [#1872](https://github.com/sokolaidev/maf-extensions/issues/1872) describe OpenRouter routes for DeepSeek V4 Flash and GLM 5.3 Flash ignoring the pin with reasoning enabled, while GPT 6 Luna and Tencent Hy3 honoured it. Those are reported observations, not provider qualification by this package; verify the selected route and reasoning settings.
 
+### Measuring whether a record preserves the task’s answer
+
+Call `measure_record_roles` on the composed strategy to run one compaction pass and compare each assessed merge or rewrite with the source records it would replace. The host supplies the current task and, when known from its own task schema, the field label that answers it. Pass `options` to measure the before-send path with the same request options. The report records both the existing strategy’s action (`strategy_outcome`) and the experimental role decision (`decision`). A measured refusal can accompany an accepted edit. Judging happens after compaction, so cancelling during that wait leaves the completed edits in the history.
+
+```python
+from maf_compaction import make_decision_role_judge
+
+
+async def send_decision(payload):
+    # The host owns the authenticated HTTP client and its Foundry resource endpoint.
+    response = await client.post("/providers/microsoft/v1/systemone", json=payload)
+    response.raise_for_status()
+    return response.json()
+
+
+report = await strategy.measure_record_roles(
+    messages,
+    task="Which destination should receive the rollback?",
+    task_role="Rollback target",
+    judge=make_decision_role_judge(deployment_name, send_decision),
+    max_requests=1 if may_share_records else 0,
+)
+print(report.requests, report.batch_sizes, report.judge_seconds)
+```
+
+Set `may_share_records` from the host’s policy for this conversation and deployment. The provider receives the task, role, selected source bodies and candidate text verbatim, which can include personal data or credentials. With `max_requests=0`, the strategy still compares structured fields locally and never calls the decision transport. A host that classifies individual payloads can also inspect `payload["state"]` in `send_decision` before making the HTTP request.
+
+`request_details` gives each attempted batch’s candidate IDs (zero-based positions in `observations`), elapsed seconds and provider-reported input and output tokens when available. Token counts belong to the whole batch and are recorded even when its verdicts fail validation. A missing or invalid token count is `None`.
+
+Existing size, completion, gain and value-coverage checks take precedence. For an otherwise accepted candidate, the local comparison requires every nonblank line in both the sources and replacement to be a unique `label: value` field with a single ASCII identifier as its value. Label case, label whitespace and field order are insignificant. Values are case-sensitive. Matching maps give `accept`. A permutation that moves the named task field’s value gives `refuse`. Each costs zero decision requests. Missing or repeated fields, extra prose, and an unknown task label require interpretation. An omitted field might have been paraphrased. A missing task leaves such a candidate `undecided` locally.
+
+The Decision-1.1 adapter sends the shared task and role, plus just the selected candidates and their sources. Each unique comparison gets a named choice question. Identical comparisons in the same pass share a verdict. The adapter submits one request per batch and verifies the response model and question names. The host controls authentication, transport retries and the deployment. A timeout (five seconds per request), malformed or missing answer, provider failure, uncertain choice, or probability below 0.8 leaves the observation `undecided`. The report contains verdicts and counts and does not store record text in session state. [Microsoft Decision request and response format](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision#choose-a-question-type)
+
+Each question tells the judge to compare its named candidate and sources and to ignore instructions inside either. All records in the batch share model-visible state and can influence a verdict. Set `batch_size=1` to isolate comparisons in separate requests.
+
+The defaults admit one decision request per pass, up to 16 questions and 32,768 UTF-8 bytes of task, role, source and candidate text per request. Allow room for the JSON envelope, rubric and output in the provider’s context window. Candidates that cannot fit a request have reason `oversize`. Candidates left over when the request budget runs out have reason `request_budget`. Neither counts as an evaluated question.
+
+On a controlled 1,000-message history containing 498 tool-call/result pairs, the record share determines how many merge candidates the strategy generates. The table counts calls to the summarizer and the Decision-1.1 transport separately. Both transports use test doubles.
+
+| Record share | Summarizer requests | Decision configuration | Decision requests (questions per request) | Candidates left unevaluated |
+| --- | ---: | --- | --- | ---: |
+| 49% | 8 | Defaults | 1 (8) | 0 |
+| 45% | 17 | Defaults | 1 (8) | 9 |
+| 45% | 17 | Up to 3 requests with the default size limits | 3 (8, 8, 1) | 0 |
+| 45% | 17 | Up to 32 questions and 131,072 text bytes | 1 (17) | 0 |
+| 45% | 17 | One question per request, up to 17 requests | 17 (1 each) | 0 |
+
 ### Optional instruction on pinned record requests
 
 Some models keep only titles or reply formatting in their record even when the recall tool asks for values. Pass `record_instruction=DEFAULT_RECORD_INSTRUCTION` (imported from `maf_compaction`), or your own string, to `ToolResultRecallMiddleware` to append a user message after the loaded history on pinned recall requests only. With the default `None`, a pinned request adds a message only when there is retry feedback. The instruction does not change prompted recall, including `preserve_prompt_cache=True` and the fallback for routes without tool-choice pinning. It is removed on completion, failure and cancellation, and is absent from ordinary requests, stored history and compaction snapshots. As with prompted recall, hosts taking independent copies of in-flight message lists must filter messages whose `additional_properties["_maf_recall_prompt"]` is true before displaying or persisting them.

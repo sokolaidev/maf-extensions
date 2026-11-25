@@ -42,6 +42,7 @@ from functools import partial
 from math import ceil, isfinite
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from weakref import ReferenceType, ref
 
 from agent_framework import Message
 from agent_framework._compaction import (
@@ -93,6 +94,7 @@ from ._record_replay import (
     source_lineage,
     source_members,
 )
+from ._record_roles import RecordRoleJudge, RecordRolePass, RecordRoleReport
 from ._request import RequestOverhead
 from ._saved_view import resume_saved_view, save_view
 from ._shed import durable_message_id, positional_shed_sources, unique_shed_groups
@@ -1244,6 +1246,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.merge_same_tool_first = merge_same_tool_first
         self.state_record_budget = state_record_budget
         self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
+        self._role_measurement: ContextVar[ReferenceType[RecordRolePass] | None] = ContextVar(
+            "record_role_measurement", default=None
+        )
         self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
         self._request_overhead = RequestOverhead(tokenizer)
@@ -2215,6 +2220,36 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             head=self.tool_results.keep_head_groups,
             shed_sources=sources,
         )
+
+    async def measure_record_roles(
+        self,
+        messages: list[Message],
+        *,
+        task: str,
+        judge: RecordRoleJudge,
+        task_role: str | None = None,
+        max_requests: int = 1,
+        batch_size: int = 16,
+        max_text_bytes: int = 32_768,
+        options: Mapping[str, Any] | None = None,
+    ) -> RecordRoleReport:
+        """Run one real compaction pass, then measure its record decisions in bounded batches.
+
+        Supply the task and optional field label from the host. Passing sending options runs
+        the normal before-send path. Judgments are observational and never persisted.
+        """
+        measurement = RecordRolePass(task, task_role, max_requests, batch_size, max_text_bytes)
+        # Tasks started during compaction may outlive the measured pass.
+        token = self._role_measurement.set(ref(measurement))
+        try:
+            changed = (
+                await self(messages)
+                if options is None
+                else await self.compact_before(messages, options=options)
+            )
+        finally:
+            self._role_measurement.reset(token)
+        return await measurement.finish(changed, judge)
 
     async def __call__(self, messages: list[Message]) -> bool:
         """Run the record phase, then the user phase on what it left, then the chain if still over.
@@ -4613,6 +4648,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             outcome, reason = "lossy", "dropping values"
         elif not _meets_gain_floor(saved, replaced_tokens, min_gain_fraction):
             outcome, reason = "rejected", "saving too little"
+        if self._record_answer_ready is None and (active := self._role_measurement.get()):
+            if (measurement := active()) is not None:
+                await off_loop(measurement.observe, operation, outcome, bodies, text)
         if outcome != "accepted":
             if (
                 outcome == "lossy"
