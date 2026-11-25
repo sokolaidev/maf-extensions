@@ -269,6 +269,17 @@ def cell(value: Any) -> str:
     return escaped if len(escaped) <= 240 else escaped[:237] + "..."
 
 
+def retire_linked(endpoint: str, tracker: dict, profile: str, issues: list[dict]) -> None:
+    """Retry consolidation only after the saved canonical body links the earlier report."""
+    for previous in image_issue.matches(issues, profile):
+        reference = f"Earlier report: #{previous['number']} (retained evidence and maintainer discussion)."
+        if reference not in (tracker.get("body") or ""):
+            continue
+        retired = image_issue.retirement(previous, tracker, profile)
+        if retired:
+            gh(f"{endpoint}/{previous['number']}", "--method", "PATCH", body=retired)
+
+
 def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: str) -> None:
     """Deduplicate notifications without treating source delivery as published recovery."""
     rows = (
@@ -324,6 +335,8 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             observation = (collected.astimezone(UTC).isoformat(), int(run_id), int(attempt))
             previous = image_issue.lanes(tracker).get(kind, {}).get("observation")
             if previous is not None and observation <= tuple(previous):
+                if tracker is not None:
+                    retire_linked(endpoint, tracker, profile, issues)
                 continue
         if not findings and (tracker is None or kind not in image_issue.lanes(tracker)):
             continue
@@ -395,10 +408,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             else:
                 gh(f"{endpoint}/{tracker['number']}", "--method", "PATCH", body=payload)
         if tracker is not None:
-            for previous in image_issue.matches(issues, profile):
-                retired = image_issue.retirement(previous, tracker, profile)
-                if retired:
-                    gh(f"{endpoint}/{previous['number']}", "--method", "PATCH", body=retired)
+            retire_linked(endpoint, tracker | (payload or {}), profile, issues)
 
 
 def main() -> None:

@@ -96,6 +96,82 @@ class IssueAPI:
 
 
 class TestImageIssueReporting(unittest.TestCase):
+    def test_equal_scan_retries_only_retirement_already_linked_to_canonical_issue(self):
+        api = IssueAPI()
+        canonical = observe(None, "scan", {"finding:CVE-test"})
+        legacy = {
+            "number": 9,
+            "state": "open",
+            "user": BOT,
+            "body": "<!-- image-remediation-attention:antivirus -->",
+        }
+        api.items = [canonical, legacy]
+
+        def interrupted(endpoint, *args, body=None):
+            if endpoint.endswith("/9"):
+                raise OSError("Retirement write failed")
+            return api.gh(endpoint, *args, body=body)
+
+        with patch.object(attention, "gh", interrupted), self.assertRaises(OSError):
+            attention.notify("scan", RUN, scan("2"), "example/repo", "2", "1")
+        before = copy.deepcopy(api.items[0])
+        api.items.append(legacy | {"number": 10})
+        with patch.object(attention, "gh", api.gh):
+            attention.notify("scan", RUN, scan("2"), "example/repo", "2", "1")
+        self.assertEqual(api.items[0], before)
+        self.assertEqual(api.items[1]["state"], "closed")
+        self.assertEqual(api.items[2]["state"], "open")
+        self.assertEqual(api.comments, [])
+
+    def test_two_dismissed_legacy_reports_retain_the_latest_release_baseline(self):
+        state = {
+            "resolved": False,
+            "reasons": {"vulnerabilities": {"findings": [FINDING, FINDING | {"id": "CVE-other"}]}},
+        }
+        legacy = {
+            "number": 9,
+            "state": "closed",
+            "user": BOT,
+            "body": "<!-- image-release-needed:antivirus -->\n<!-- image-release-state\n"
+            + json.dumps(state)
+            + "\n-->",
+        }
+        remediation = legacy | {
+            "number": 10,
+            "body": "<!-- image-remediation-attention:antivirus -->",
+        }
+        selected = shared.select([legacy, remediation], "antivirus")
+        self.assertEqual(selected, remediation)
+        adopted = observe(selected, "platform", {"finding:CVE-test"}, related=[legacy])
+        self.assertEqual(adopted["state"], "closed")
+        self.assertIn("<!-- image-release-state", adopted["body"])
+        refreshed = observe(adopted, "release", shared.release_signals(state))
+        self.assertEqual(refreshed["state"], "closed")
+        self.assertIn("finding:CVE-other", shared.lanes(refreshed)["release"]["signals"])
+
+    def test_release_reconciliation_keeps_prose_edits_and_removal_quiet(self):
+        packages = [
+            {"package": "one", "minimumVersion": "1.0.0", "reason": "Original reason"},
+            {"package": "two", "minimumVersion": "2.0.0", "reason": "Another reason"},
+        ]
+        state = {
+            "resolved": False,
+            "currentVersion": "0.1.0",
+            "currentDigest": "sha256:" + "a" * 64,
+            "releaseEvidence": "release",
+            "status": "Package minimum not satisfied",
+            "reasons": {"requirements": {"packages": packages}},
+        }
+        api = IssueAPI()
+        release.reconcile(api, "antivirus", state, None)
+        api.items[0]["state"] = "closed"
+        packages[0]["reason"] = "Clarified reason"
+        packages.pop()
+        release.reconcile(api, "antivirus", state, api.items[0])
+        self.assertEqual(api.items[0]["state"], "closed")
+        self.assertIn("Clarified reason", api.items[0]["body"])
+        self.assertEqual(api.comments, [])
+
     def test_stale_scan_cannot_replace_newer_findings_or_recovery(self):
         for current_clean in (False, True):
             with self.subTest(current_clean=current_clean):

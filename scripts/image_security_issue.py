@@ -134,11 +134,24 @@ def update(
     """Refresh evidence quietly; reopen the same dismissed issue only for new actionable facts."""
     saved = lanes(issue)
     old_body = (issue or {}).get("body") or ""
-    legacy_release = re.search(r"<!-- image-release-state\n(.*?)\n-->", old_body, re.DOTALL)
-    if not saved and legacy_release:
-        state = json.loads(legacy_release[1])
-        if isinstance(state, dict) and "reasons" in state:
-            remember(saved, "release", release_signals(state), not state["resolved"])
+    if "release" not in saved:
+        candidates = sorted(
+            ([issue] if issue else []) + (related or []),
+            key=lambda value: value["number"],
+            reverse=True,
+        )
+        for candidate in candidates:
+            legacy_body = candidate.get("body") or ""
+            legacy_release = re.search(
+                r"<!-- image-release-state\n(.*?)\n-->", legacy_body, re.DOTALL
+            )
+            if legacy_release and not lanes(candidate):
+                state = json.loads(legacy_release[1])
+                if isinstance(state, dict) and "reasons" in state:
+                    remember(saved, "release", release_signals(state), not state["resolved"])
+                    if "<!-- image-release-state\n" not in old_body:
+                        old_body += f"\n\n<!-- image-issue-section:release -->\n{legacy_body}\n<!-- /image-issue-section:release -->"
+                    break
     recovered = bool(saved) and not any(value["active"] for value in saved.values())
     legacy_active = any(
         value.get("state", "open") == "open"
