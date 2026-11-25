@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.3...maf-compaction-v0.19.4) (2026-11-25)
+
+
+### Fixes
+
+* **compaction:** combine adjacent removal notes while keeping their source links ([#2971](https://github.com/sokolaidev/maf-extensions/issues/2971)) ([8cafffa](https://github.com/sokolaidev/maf-extensions/commit/8cafffab9bf6c3496a2870f8f7040d6f1653baca))
+* **compaction:** leave a shed's notes out of a batch's source key and a snapshot's gaps ([#2973](https://github.com/sokolaidev/maf-extensions/issues/2973)) ([d644e5d](https://github.com/sokolaidev/maf-extensions/commit/d644e5d8ac572e9738b10270e1003328869d131c))
+* **compaction:** reuse background merge answers that finish during a foreground pass ([#2975](https://github.com/sokolaidev/maf-extensions/issues/2975)) ([8838ee3](https://github.com/sokolaidev/maf-extensions/commit/8838ee3ae21f0ce8a3ea0880e0627f661748b532))
+
 ## [0.19.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.2...maf-compaction-v0.19.3) (2026-11-25)
 
 
