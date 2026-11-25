@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.2...maf-compaction-v0.19.3) (2026-11-25)
+
+
+### Fixes
+
+* **compaction:** apply a background merge with the records its snapshot saw eligible ([#2969](https://github.com/sokolaidev/maf-extensions/issues/2969)) ([857a4af](https://github.com/sokolaidev/maf-extensions/commit/857a4af57e2b9bd1f2d8035b36c637338f37883b))
+
 ## [0.19.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.1...maf-compaction-v0.19.2) (2026-11-24)
 
 
