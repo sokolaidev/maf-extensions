@@ -2913,7 +2913,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self.tool_results.reshape_records(view.messages, groups, replay=True)
             else:
                 self.tool_results.consolidate_records(
-                    view.messages, groups, edit.text, replay=True, keys=view.key_cache
+                    view.messages,
+                    groups,
+                    edit.text,
+                    replay=True,
+                    keys=view.key_cache,
+                    lineage=edit.sources.split(":")[1] if edit.sources.startswith("v2:") else None,
                 )
             view.invalidate()
             if view is not base:

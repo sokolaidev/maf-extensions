@@ -115,6 +115,8 @@ class BackgroundRecords:
                     durable = False
 
         end = len(history)
+        # The tokens of a gap holding only notes: no gap is left for them, but they are sent.
+        carried = 0
         for group in reversed(groups):
             last = int(group["end_index"])
             gap = hashlib.sha256()
@@ -134,6 +136,8 @@ class BackgroundRecords:
             if hashed:
                 messages.append(Message("system", [], message_id="gap-" + gap.hexdigest()))
                 weights.append(tokens)
+            else:
+                carried += tokens
             record = build_record_message(_record_body(history, group, recalls))
             lineage = source_lineage(history, [group])
             if lineage and durable:
@@ -147,9 +151,10 @@ class BackgroundRecords:
             tokens = included_token_count(members)
             held -= tokens
             weights.append(tokens)
-        if end:
+        if end or carried:
+            # Before the first record, outside every batch's window, so no key moves with it.
             messages.append(Message("system", [], message_id="prefix"))
-            weights.append(sum(included_token_count([history[i]]) for i in range(end)))
+            weights.append(sum(included_token_count([history[i]]) for i in range(end)) + carried)
         messages.reverse()
         annotate_message_groups(messages)
         for message, tokens in zip(messages, reversed(weights), strict=True):

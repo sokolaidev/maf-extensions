@@ -7,18 +7,36 @@ import json
 
 import pytest
 from agent_framework import Content, Message
-from agent_framework._compaction import EXCLUDE_REASON_KEY, EXCLUDED_KEY
+from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
+    EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    annotate_message_groups,
+    included_token_count,
+)
 from test_background_record_merges import running, tool_reply
-from test_record_budget import _history, _record_pair, _sent, _strategy, _Summarizer, _values
+from test_record_budget import (
+    TOKENIZER,
+    _history,
+    _record_pair,
+    _sent,
+    _strategy,
+    _Summarizer,
+    _values,
+)
 
 from maf_compaction._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
-from maf_compaction._artifacts import is_marker
+from maf_compaction._artifacts import MARKER_ID_PREFIX, SHED_NOTES, TOOL_CALL, is_marker
+from maf_compaction._background_records import BackgroundRecords
 from maf_compaction._composed import (
     DEFAULT_RECORD_MERGE_PROMPT,
     _RecordMergeWork,
     _transcript,
     harder_record_prompt,
 )
+from maf_compaction._media import annotate_token_counts
 from maf_compaction._record_replay import (
     RECORD_ANCHOR_EXCLUDE_REASON,
     _source_key,
@@ -330,3 +348,71 @@ def test_an_edit_kept_under_the_key_before_notes_were_skipped_still_replays() ->
     found = replay_match(messages, groups, [(f"v2:{legacy}:", len(groups))])
 
     assert found is not None and found[0] == groups
+
+
+def _note(index: int) -> Message:
+    """A shed's note, standing on its own between two records."""
+    return Message(
+        "assistant",
+        [SHED_NOTES[TOOL_CALL]],
+        message_id=f"{MARKER_ID_PREFIX}g{index}_1",
+        additional_properties={
+            GROUP_ANNOTATION_KEY: {
+                SUMMARY_OF_MESSAGE_IDS_KEY: [f"shed{index}"],
+                SUMMARY_OF_GROUP_IDS_KEY: [f"g{index}"],
+            }
+        },
+    )
+
+
+def test_a_gap_of_notes_only_still_counts_in_the_snapshot() -> None:
+    """No gap is left for notes alone, but they are sent, so their tokens stay in the snapshot's
+    count; a snapshot short of them could read an over-budget history as under it."""
+    messages = _history(RECORDS)
+    messages.insert(4, _note(0))
+    assert is_marker(messages[4]), "the premise: a note between records 0 and 1"
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+
+    plain = [m for m in copy.deepcopy(messages) if not is_marker(m)]
+    annotate_message_groups(plain)
+
+    records = BackgroundRecords.capture(messages)
+
+    assert included_token_count(records.messages) == included_token_count(messages)
+    gaps = [str(m.message_id) for m in BackgroundRecords.capture(plain).messages]
+    assert [str(m.message_id) for m in records.messages] == gaps, "the note adds no gap"
+
+
+async def test_two_dependent_edits_kept_under_the_key_with_notes_both_replay(monkeypatch) -> None:
+    """Two merges accepted before notes were skipped, the second taking in the first's record:
+    after a restore both are put back, the second naming the first by its lineage then."""
+    from maf_compaction import _record_replay as replay
+
+    current = replay._source_key
+    monkeypatch.setattr(
+        replay, "_source_key", lambda *args, **kwargs: current(*args, **kwargs, skip_notes=False)
+    )
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    messages = _interleaved()
+    _shed_with_notes(strategy, messages)
+    for _ in range(2):
+        groups = consolidatable_record_groups(messages)[:2]
+        outcome = await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        assert outcome == "accepted"
+    merged = [str(m[1]) for m in _sent(messages)]
+    state = json.loads(json.dumps(strategy.session_state()))
+    monkeypatch.setattr(replay, "_source_key", current)
+
+    cold = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    cold.restore_session_state(state)
+    later = _interleaved()
+    _shed_with_notes(cold, later)
+
+    assert cold._replay_record_edits(later)
+    assert [str(m[1]) for m in _sent(later)] == merged
