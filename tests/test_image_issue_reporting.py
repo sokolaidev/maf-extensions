@@ -213,7 +213,9 @@ class TestImageIssueReporting(unittest.TestCase):
     def test_delivered_source_proposal_clears_only_its_remediation_section(self):
         api = IssueAPI()
         api.items.append(
-            observe(observe(None, "release", {"finding:CVE-test"}), "platform", {"finding:CVE-test"})
+            observe(
+                observe(None, "release", {"finding:CVE-test"}), "platform", {"finding:CVE-test"}
+            )
         )
         values = {
             "plan.json": {
@@ -231,7 +233,10 @@ class TestImageIssueReporting(unittest.TestCase):
                 ],
             },
             "qualified.json": {"status": "ready"},
-            "publication.json": {"status": "created", "url": "https://github.com/example/repo/pull/1"},
+            "publication.json": {
+                "status": "created",
+                "url": "https://github.com/example/repo/pull/1",
+            },
         }
         with patch.object(attention, "gh", api.gh):
             attention.notify("platform", RUN, values, "example/repo", "2", "1")
@@ -251,7 +256,10 @@ def jobs():
                     "name": "Image security (antivirus)",
                     "conclusion": "failure",
                     "steps": [
-                        {"name": "Enforce image vulnerability applicability", "conclusion": "failure"},
+                        {
+                            "name": "Enforce image vulnerability applicability",
+                            "conclusion": "failure",
+                        },
                     ],
                 },
                 {
@@ -347,7 +355,12 @@ class TestWorkflowAlertDelivery(unittest.TestCase):
                     {"attention": True, "operationalAttention": False}
                 ),
                 "MONITOR_JOB_RESULTS": json.dumps(
-                    {"begin": "success", "scan": "success", "finish": "success", "result": "failure"}
+                    {
+                        "begin": "success",
+                        "scan": "success",
+                        "finish": "success",
+                        "result": "failure",
+                    }
                 ),
             },
         ):

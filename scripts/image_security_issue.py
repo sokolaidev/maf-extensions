@@ -169,7 +169,9 @@ def update(
         pending = any(value["active"] for value in saved.values())
         if not pending and lane == "release" and issue.get("state") != "closed":
             payload.update(state="closed", state_reason="completed")
-        elif issue.get("state") == "closed" and (legacy_active or (active and (novel or recovered))):
+        elif issue.get("state") == "closed" and (
+            legacy_active or (active and (novel or recovered))
+        ):
             payload.update(state="open")
         if all(issue.get(key) == value for key, value in payload.items()):
             return None

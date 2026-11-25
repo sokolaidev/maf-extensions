@@ -131,7 +131,10 @@ def scan_findings_only() -> bool:
             )
         ):
             return False
-        if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {"success", "skipped"}:
+        if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {
+            "success",
+            "skipped",
+        }:
             return False
         if not failed_only_at(
             jobs.get("Image security checks", {}), "Require successful selection and selected scans"
