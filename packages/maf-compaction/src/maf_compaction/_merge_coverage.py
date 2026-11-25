@@ -17,6 +17,9 @@ class LossyMerge:
     text: str
     total: int
     kept: int
+    #: The reasoning-prefix guard the batch was judged eligible under; None for an answer
+    #: stored before it was recorded. Only False changes matching: it lifts the guard again.
+    guarded: bool | None = None
 
     @property
     def size(self) -> int:
@@ -116,5 +119,6 @@ class MergeCoverage:
                 and type(answer.total) is int
                 and type(answer.kept) is int
                 and 0 <= answer.kept <= answer.total
+                and (answer.guarded is None or type(answer.guarded) is bool)
             ):
                 self.remember(answer)

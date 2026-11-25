@@ -307,6 +307,7 @@ class _RecordMergeWork:
         self._task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
+        self._worker_captured_guarded: bool | None = None
         # Held by each of the worker's steps on its thread (_offload.steps_locked).
         self._worker_steps = threading.Lock()
 
@@ -454,6 +455,7 @@ class _RecordMergeWork:
         )
         worker._background_records = records  # pyright: ignore[reportPrivateUsage]
         self._worker = worker
+        self._worker_captured_guarded = captured_guarded
         self._worker_steps = threading.Lock()
         self._task = asyncio.create_task(
             self._run_worker(worker, records.messages, self._worker_steps),
@@ -503,7 +505,7 @@ class _RecordMergeWork:
                     self.defer_merges = False
                 changed = (
                     await strategy._apply_completed_merge_sweep(  # pyright: ignore[reportPrivateUsage]
-                        messages, worker
+                        messages, worker, captured_guarded=self._worker_captured_guarded
                     )
                     or changed
                 )
@@ -897,6 +899,15 @@ def _guard_as(guarded: bool | None) -> AbstractContextManager[None]:
     return nullcontext() if guarded is None else _reasoning_prefix_guarded(guarded)
 
 
+def _lifted_if(guarded: bool | None) -> AbstractContextManager[None]:
+    """Lift the guard for work judged with it lifted; otherwise keep the current scope's.
+
+    For judging an edit and matching cached answers, which only need the batch eligible. Repeating
+    a snapshot needs :func:`_guard_as`: its gaps depend on the exact set of eligible records.
+    """
+    return _reasoning_prefix_guarded(False) if guarded is False else nullcontext()
+
+
 def _yielding_when(*, over_budget: bool, policy: str) -> AbstractContextManager[None]:
     """The reasoning-prefix guard yields only over budget under the ``"shed"`` policy.
 
@@ -1277,6 +1288,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_values_omitted = 0
         self._merge_sweep_complete = False
         self._completed_merge_sweep: str | None = None
+        self._completed_merge_sweep_guarded: bool | None = None
         self._removed_by_record = 0
         self._records_reshaped = 0
         self._records_merged = 0
@@ -1410,6 +1422,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 await self._merge_records(messages, start)
                 if self._merge_coverage.adaptive and self._merge_sweep_complete:
                     self._completed_merge_sweep = self._merge_sweep_key(messages)
+                    self._completed_merge_sweep_guarded = _reasoning_prefix_guard_on()
         except _RunFinished:
             # Closing admission is expected. Prepared answers still belong to the foreground.
             return
@@ -1474,8 +1487,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 detail = await off_loop(self._unavailable_detail, messages, item)
                 self._discard_ready_answer(item, "sources_unavailable", detail)
                 continue
-            # Judged on the records the snapshot found eligible, whatever this pass's guard.
-            with _guard_as(item.captured_guarded):
+            # A batch the snapshot found eligible with the guard lifted stays eligible here.
+            with _lifted_if(item.captured_guarded):
                 outcome = await self._consolidate(
                     messages,
                     batch,
@@ -4274,9 +4287,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self,
         messages: list[Message],
         worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        *,
+        captured_guarded: bool | None = None,
     ) -> bool:
+        def sweep_key() -> str | None:
+            # As the worker saw it: its snapshot's guard, then the guard its sweep ended under.
+            with _guard_as(captured_guarded):
+                records = BackgroundRecords.capture(messages)
+            with _guard_as(worker._completed_merge_sweep_guarded):
+                return self._merge_sweep_key(records.messages)
+
         if worker._completed_merge_sweep is None or worker._completed_merge_sweep != await off_loop(
-            lambda: self._merge_sweep_key(BackgroundRecords.capture(messages).messages)
+            sweep_key
         ):
             return False
         return await self._relax_merge_coverage(messages)
@@ -4306,26 +4328,35 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _lossy_merge_matches(
         self, messages: list[Message]
     ) -> list[tuple[list[dict[str, Any]], LossyMerge]]:
-        groups = consolidatable_record_groups(messages)
-        wanted = {(answer.count, answer.sources) for answer in self._merge_coverage.answers}
-        lineages: dict[int, set[str]] = {}
-        for count, sources in wanted:
-            version, _, payload = sources.partition(":")
-            lineage, separator, _ = payload.partition(":")
-            if version == "v2" and separator:
-                lineages.setdefault(count, set()).add(lineage)
-        windows: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
+        # An answer judged with the guard lifted is matched with it lifted; others as the pass is.
         keys = MessageKeyCache()
-        for count, wanted_lineages in lineages.items():
-            for first in range(len(groups) - count + 1):
-                batch = groups[first : first + count]
-                sources = source_key(messages, batch, keys=keys, wanted_lineages=wanted_lineages)
-                if sources is not None and (count, sources) in wanted:
-                    key = count, sources
-                    windows[key] = None if key in windows else batch
+        windows: dict[tuple[bool | None, int, str], list[dict[str, Any]] | None] = {}
+        for guarded in {answer.guarded for answer in self._merge_coverage.answers}:
+            with _lifted_if(guarded):
+                groups = consolidatable_record_groups(messages)
+            wanted = {
+                (answer.count, answer.sources)
+                for answer in self._merge_coverage.answers
+                if answer.guarded == guarded
+            }
+            lineages: dict[int, set[str]] = {}
+            for count, sources in wanted:
+                version, _, payload = sources.partition(":")
+                lineage, separator, _ = payload.partition(":")
+                if version == "v2" and separator:
+                    lineages.setdefault(count, set()).add(lineage)
+            for count, wanted_lineages in lineages.items():
+                for first in range(len(groups) - count + 1):
+                    batch = groups[first : first + count]
+                    sources = source_key(
+                        messages, batch, keys=keys, wanted_lineages=wanted_lineages
+                    )
+                    if sources is not None and (count, sources) in wanted:
+                        key = guarded, count, sources
+                        windows[key] = None if key in windows else batch
         matches: list[tuple[list[dict[str, Any]], LossyMerge]] = []
         for answer in self._merge_coverage.answers:
-            batch = windows.get((answer.count, answer.sources))
+            batch = windows.get((answer.guarded, answer.count, answer.sources))
             if batch is not None:
                 matches.append((batch, answer))
         self._merge_coverage.answers = [answer for _, answer in matches]
@@ -4365,14 +4396,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 break
             groups, answer = candidate
             self._merge_coverage.answers.remove(answer)
-            outcome = await self._consolidate(
-                messages,
-                groups,
-                prompt=self.merge_prompt,
-                transcript=await off_loop(_transcript, messages, groups),
-                answer=_RecordAnswer(answer.text),
-                remember_lossy=True,
-            )
+            with _lifted_if(answer.guarded):
+                outcome = await self._consolidate(
+                    messages,
+                    groups,
+                    prompt=self.merge_prompt,
+                    transcript=await off_loop(_transcript, messages, groups),
+                    answer=_RecordAnswer(answer.text),
+                    remember_lossy=True,
+                )
             # Scores from a snapshot are hints; consolidation rechecks every acceptance guard.
             if outcome == "accepted":
                 self._records_merged += 1
@@ -4590,7 +4622,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 and _meets_gain_floor(saved, replaced_tokens, min_gain_fraction)
             ):
                 self._merge_coverage.remember(
-                    LossyMerge(cache_sources, len(groups), text, total, kept)
+                    LossyMerge(
+                        cache_sources,
+                        len(groups),
+                        text,
+                        total,
+                        kept,
+                        guarded=_reasoning_prefix_guard_on(),
+                    )
                 )
             if merge:
                 self._merge_event("answer_rejected", phase=merge_phase, reason=reason)
