@@ -1,0 +1,956 @@
+diff --git a/extensions/mxc/README.md b/extensions/mxc/README.md
+index 65de982..fb581c0 100644
+--- a/extensions/mxc/README.md
++++ b/extensions/mxc/README.md
+@@ -50,11 +50,11 @@ and out-of-range values fail plugin activation with an actionable error
+ 
+ | Field            | Type                              | Default                                | Notes                                                                                                                                                         |
+ | ---------------- | --------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+-| `mxcBinaryPath`  | `string`                          | unset                                  | Non-empty override for an MXC 1.0 native layout: `<dir>\<x64\|arm64>\wxc-exec.exe` with `mxc_ffi.dll` beside it; see [Host readiness](#host-readiness).      |
++| `mxcBinaryPath`  | `string`                          | unset                                  | Non-empty override for an MXC 1.1 native layout: `<dir>\<x64\|arm64>\wxc-exec.exe` with `mxc_ffi.dll` beside it; see [Host readiness](#host-readiness).       |
+ | `containment`    | `"process" \| "processcontainer"` | `"process"`                            | Both currently resolve to Windows ProcessContainer.                                                                                                           |
+ | `network`        | `"none" \| "default"`             | `"none"`                               | `"default"` allows outbound network via the `internetClient` capability.                                                                                      |
+ | `timeoutSeconds` | `number`                          | unset (baseline default `300` applies) | Must be `>= 1` and `<= 2147000` (the largest Node-safe `setTimeout` delay in whole seconds). Capped to the sandbox policy baseline timeout when both are set. |
+-| `debug`          | `boolean`                         | `false`                                | Writes the resolved MXC native component paths and MXC SDK warnings to stderr.                                                                                |
++| `debug`          | `boolean`                         | `false`                                | Writes bounded preflight identities/counts and MXC SDK warnings to stderr.                                                                                    |
+ | `mxcPolicyPaths` | `string[]`                        | unset (built-in baseline only)         | Every entry must be a non-empty absolute path. See [Sandbox policy files](#sandbox-policy-files).                                                             |
+ 
+ Any other key is rejected. `openclaw.plugin.json` publishes the same schema
+@@ -65,7 +65,7 @@ help stay in sync with plugin runtime validation.
+ 
+ - Windows hosts with the MXC executor installed through `@microsoft/mxc-sdk`.
+ - A Gateway running Node.js 24.21.0 or newer within Node.js 24, or 26.8.0 or
+-  newer. `@microsoft/mxc-sdk@1.0.0` refuses to run commands on Windows with
++  newer. `@microsoft/mxc-sdk@1.1.0` refuses to run commands on Windows with
+   older Node.js releases, so the plugin blocks activation there.
+ - Explicit opt-in after plugin install with `sandbox.backend: "mxc"`.
+ - MXC `process` containment, which resolves to Windows ProcessContainer.
+@@ -93,7 +93,7 @@ help stay in sync with plugin runtime validation.
+   plugin's Node launcher through a short-lived local payload file, and deletes
+   that file and its temp directory when the launcher or run finishes.
+ - Non-PTY commands run through the in-process `mxc_ffi` library. PTY commands
+-  run through `wxc-exec`, and `@microsoft/mxc-sdk@1.0.0` carries the full
++  run through `wxc-exec`, and `@microsoft/mxc-sdk@1.1.0` carries the full
+   base64 request envelope on that process's argv. A host user with
+   process-inspection rights can observe that command, environment, and policy
+   data while a PTY command is running. Do not put secrets in MXC command
+@@ -101,9 +101,7 @@ help stay in sync with plugin runtime validation.
+   ([microsoft/mxc#626](https://github.com/microsoft/mxc/issues/626)).
+ - A command stopped by the configured timeout exits with status `124` and
+   writes `MXC sandbox command timed out and was terminated.` to stderr.
+-- On AppContainer isolation tiers, MXC SDK 1.0 runs commands in a regular
+-  AppContainer rather than LPAC; see
+-  [Isolation tiers under SDK 1.0](#isolation-tiers-under-sdk-10).
++- BaseContainer is required; legacy BFS/DACL results are refused.
+ 
+ ## Not supported yet
+ 
+@@ -270,30 +268,40 @@ agents may still use them.
+ ## Host readiness
+ 
+ Before registering the sandbox backend, the plugin checks that the Gateway's
+-Node.js meets MXC SDK 1.0's Windows requirement, then runs MXC SDK 1.0's host
++Node.js meets MXC SDK 1.1's Windows requirement, then runs MXC SDK 1.1's host
+ check (`probe()` from `@microsoft/mxc-sdk/v1`) through its Node launcher, with
+ the same pinned native components it launches commands with, including an
+-`mxcBinaryPath` override. The check must select an isolation tier. MXC's tier
+-degradation warnings are logged but do not block activation.
+-
+-### Isolation tiers under SDK 1.0
+-
+-MXC picks the isolation tier for the host; the plugin does not choose it.
+-MXC SDK 1.0 cannot request a least-privilege AppContainer (LPAC), which the
+-SDK 0.8 integration always requested, so this plugin accepts the weaker
+-isolation MXC SDK 1.0 provides on the AppContainer tiers:
+-
+-| Tier | Hosts where it was observed | Change from SDK 0.8 |
+-| --- | --- | --- |
+-| `appcontainer-dacl`, `appcontainer-bfs` | Windows builds 22631, 26100, and 26200 selected `appcontainer-dacl` | Commands run in a regular AppContainer instead of LPAC. They can reach files, registry keys, and other resources granted to `ALL APPLICATION PACKAGES` that an LPAC process could not. |
+-| `base-container` | Windows builds 26600 and later with the process security environment API | None. `base-container` is a different isolation model without an LPAC token in either SDK version. |
+-
+-On an AppContainer tier the plugin logs a notice naming the tier when it
+-activates. It does not block activation.
++`mxcBinaryPath` override. The check must select BaseContainer without DACL augmentation or an error.
++Host readiness does not replace the per-command request preflight.
++
++### Request preflight
++
++Each command probes its effective request, including the PTY timeout adjustment,
++in a separate process before calling the SDK spawn function. The probe has a
++30-second deadline, a 1 MiB request limit and a 64 KiB output limit. Cancellation,
++probe failure, malformed output and legacy BFS/DACL results refuse the command.
++The launcher joins probe termination before reporting refusal. Native creation
++can still reject environment, network or PSEC-version requirements after a
++successful probe; creation errors propagate without a host-execution retry.
++
++With `debug: true`, stderr includes one `[mxc] preflight` record using schema
++`mxc-request-preflight-v1`: SHA-256 of the UTF-8 `JSON.stringify` effective
++request, native DLL/executor hashes, PTY selection, timeout, and environment/
++filesystem entry counts. It excludes command text, environment values and host
++paths. The hash identifies the exact serialized request; counts are not a full
++policy description. The record reports preflight success, not workload creation
++or containment. Treat hashes as sensitive correlation data when sharing logs.
++Existing SDK warnings and creation errors are separate from this bounded record.
++
++The parent and probe child compare native identities and refuse changed files.
++This detects observed replacement; it neither locks files against later mutation
++nor proves which build produced them. In particular, an arbitrary
++`mxcBinaryPath` override is not qualified merely because its hashes are stable.
++Native-only creation requires a separately verified 1.1.0 native pair.
+ 
+ ### Native component overrides
+ 
+-MXC SDK 1.0 loads `mxc_ffi.dll` for non-PTY commands and runs `wxc-exec.exe`
++MXC SDK 1.1 loads `mxc_ffi.dll` for non-PTY commands and runs `wxc-exec.exe`
+ for PTY commands, so an override must provide both from the same release:
+ 
+ ```text
+@@ -305,7 +313,7 @@ Use `arm64` instead of `x64` on Arm64 hosts; the directory must match the host
+ architecture. A bare `wxc-exec.exe` path from an SDK 0.8 setup, a mismatched
+ architecture directory, or a missing `mxc_ffi.dll` stops plugin activation
+ instead of falling back to the bundled components. To use the
+-`@microsoft/mxc-sdk@1.0.0` components installed with the plugin, remove the
++`@microsoft/mxc-sdk@1.1.0` components installed with the plugin, remove the
+ override:
+ 
+ ```powershell
+@@ -316,16 +324,6 @@ Restart the Gateway after changing the override. If the bundled components
+ also fail the check, address the reported host-readiness error before
+ retrying.
+ 
+-Host preparation is advisory. If directory listing inside the sandbox fails with
+-`Access is denied`, run this once from an elevated prompt:
+-
+-```powershell
+-wxc-host-prep prepare-system-drive
+-```
+-
+-`wxc-host-prep` ships with `@microsoft/mxc-sdk` under
+-`node_modules/@microsoft/mxc-sdk/bin/<arch>/`.
+-
+ ## Testing
+ 
+ ```powershell
+diff --git a/extensions/mxc/package.json b/extensions/mxc/package.json
+index 048808b..cceade5 100644
+--- a/extensions/mxc/package.json
++++ b/extensions/mxc/package.json
+@@ -11,7 +11,7 @@
+     "@openclaw/plugin-sdk": "workspace:*"
+   },
+   "dependencies": {
+-    "@microsoft/mxc-sdk": "1.0.0",
++    "@microsoft/mxc-sdk": "1.1.0",
+     "zod": "4.6.7"
+   },
+   "openclaw": {
+diff --git a/extensions/mxc/src/binary-resolver.ts b/extensions/mxc/src/binary-resolver.ts
+index dacb6ad..c0366a1 100644
+--- a/extensions/mxc/src/binary-resolver.ts
++++ b/extensions/mxc/src/binary-resolver.ts
+@@ -8,7 +8,7 @@ const NATIVE_LIBRARY_NAME = "mxc_ffi.dll";
+ /**
+  * Native MXC components the plugin pins for one launcher run.
+  *
+- * MXC SDK 1.0 runs piped commands through the in-process `mxc_ffi` library
++ * MXC SDK 1.1 runs piped commands through the in-process `mxc_ffi` library
+  * and ProcessContainer PTY commands through `wxc-exec`. It silently falls back
+  * to its packaged binaries when `MXC_FFI_DIR`/`MXC_BIN_DIR` do not resolve, so
+  * the plugin validates both files from one directory and pins both variables.
+@@ -77,7 +77,7 @@ function resolveOverride(configOverride: string): MxcNativeBinaries {
+   if (!isRegularFile(binaries.nativeLibraryPath)) {
+     throw new Error(
+       `MXC native library ${binaries.nativeLibraryPath} is missing next to the configured ` +
+-        `mxcBinaryPath. MXC SDK 1.0 needs both files from the same release (${expectedLayout}).`,
++        `mxcBinaryPath. MXC SDK 1.1 needs both files from the same release (${expectedLayout}).`,
+     );
+   }
+   return binaries;
+diff --git a/extensions/mxc/src/mxc-spawn-launcher.mjs b/extensions/mxc/src/mxc-spawn-launcher.mjs
+index 9d0f104..e6256a3 100644
+--- a/extensions/mxc/src/mxc-spawn-launcher.mjs
++++ b/extensions/mxc/src/mxc-spawn-launcher.mjs
+@@ -1,8 +1,10 @@
+ #!/usr/bin/env node
+ 
++import { spawn } from "node:child_process";
++import { createHash } from "node:crypto";
+ import { existsSync, readFileSync, rmSync } from "node:fs";
+ import path from "node:path";
+-import { pathToFileURL } from "node:url";
++import { fileURLToPath, pathToFileURL } from "node:url";
+ 
+ const EXECUTOR_NAME = "wxc-exec.exe";
+ const NATIVE_LIBRARY_NAME = "mxc_ffi.dll";
+@@ -75,6 +77,7 @@ function formatErrorStack(error) {
+  */
+ export function forwardSignals(options = {}) {
+   let target;
++  const abort = new AbortController();
+   let pendingKill = false;
+   let exitTimer;
+   let forcedExitCode;
+@@ -102,6 +105,7 @@ export function forwardSignals(options = {}) {
+   for (const signal of FORWARDED_SIGNALS) {
+     const listener = () => {
+       pendingKill = true;
++      abort.abort();
+       killTarget();
+       scheduleForcedExit(signal);
+     };
+@@ -109,6 +113,7 @@ export function forwardSignals(options = {}) {
+     listeners.set(signal, listener);
+   }
+   return {
++    signal: abort.signal,
+     attach(spawned) {
+       target = spawned;
+       if (pendingKill) {
+@@ -302,8 +307,7 @@ function positiveTimeoutMs(request) {
+ 
+ /**
+  * Runs one sandbox request and resolves with the exit status to report. `sdk`
+- * supplies the v1 `spawn` and `spawnWithPty` functions so tests can substitute
+- * them. Signal forwarding created here is released before returning.
++ * supplies request preflight and the v1 spawn functions. Signal forwarding created here is released before returning.
+  */
+ export async function launchSandbox(sdk, request, options = {}, signals, io, timers) {
+   const forwarded = signals ?? forwardSignals();
+@@ -314,6 +318,13 @@ export async function launchSandbox(sdk, request, options = {}, signals, io, tim
+       ptyTimeoutMs === undefined
+         ? request
+         : { ...request, timeoutMs: ptyTimeoutMs + PTY_EXECUTOR_BACKSTOP_MS };
++    if (forwarded.signaled()) {
++      throw new Error("MXC request cancelled before preflight");
++    }
++    assertBaseContainerProbe(await sdk.probe(spawnRequest));
++    if (forwarded.signaled()) {
++      throw new Error("MXC request cancelled before launch");
++    }
+     const spawned = options.pty
+       ? await sdk.spawnWithPty(spawnRequest)
+       : await sdk.spawn(spawnRequest);
+@@ -351,6 +362,151 @@ export function signalExitCode(signal) {
+   return 1;
+ }
+ 
++const PROBE_TIMEOUT_MS = 30_000;
++const PROBE_OUTPUT_BYTES = 64 * 1024;
++const PROBE_REQUEST_BYTES = 1024 * 1024;
++
++export function assertBaseContainerProbe(result) {
++  if (
++    !result ||
++    typeof result !== "object" ||
++    Array.isArray(result) ||
++    result.tier !== "base-container" ||
++    result.needsDaclAugmentation !== false ||
++    "error" in result ||
++    !Array.isArray(result.warnings) ||
++    !result.warnings.every((warning) => typeof warning === "string")
++  ) {
++    throw new Error("MXC BaseContainer preflight refused; check host and request support");
++  }
++}
++
++function sha256(bytes) {
++  return createHash("sha256").update(bytes).digest("hex");
++}
++
++function nativeIdentity() {
++  const pinned = assertPinnedNativeComponents();
++  return {
++    nativeLibrarySha256: sha256(readFileSync(pinned.nativeLibraryPath)),
++    executorSha256: sha256(readFileSync(pinned.executorPath)),
++  };
++}
++
++/** Runs the synchronous native probe in a killable child and joins its close. */
++export async function probeRequest(request, signal) {
++  const input = JSON.stringify(request);
++  if (Buffer.byteLength(input) > PROBE_REQUEST_BYTES) {
++    throw new Error("MXC preflight request exceeds 1 MiB");
++  }
++  signal?.throwIfAborted();
++  const native = nativeIdentity();
++  const requestSha256 = sha256(input);
++  const output = await new Promise((resolve, reject) => {
++    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--request-probe"], {
++      stdio: ["pipe", "pipe", "ignore"],
++      windowsHide: true,
++    });
++    let failure;
++    let size = 0;
++    const chunks = [];
++    const stop = (reason) => {
++      failure ??= new Error(reason);
++      child.kill("SIGKILL");
++    };
++    const aborted = () => stop("MXC request preflight cancelled");
++    const timer = setTimeout(() => stop("MXC request preflight timed out"), PROBE_TIMEOUT_MS);
++    signal?.addEventListener("abort", aborted, { once: true });
++    child.on("error", () => {
++      failure ??= new Error("MXC request preflight process failed");
++    });
++    child.stdin.on("error", () => stop("MXC request preflight input failed"));
++    child.stdout.on("error", () => stop("MXC request preflight output failed"));
++    child.stdout.on("data", (chunk) => {
++      size += chunk.length;
++      if (size > PROBE_OUTPUT_BYTES) {
++        stop("MXC request preflight output exceeds 64 KiB");
++      } else {
++        chunks.push(chunk);
++      }
++    });
++    child.once("close", (code) => {
++      clearTimeout(timer);
++      signal?.removeEventListener("abort", aborted);
++      if (failure || code !== 0) {
++        reject(failure ?? new Error("MXC request preflight failed"));
++      } else {
++        resolve(Buffer.concat(chunks).toString("utf8"));
++      }
++    });
++    if (signal?.aborted) {
++      aborted();
++    } else {
++      child.stdin.end(input);
++    }
++  });
++  let envelope;
++  try {
++    envelope = JSON.parse(output);
++  } catch {
++    throw new Error("MXC request preflight returned malformed output");
++  }
++  const current = nativeIdentity();
++  if (
++    envelope?.requestSha256 !== requestSha256 ||
++    envelope?.native?.nativeLibrarySha256 !== native.nativeLibrarySha256 ||
++    envelope?.native?.executorSha256 !== native.executorSha256 ||
++    current.nativeLibrarySha256 !== native.nativeLibrarySha256 ||
++    current.executorSha256 !== native.executorSha256
++  ) {
++    throw new Error("MXC request or native components changed during preflight");
++  }
++  assertBaseContainerProbe(envelope.probe);
++  return { probe: envelope.probe, requestSha256, native };
++}
++
++function requestDiagnostic(request, options, evidence) {
++  return {
++    schema: "mxc-request-preflight-v1",
++    sdkVersion: "1.1.0",
++    requestSha256: evidence.requestSha256,
++    native: evidence.native,
++    pty: options.pty === true,
++    timeoutMs: request.timeoutMs,
++    environmentVariableCount: Object.keys(request.environment ?? {}).length,
++    readonlyPathCount: request.filesystem?.readonlyPaths?.length ?? 0,
++    readwritePathCount: request.filesystem?.readwritePaths?.length ?? 0,
++    deniedPathCount: request.filesystem?.deniedPaths?.length ?? 0,
++    result: "base-container",
++  };
++}
++
++async function requestProbeMain() {
++  const chunks = [];
++  let size = 0;
++  for await (const chunk of process.stdin) {
++    size += chunk.length;
++    if (size > PROBE_REQUEST_BYTES) {
++      throw new Error("MXC preflight request exceeds 1 MiB");
++    }
++    chunks.push(chunk);
++  }
++  const input = Buffer.concat(chunks).toString("utf8");
++  const request = JSON.parse(input);
++  const native = nativeIdentity();
++  const { probe } = await loadSdk();
++  const result = probe(request);
++  assertBaseContainerProbe(result);
++  process.stdout.write(
++    JSON.stringify({
++      probe: { tier: result.tier, needsDaclAugmentation: false, warnings: [] },
++      requestSha256: sha256(input),
++      native,
++    }) + "\n",
++  );
++  return 0;
++}
++
+ function isMain() {
+   const mainPath = process.argv[1];
+   if (!mainPath) {
+@@ -368,6 +524,7 @@ async function probeMain() {
+   assertPinnedNativeComponents();
+   const { probe } = await loadSdk();
+   const output = probe();
++  assertBaseContainerProbe(output);
+   process.stdout.write(`${JSON.stringify({ probe: output })}\n`);
+   return 0;
+ }
+@@ -375,19 +532,30 @@ async function probeMain() {
+ export async function main(argv = process.argv.slice(2)) {
+   let signals;
+   try {
+-    if (argv.includes("--probe")) {
++    if (argv.includes("--request-probe")) {
++      process.exitCode = await requestProbeMain();
++    } else if (argv.includes("--probe")) {
+       process.exitCode = await probeMain();
+     } else {
+       signals = forwardSignals();
+       const { request, options } = decodePayload(argv);
+-      const pinned = assertPinnedNativeComponents();
+-      if (options?.debug) {
+-        process.stderr.write(
+-          `[mxc] native library ${pinned.nativeLibraryPath}; executor ${pinned.executorPath}\n`,
+-        );
+-      }
++      assertPinnedNativeComponents();
++      const sdk = await loadSdk();
+       process.exitCode = await launchSandbox(
+-        await loadSdk(),
++        {
++          ...sdk,
++          probe: async (effectiveRequest) => {
++            const evidence = await probeRequest(effectiveRequest, signals.signal);
++            if (options?.debug) {
++              process.stderr.write(
++                "[mxc] preflight " +
++                  JSON.stringify(requestDiagnostic(effectiveRequest, options, evidence)) +
++                  "\n",
++              );
++            }
++            return evidence.probe;
++          },
++        },
+         request,
+         options ?? {},
+         signals,
+diff --git a/extensions/mxc/src/plugin.ts b/extensions/mxc/src/plugin.ts
+index 22e4b6c..96c8189 100644
+--- a/extensions/mxc/src/plugin.ts
++++ b/extensions/mxc/src/plugin.ts
+@@ -4,7 +4,7 @@ import { buildMxcNativeEnv, resolveMxcNativeBinaries } from "./binary-resolver.j
+ import { resolveConfig } from "./config.js";
+ import { createMxcSandboxBackendFactory } from "./mxc-backend-factory.js";
+ import { mxcSandboxBackendManager } from "./mxc-backend.js";
+-import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "./readiness.js";
++import { assertMxcReadiness } from "./readiness.js";
+ 
+ export function registerMxcPlugin(api: OpenClawPluginApi): void {
+   if (api.registrationMode !== "full") {
+@@ -29,10 +29,6 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
+   }
+   assertMxcReadiness({ nativeEnv });
+ 
+-  // Advisory: warn (don't block) when the system drive lacks AppContainer
+-  // directory-access ACEs, which only degrades in-sandbox directory listing.
+-  warnMxcHostPrepIfNeeded();
+-
+   const unregister = registerSandboxBackend("mxc", {
+     factory: createMxcSandboxBackendFactory(config),
+     manager: mxcSandboxBackendManager,
+diff --git a/extensions/mxc/src/readiness.ts b/extensions/mxc/src/readiness.ts
+index 05d5b5b..48f0fcb 100644
+--- a/extensions/mxc/src/readiness.ts
++++ b/extensions/mxc/src/readiness.ts
+@@ -1,22 +1,17 @@
+ import { execFileSync } from "node:child_process";
+-import path from "node:path";
+ import { z } from "zod";
+ import { resolveMxcLauncherPath } from "./plugin-root.js";
+ import { buildLauncherEnv } from "./windows-env.js";
+ 
+ const MxcLauncherProbeSchema = z.object({
+   probe: z.object({
+-    tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+-    warnings: z.array(z.string()).default([]),
++    tier: z.literal("base-container"),
++    warnings: z.array(z.string()),
++    needsDaclAugmentation: z.literal(false),
+     error: z.string().optional(),
+   }),
+ });
+ 
+-function resolveWindowsSystemExecutable(name: string): string {
+-  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+-  return path.win32.join(systemRoot || "C:\\Windows", "System32", name);
+-}
+-
+ // The probe runs in the launcher, with the same pinned `mxc_ffi` that executes
+ // commands. A probe can succeed without selecting a tier; only a selected and
+ // admitted tier means this host can run MXC sandboxes.
+@@ -27,9 +22,9 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+   const notReady = (reason: string, cause?: unknown) =>
+     new Error(
+       `[mxc] MXC Windows ProcessContainer sandbox is not ready: ${reason}. ` +
+-        `The plugin probes the host through @microsoft/mxc-sdk 1.0 with the native ` +
++        `The plugin probes the host through @microsoft/mxc-sdk 1.1 with the native ` +
+         `components in ${nativeEnv.MXC_FFI_DIR}. If mxcBinaryPath is set, it must point ` +
+-        `to an MXC 1.0 release layout; otherwise unset ` +
++        `to an MXC 1.1 release layout; otherwise unset ` +
+         `plugins.entries.mxc.config.mxcBinaryPath and restart the Gateway to use the ` +
+         `bundled SDK components.`,
+       cause === undefined ? undefined : { cause },
+@@ -58,76 +53,13 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+     throw notReady("the MXC host check returned an unexpected result", parsed.error);
+   }
+   const { probe: result } = parsed.data;
+-  if (!result.tier) {
+-    const reason = result.error || "the check reported no isolation tier";
+-    throw notReady(`MXC cannot select an isolation tier on this host (${reason})`);
++  if (result.error !== undefined) {
++    throw notReady("the MXC host check reported an error");
+   }
+   return { tier: result.tier, warnings: result.warnings };
+ }
+ 
+-// AppContainer processes need directory-traversal/list rights on the system
+-// drive root (C:\) to enumerate directories inside the sandbox.
+-// `wxc-host-prep prepare-system-drive` adds ACEs for the well-known
+-// ALL APPLICATION PACKAGES (S-1-15-2-1) and ALL RESTRICTED APPLICATION PACKAGES
+-// (S-1-15-2-2) SIDs. Without this, directory listing (e.g. `dir`) inside the
+-// sandbox fails with "Access is denied". This is advisory: the sandbox still
+-// runs basic cmd.exe read/write workloads without it, so a missing grant warns
+-// rather than blocking activation.
+-function isSystemDrivePrepared(): boolean {
+-  const systemDrive = process.env.SystemDrive || "C:";
+-  let output: string;
+-  try {
+-    output = execFileSync(resolveWindowsSystemExecutable("icacls.exe"), [`${systemDrive}\\`], {
+-      encoding: "utf-8",
+-      stdio: "pipe",
+-      timeout: 5_000,
+-      windowsHide: true,
+-    });
+-  } catch {
+-    // If icacls itself fails, assume prepared rather than emitting a spurious
+-    // warning on a host we cannot probe.
+-    return true;
+-  }
+-  // Look for the well-known ALL APPLICATION PACKAGES SID (S-1-15-2-1) or its
+-  // display name. Both forms can appear depending on OS locale/version.
+-  return output.includes("S-1-15-2-1") || output.includes("APPLICATION PACKAGES");
+-}
+-
+-function systemDrivePrepWarning(systemDrive: string): string {
+-  return (
+-    `[mxc] MXC sandbox host preparation incomplete: the system drive root (${systemDrive}\\) ` +
+-    `does not grant directory access to AppContainer processes, so directory listing ` +
+-    `(e.g. \`dir\`) inside the sandbox will fail with "Access is denied". Basic read/write ` +
+-    `workloads still run.\n` +
+-    `Fix (one-time, elevated): wxc-host-prep prepare-system-drive (ships with @microsoft/mxc-sdk).`
+-  );
+-}
+-
+-/**
+- * Emits an advisory warning when the system drive is not prepared for
+- * AppContainer directory access. Non-fatal: the sandbox still activates.
+- */
+-export function warnMxcHostPrepIfNeeded(): void {
+-  if (process.platform !== "win32") {
+-    return;
+-  }
+-  if (!isSystemDrivePrepared()) {
+-    console.warn(systemDrivePrepWarning(process.env.SystemDrive || "C:"));
+-  }
+-}
+-
+-// SDK 0.8 requested a least-privilege AppContainer (LPAC); SDK 1.0 cannot, so
+-// the AppContainer tiers now run a regular AppContainer. base-container has no
+-// LPAC token in either version and is unaffected.
+-function appContainerTierNotice(tier: string): string {
+-  return (
+-    `[mxc] MXC selected the ${tier} isolation tier. With MXC SDK 1.0 this tier runs ` +
+-    `sandboxed commands in a regular AppContainer, not a least-privilege AppContainer ` +
+-    `(LPAC), so they can reach resources granted to ALL APPLICATION PACKAGES.`
+-  );
+-}
+-
+-// @microsoft/mxc-sdk 1.0.0 refuses non-PTY commands on Windows outside this Node
++// @microsoft/mxc-sdk 1.1.0 refuses non-PTY commands on Windows outside this Node
+ // range (dist/bindings/native-stdio.js), which is narrower than OpenClaw's own
+ // engines range. The launcher runs on the Gateway's Node, so check it once here
+ // instead of failing every command. Recheck on each SDK bump.
+@@ -139,10 +71,9 @@ function supportsMxcWindowsNode(version: string): boolean {
+ }
+ 
+ /**
+- * Fails plugin activation unless the Gateway's Node.js meets MXC SDK 1.0's
++ * Fails plugin activation unless the Gateway's Node.js meets MXC SDK 1.1's
+  * Windows requirement and MXC's host probe, run with the pinned native
+- * components, selects an isolation tier. The AppContainer-tier isolation notice
+- * and the probe's degradation warnings are reported but do not block activation.
++ * components, selects BaseContainer without DACL augmentation.
+  */
+ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
+   if (process.platform !== "win32") {
+@@ -150,15 +81,12 @@ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }
+   }
+   if (!supportsMxcWindowsNode(process.versions.node)) {
+     throw new Error(
+-      `[mxc] MXC Windows ProcessContainer sandbox is not ready: @microsoft/mxc-sdk 1.0 ` +
++      `[mxc] MXC Windows ProcessContainer sandbox is not ready: @microsoft/mxc-sdk 1.1 ` +
+         `requires Node.js ${WINDOWS_NODE_REQUIREMENT} on Windows, and the Gateway runs ` +
+         `Node.js ${process.versions.node}. Upgrade Node.js and restart the Gateway.`,
+     );
+   }
+   const probe = probeMxcIsolationTier(params.nativeEnv);
+-  if (probe.tier !== "base-container") {
+-    console.info(appContainerTierNotice(probe.tier));
+-  }
+   if (probe.warnings.length > 0) {
+     console.warn(
+       `[mxc] MXC sandbox is using the ${probe.tier} isolation tier: ${probe.warnings.join("; ")}`,
+diff --git a/extensions/mxc/test/mxc-spawn-launcher.test.ts b/extensions/mxc/test/mxc-spawn-launcher.test.ts
+index fd15816..940ef8b 100644
+--- a/extensions/mxc/test/mxc-spawn-launcher.test.ts
++++ b/extensions/mxc/test/mxc-spawn-launcher.test.ts
+@@ -52,6 +52,7 @@ const loadLauncher = () =>
+     }) => Signals;
+     launchSandbox: (
+       sdk: {
++        probe: (request: unknown) => unknown;
+         spawn: (request: unknown) => Promise<FakeProcess>;
+         spawnWithPty: (request: unknown) => Promise<FakeProcess>;
+       },
+@@ -87,6 +88,8 @@ function endedStream(text: string): PassThrough {
+   return stream;
+ }
+ 
++const readyProbe = () => ({ tier: "base-container", needsDaclAugmentation: false, warnings: [] });
++
+ const attachOnly: Signals = {
+   attach: () => {},
+   signaled: () => false,
+@@ -140,7 +143,7 @@ async function startPtyLaunch(request: { timeoutMs?: number }, signals: Signals
+   const { spawned, kill, finish } = createPtyProcess();
+   const spawnWithPty = vi.fn(async (_request: unknown) => spawned);
+   const result = launchSandbox(
+-    { spawn: vi.fn(), spawnWithPty },
++    { probe: readyProbe, spawn: vi.fn(), spawnWithPty },
+     request,
+     { pty: true },
+     signals,
+@@ -152,6 +155,45 @@ async function startPtyLaunch(request: { timeoutMs?: number }, signals: Signals
+ }
+ 
+ describe("mxc-spawn-launcher", () => {
++  it.each([false, true])("refuses fallback before spawn (PTY %s)", async (pty) => {
++    const { launchSandbox } = loadLauncher();
++    const spawn = vi.fn();
++    const spawnWithPty = vi.fn();
++    const probe = vi.fn(() => ({
++      tier: "appcontainer-dacl",
++      needsDaclAugmentation: true,
++      warnings: [],
++    }));
++    await expect(
++      launchSandbox(
++        { probe, spawn, spawnWithPty },
++        { timeoutMs: 100 },
++        { pty },
++        attachOnly,
++        createIo(),
++      ),
++    ).rejects.toThrow(/BaseContainer preflight refused/);
++    expect(probe).toHaveBeenCalledWith({ timeoutMs: pty ? 5100 : 100 });
++    expect(spawn).not.toHaveBeenCalled();
++    expect(spawnWithPty).not.toHaveBeenCalled();
++  });
++
++  it("does not spawn when cancellation arrives during preflight", async () => {
++    const { launchSandbox } = loadLauncher();
++    let cancelled = false;
++    const spawn = vi.fn();
++    const spawnWithPty = vi.fn();
++    const signals = { ...attachOnly, signaled: () => cancelled };
++    const probe = async () => {
++      cancelled = true;
++      return readyProbe();
++    };
++    await expect(
++      launchSandbox({ probe, spawn, spawnWithPty }, {}, {}, signals, createIo()),
++    ).rejects.toThrow(/cancelled before launch/);
++    expect(spawn).not.toHaveBeenCalled();
++    expect(spawnWithPty).not.toHaveBeenCalled();
++  });
+   it("decodes a JSON --payload-file and removes it before spawning", () => {
+     const { decodePayload } = loadLauncher();
+     const dir = mkdtempSync(path.join(tmpdir(), "mxc-launcher-test-"));
+@@ -224,7 +266,13 @@ describe("mxc-spawn-launcher", () => {
+     const spawn = vi.fn(async () => spawned);
+     const spawnWithPty = vi.fn();
+ 
+-    const result = launchSandbox({ spawn, spawnWithPty }, {}, { pty: false }, attachOnly, io);
++    const result = launchSandbox(
++      { probe: readyProbe, spawn, spawnWithPty },
++      {},
++      { pty: false },
++      attachOnly,
++      io,
++    );
+     await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
+     io.stdin.end("input");
+ 
+@@ -253,7 +301,7 @@ describe("mxc-spawn-launcher", () => {
+     };
+ 
+     const result = launchSandbox(
+-      { spawn: async () => spawned, spawnWithPty: vi.fn() },
++      { probe: readyProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+       {},
+       {},
+       attachOnly,
+@@ -287,7 +335,7 @@ describe("mxc-spawn-launcher", () => {
+     };
+     const failure = new Error("sandbox stream failed");
+     const result = launchSandbox(
+-      { spawn: async () => spawned, spawnWithPty: vi.fn() },
++      { probe: readyProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+       {},
+       {},
+       attachOnly,
+@@ -315,7 +363,7 @@ describe("mxc-spawn-launcher", () => {
+       kill: vi.fn(),
+     };
+     const result = launchSandbox(
+-      { spawn: async () => spawned, spawnWithPty: vi.fn() },
++      { probe: readyProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+       {},
+       {},
+       attachOnly,
+@@ -350,7 +398,13 @@ describe("mxc-spawn-launcher", () => {
+     const spawnWithPty = vi.fn(async () => spawned);
+     const spawn = vi.fn();
+ 
+-    const result = launchSandbox({ spawn, spawnWithPty }, {}, { pty: true }, attachOnly, io);
++    const result = launchSandbox(
++      { probe: readyProbe, spawn, spawnWithPty },
++      {},
++      { pty: true },
++      attachOnly,
++      io,
++    );
+     await vi.waitFor(() => expect(spawnWithPty).toHaveBeenCalled());
+     io.stdin.end("dir\r");
+ 
+@@ -372,7 +426,7 @@ describe("mxc-spawn-launcher", () => {
+     };
+ 
+     const code = await launchSandbox(
+-      { spawn: async () => spawned, spawnWithPty: vi.fn() },
++      { probe: readyProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+       {},
+       {},
+       attachOnly,
+@@ -429,7 +483,7 @@ describe("mxc-spawn-launcher", () => {
+     const forced: { code?: number } = {};
+     const signals: Signals = {
+       attach: () => {},
+-      signaled: () => true,
++      signaled: () => forced.code !== undefined,
+       exitCode: () => forced.code,
+       dispose: () => {},
+     };
+@@ -438,9 +492,9 @@ describe("mxc-spawn-launcher", () => {
+       signals,
+     );
+ 
++    forced.code = 143;
+     pending[0]?.callback();
+     expect(kill).not.toHaveBeenCalled();
+-    forced.code = 143;
+     finish({ exitCode: -1, timedOut: false });
+ 
+     await expect(result).resolves.toBe(143);
+@@ -478,7 +532,14 @@ describe("mxc-spawn-launcher", () => {
+     const spawn = vi.fn(async (_request: unknown) => spawned);
+ 
+     await expect(
+-      launchSandbox({ spawn, spawnWithPty: vi.fn() }, request, {}, attachOnly, createIo(), timers),
++      launchSandbox(
++        { probe: readyProbe, spawn, spawnWithPty: vi.fn() },
++        request,
++        {},
++        attachOnly,
++        createIo(),
++        timers,
++      ),
+     ).resolves.toBe(-1);
+     expect(spawn.mock.calls[0]?.[0]).toBe(request);
+     expect(pending).toHaveLength(0);
+@@ -542,7 +603,7 @@ describe("mxc-spawn-launcher", () => {
+     };
+     try {
+       const result = launchSandbox(
+-        { spawn: async () => spawned, spawnWithPty: vi.fn() },
++        { probe: readyProbe, spawn: async () => spawned, spawnWithPty: vi.fn() },
+         {},
+         {},
+         undefined,
+diff --git a/extensions/mxc/test/plugin.test.ts b/extensions/mxc/test/plugin.test.ts
+index 1229792..438b05f 100644
+--- a/extensions/mxc/test/plugin.test.ts
++++ b/extensions/mxc/test/plugin.test.ts
+@@ -37,7 +37,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
+ import { registerMxcPlugin } from "../src/plugin.js";
+ 
+ const readyProbe = JSON.stringify({
+-  probe: { tier: "base-container", warnings: [], probes: {} },
++  probe: { tier: "base-container", needsDaclAugmentation: false, warnings: [], probes: {} },
+ });
+ const originalPlatform = process.platform;
+ const originalNodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+diff --git a/extensions/mxc/test/readiness.test.ts b/extensions/mxc/test/readiness.test.ts
+index a940827..f66c11c 100644
+--- a/extensions/mxc/test/readiness.test.ts
++++ b/extensions/mxc/test/readiness.test.ts
+@@ -1,7 +1,7 @@
+ import { execFileSync } from "node:child_process";
+ import path from "node:path";
+ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+-import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "../src/readiness.js";
++import { assertMxcReadiness } from "../src/readiness.js";
+ 
+ vi.mock("node:child_process", async (importOriginal) => ({
+   ...(await importOriginal<typeof import("node:child_process")>()),
+@@ -35,7 +35,9 @@ const ICACLS = path.win32.join(SYSTEM32, "icacls.exe");
+ const NATIVE_ENV = { MXC_BIN_DIR: "C:\\mxc\\bin", MXC_FFI_DIR: "C:\\mxc\\bin\\x64" };
+ 
+ function probeOutput(result: Record<string, unknown>): string {
+-  return JSON.stringify({ probe: { warnings: [], probes: {}, ...result } });
++  return JSON.stringify({
++    probe: { warnings: [], probes: {}, needsDaclAugmentation: false, ...result },
++  });
+ }
+ 
+ // Only the plugin launcher, run with the pinned native environment, answers --probe.
+@@ -50,7 +52,10 @@ function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } =
+       args[1] === "--probe"
+     ) {
+       const env = (options as { env?: Record<string, string> } | undefined)?.env;
+-      if (env?.MXC_FFI_DIR !== NATIVE_ENV.MXC_FFI_DIR || env.MXC_BIN_DIR !== NATIVE_ENV.MXC_BIN_DIR) {
++      if (
++        env?.MXC_FFI_DIR !== NATIVE_ENV.MXC_FFI_DIR ||
++        env.MXC_BIN_DIR !== NATIVE_ENV.MXC_BIN_DIR
++      ) {
+         throw new Error("probe ran without the pinned native environment");
+       }
+       if (probe instanceof Error) {
+@@ -85,21 +90,12 @@ describe("assertMxcReadiness", () => {
+     expect(info).not.toHaveBeenCalled();
+   });
+ 
+-  test.each(["appcontainer-dacl", "appcontainer-bfs"])(
+-    "accepts the %s tier and discloses that it runs without LPAC",
+-    (tier) => {
+-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+-      mockProbe({ probe: probeOutput({ tier }) });
+-
+-      expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
+-      expect(warn).not.toHaveBeenCalled();
+-      expect(info).toHaveBeenCalledOnce();
+-      expect(info.mock.calls[0]?.[0]).toMatch(
+-        new RegExp(`${tier} isolation tier.*regular AppContainer.*ALL APPLICATION PACKAGES`, "u"),
+-      );
+-    },
+-  );
++  test.each(["appcontainer-dacl", "appcontainer-bfs"])("refuses the %s fallback mode", (tier) => {
++    mockProbe({ probe: probeOutput({ tier }) });
++    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
++      /host check returned an unexpected result/u,
++    );
++  });
+ 
+   test("reports tier degradation without requiring system-drive preparation", () => {
+     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+@@ -119,7 +115,7 @@ describe("assertMxcReadiness", () => {
+   });
+ 
+   test.each(["24.18.0", "25.9.0", "26.7.0"])(
+-    "rejects Node.js %s, which MXC SDK 1.0 cannot run commands on, before probing",
++    "rejects Node.js %s, which MXC SDK 1.1 cannot run commands on, before probing",
+     (version) => {
+       setNodeVersion(version);
+       const exec = mockProbe();
+@@ -146,7 +142,7 @@ describe("assertMxcReadiness", () => {
+     });
+ 
+     expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+-      /cannot select an isolation tier on this host \(DACL fallback required.*MXC 1\.0 release layout/u,
++      /host check returned an unexpected result/u,
+     );
+   });
+ 
+@@ -178,25 +174,3 @@ describe("assertMxcReadiness", () => {
+     ).toThrow(/host check failed: probe ran without the pinned native environment/u);
+   });
+ });
+-
+-describe("warnMxcHostPrepIfNeeded", () => {
+-  test("is a no-op on non-Windows platforms", () => {
+-    setPlatform("linux");
+-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-    mockProbe();
+-
+-    warnMxcHostPrepIfNeeded();
+-    expect(warn).not.toHaveBeenCalled();
+-  });
+-
+-  test("warns when the system drive lacks AppContainer ACEs", () => {
+-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-    mockProbe({
+-      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
+-    });
+-
+-    warnMxcHostPrepIfNeeded();
+-    expect(warn).toHaveBeenCalledOnce();
+-    expect(warn.mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
+-  });
+-});
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 310eaa5..320d487 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1879,8 +1879,8 @@ importers:
+   extensions/mxc:
+     dependencies:
+       '@microsoft/mxc-sdk':
+-        specifier: 1.0.0
+-        version: 1.0.0(supports-color@10.2.2)
++        specifier: 1.1.0
++        version: 1.1.0(supports-color@10.2.2)
+       zod:
+         specifier: 4.6.7
+         version: 4.6.7
+@@ -4767,9 +4767,14 @@ packages:
+     resolution: {integrity: sha512-j37dj/h6p6pots1L7pLPPNuABEEu9WP4OYg9pW1g+nYG331j0+3canE9OagtYdytYvdSAMG+2fKU5cxep6LgjA==}
+     engines: {node: '>=22.12.0'}
+ 
+-  '@microsoft/mxc-sdk@1.0.0':
+-    resolution: {integrity: sha512-7aVR+GHVKveIknZmUtkAEFwUBp61qgEmhJRe1ZyKHJ274yWlKWB/ZfDP/u/whfmDyck0wRNKZN49atlF+SZt2Q==}
++  '@microsoft/mxc-sdk@1.1.0':
++    resolution: {integrity: sha512-tSOPZ14ddCiXHc4hVNQp5Yi22HSQEfXh58Z4O/tLzERi+23rfRmMrJoxVK5jZYhlll68u4eF/UlQSaXWyUMj4w==}
+     engines: {node: '>=24.0.0'}
++    peerDependencies:
++      '@microsoft/mxc-sdk-nvx-runtime-win32-x64': 1.1.0
++    peerDependenciesMeta:
++      '@microsoft/mxc-sdk-nvx-runtime-win32-x64':
++        optional: true
+ 
+   '@microsoft/teams.api@2.1.0':
+     resolution: {integrity: sha512-tS7NRqxpyzrgCwHCZh4xUys1Waon/cEtVb801Yx6DekOIOZaOgHA4KFuspM6FvlErzTt5tm6GGlXDstm4dkHbw==}
+@@ -13267,7 +13272,7 @@ snapshots:
+     dependencies:
+       '@chevrotain/types': 13.2.0
+ 
+-  '@microsoft/mxc-sdk@1.0.0(supports-color@10.2.2)':
++  '@microsoft/mxc-sdk@1.1.0(supports-color@10.2.2)':
+     dependencies:
+       koffi: 3.3.2
+       node-pty: 1.1.0(supports-color@10.2.2)
