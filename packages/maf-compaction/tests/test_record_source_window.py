@@ -12,13 +12,19 @@ from test_background_record_merges import running, tool_reply
 from test_record_budget import _history, _record_pair, _sent, _strategy, _Summarizer, _values
 
 from maf_compaction._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
+from maf_compaction._artifacts import is_marker
 from maf_compaction._composed import (
     DEFAULT_RECORD_MERGE_PROMPT,
     _RecordMergeWork,
     _transcript,
     harder_record_prompt,
 )
-from maf_compaction._record_replay import RECORD_ANCHOR_EXCLUDE_REASON, source_key
+from maf_compaction._record_replay import (
+    RECORD_ANCHOR_EXCLUDE_REASON,
+    _source_key,
+    replay_match,
+    source_key,
+)
 from maf_compaction._toolsummary import consolidatable_record_groups
 
 pytestmark = pytest.mark.anyio
@@ -269,3 +275,58 @@ async def test_an_answer_captured_over_budget_applies_in_a_pass_that_fits():
     assert await work.apply_ready(messages)
     assert strategy.records_merged == 1
     await work.close()
+
+
+def _shed_with_notes(strategy, messages: list[Message]) -> None:
+    """Shed the tool rounds between the records the way a pass does, leaving its notes."""
+    ids = {str(m.message_id) for m in _tool_rounds(messages)}
+    assert strategy.tool_results.fallback.shed_again(messages, ids)
+    assert any(is_marker(m) for m in messages), "the premise: the shed left notes"
+
+
+def _without_notes(messages: list[Message]) -> list[Message]:
+    return [m for m in messages if not is_marker(m)]
+
+
+async def test_a_background_answer_applies_when_the_next_pass_lacks_the_shed_notes():
+    """The worker snapshots the list after the pass's shed, notes included; the next pass's copy
+    has the same tool rounds shed but no notes until its own shed, and applies the answer (#2108)."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _interleaved()
+    _shed_with_notes(strategy, messages)
+    await strategy(messages)
+    assert any(is_marker(m) for m in messages), "the premise: the pass kept the notes"
+    work.remember(messages, strategy._budget)
+    await work.start(tool_reply())
+    await running(work)
+    assert work._ready, "the premise: the worker prepared an answer"
+
+    applying = _without_notes(messages)
+
+    assert await work.apply_ready(applying)
+    assert strategy.records_merged == 1
+    await work.close()
+
+
+def test_the_shed_notes_between_the_records_leave_the_key_as_it_was() -> None:
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    noted = _interleaved()
+    _shed_with_notes(strategy, noted)
+    plain = _without_notes(copy.deepcopy(noted))
+
+    assert _key(noted) == _key(plain)
+
+
+def test_an_edit_kept_under_the_key_before_notes_were_skipped_still_replays() -> None:
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.001, cap=None)
+    messages = _interleaved()
+    _shed_with_notes(strategy, messages)
+    groups = consolidatable_record_groups(messages)
+    legacy = _source_key(messages, groups, {}, skip_notes=False)
+    assert legacy is not None and legacy != _source_key(messages, groups, {})
+
+    found = replay_match(messages, groups, [(f"v2:{legacy}:", len(groups))])
+
+    assert found is not None and found[0] == groups
