@@ -37,13 +37,21 @@ class RecordRoleVerdict:
     probability: float
 
 
+def _token_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
 @dataclass(frozen=True)
 class RecordRoleResponse:
-    """Verdicts and optional provider token counts for the entire batch."""
+    """Verdicts and batch token counts. Missing or invalid counts become ``None``."""
 
     verdicts: Mapping[int, RecordRoleVerdict]
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "input_tokens", _token_count(self.input_tokens))
+        object.__setattr__(self, "output_tokens", _token_count(self.output_tokens))
 
 
 type RecordRoleJudge = Callable[
