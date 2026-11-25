@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection
+from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -838,59 +839,120 @@ class AnchoredCompactionStrategy:
     def _insert_notes(
         self, messages: list[Message], notes: list[tuple[dict[str, Any], str]]
     ) -> None:
-        """Insert notes for disjoint groups supplied in descending start-index order.
+        """Insert notes for disjoint groups supplied in descending start-index order."""
+        _insert_notes(messages, notes)
 
-        Allocate ids in that order, reserving each before the next choice: a stored message
-        or another group's note can occupy a marker's suffix. Existing notes are recognized
-        by their text and source links, never by the id alone.
-        """
-        if not notes:
-            return
-        noted = {
-            group_id
-            for message in messages
-            if _is_marker(message)
-            for group_id in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
-                SUMMARY_OF_GROUP_IDS_KEY, []
+
+def _insert_notes(messages: list[Message], notes: list[tuple[dict[str, Any], str]]) -> None:
+    """Insert notes for disjoint groups supplied in descending start-index order.
+
+    Allocate ids in that order, reserving each before the next choice: a stored message
+    or another group's note can occupy a marker's suffix. Existing notes are recognized
+    by their text and source links, never by the id alone.
+    """
+    if not notes:
+        return
+    noted = {
+        group_id
+        for message in messages
+        if _is_marker(message)
+        for group_id in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
+            SUMMARY_OF_GROUP_IDS_KEY, []
+        )
+    }
+    taken = {message.message_id for message in messages if message.message_id}
+    pending: list[tuple[int, Message]] = []
+    for group, note in notes:
+        group_id = group["group_id"]
+        if group_id in noted:
+            continue
+        marker_id = f"{MARKER_ID_PREFIX}{group_id}"
+        suffix = 0
+        while marker_id in taken:
+            suffix += 1
+            marker_id = f"{MARKER_ID_PREFIX}{group_id}_{suffix}"
+        members = messages[group["start_index"] : group["end_index"] + 1]
+        marker = Message(
+            role="assistant",
+            contents=[note],
+            message_id=marker_id,
+            additional_properties={
+                GROUP_ANNOTATION_KEY: {
+                    SUMMARY_OF_MESSAGE_IDS_KEY: [m.message_id for m in members if m.message_id],
+                    SUMMARY_OF_GROUP_IDS_KEY: [group["group_id"]],
+                }
+            },
+        )
+        taken.add(marker_id)
+        if _is_marker(marker):
+            noted.add(group_id)
+        pending.append((group["start_index"], marker))
+    if not pending:
+        return
+    combined: list[Message] = []
+    cursor = 0
+    for position, marker in reversed(pending):
+        combined.extend(messages[cursor:position])
+        combined.append(marker)
+        cursor = position
+    combined.extend(messages[cursor:])
+    messages[:] = combined
+
+
+def split_combined_notes(
+    messages: list[Message],
+) -> tuple[list[Message], dict[int, int]] | None:
+    """The list with each combined note back as the notes it replaced, and an index map.
+
+    For a key taken before adjacent notes were combined: it covered the one note each shed
+    group left, with the text and id :meth:`AnchoredCompactionStrategy._note_for` and
+    :func:`_insert_notes` give them, and both are read again off the groups' own messages. The
+    map gives, for each index of ``messages`` that is not a combined note, its index in the list
+    returned. Copies only: ``messages`` is not changed. None when no note is combined.
+    """
+    combined = {
+        index
+        for index, message in enumerate(messages)
+        if _is_marker(message) and len(_noted_group_ids(message)) > 1
+    }
+    if not combined:
+        return None
+    wanted = {group_id for index in combined for group_id in _noted_group_ids(messages[index])}
+    originals: dict[int, int] = {}
+    view: list[Message] = []
+    for index, message in enumerate(messages):
+        if index in combined:
+            continue
+        owned = copy(message)
+        owned.additional_properties = dict(message.additional_properties)
+        annotation = owned.additional_properties.get(GROUP_ANNOTATION_KEY)
+        if isinstance(annotation, dict):
+            # Annotating the copy must not rewrite the original's group annotation.
+            owned.additional_properties[GROUP_ANNOTATION_KEY] = dict(
+                cast("dict[str, Any]", annotation)
             )
-        }
-        taken = {message.message_id for message in messages if message.message_id}
-        pending: list[tuple[int, Message]] = []
-        for group, note in notes:
-            group_id = group["group_id"]
-            if group_id in noted:
-                continue
-            marker_id = f"{MARKER_ID_PREFIX}{group_id}"
-            suffix = 0
-            while marker_id in taken:
-                suffix += 1
-                marker_id = f"{MARKER_ID_PREFIX}{group_id}_{suffix}"
-            members = messages[group["start_index"] : group["end_index"] + 1]
-            marker = Message(
-                role="assistant",
-                contents=[note],
-                message_id=marker_id,
-                additional_properties={
-                    GROUP_ANNOTATION_KEY: {
-                        SUMMARY_OF_MESSAGE_IDS_KEY: [m.message_id for m in members if m.message_id],
-                        SUMMARY_OF_GROUP_IDS_KEY: [group["group_id"]],
-                    }
-                },
-            )
-            taken.add(marker_id)
-            if _is_marker(marker):
-                noted.add(group_id)
-            pending.append((group["start_index"], marker))
-        if not pending:
-            return
-        combined: list[Message] = []
-        cursor = 0
-        for position, marker in reversed(pending):
-            combined.extend(messages[cursor:position])
-            combined.append(marker)
-            cursor = position
-        combined.extend(messages[cursor:])
-        messages[:] = combined
+        originals[id(owned)] = index
+        view.append(owned)
+    annotate_message_groups(view)
+    notes: list[tuple[dict[str, Any], str]] = []
+    for group in group_messages(view):
+        if group["group_id"] not in wanted or group.get("kind") not in _NOTES:
+            continue
+        members = view[group["start_index"] : group["end_index"] + 1]
+        if not all(
+            m.additional_properties.get(EXCLUDED_KEY, False)
+            and m.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+            for m in members
+        ):
+            continue
+        if (note := AnchoredCompactionStrategy._note_for(view, group)) is not None:  # pyright: ignore[reportPrivateUsage]
+            notes.append((group, note))
+    _insert_notes(view, list(reversed(notes)))
+    return view, {
+        originals[id(message)]: index
+        for index, message in enumerate(view)
+        if id(message) in originals
+    }
 
 
 class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):

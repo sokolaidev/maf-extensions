@@ -4038,7 +4038,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if forced_this_call or not messages or self.recall_disabled:
             self._force_next = False
             return
-        await off_loop(_annotate_for_pass, messages, self.tokenizer)
+        if await off_loop(_annotate_for_pass, messages, self.tokenizer):
+            record_index = find_record_index(messages)
         try:
             budget = request_budget() if request_budget is not None else None
         except CompactionBudgetExceeded:

@@ -2,8 +2,9 @@
 
 import re
 from copy import copy
+from functools import cache
 from itertools import groupby
-from typing import Final
+from typing import Any, Final
 
 from agent_framework import Content, Message
 from agent_framework._compaction import (
@@ -80,6 +81,24 @@ def is_marker(message: Message) -> bool:
     )
 
 
+_NOT_COMPARED = frozenset({"text", "raw_representation"})
+
+
+@cache
+def _bare_text() -> dict[str, Any]:
+    """A fresh text item's fields besides its text, compared without serializing an item."""
+    return {k: v for k, v in vars(Content.from_text("")).items() if k not in _NOT_COMPARED}
+
+
+def _is_bare_text(content: Content) -> bool:
+    """Only text: a combined note's fresh item keeps nothing else a note carried."""
+    return (
+        content.type == "text"
+        and content.raw_representation is None
+        and {k: v for k, v in vars(content).items() if k not in _NOT_COMPARED} == _bare_text()
+    )
+
+
 def coalesce_shed_notes(messages: list[Message]) -> bool:
     """Replace adjacent notes in the included prompt, retaining excluded sources in history."""
     included = (i for i, m in enumerate(messages) if not m.additional_properties.get(EXCLUDED_KEY))
@@ -90,7 +109,7 @@ def coalesce_shed_notes(messages: list[Message]) -> bool:
             is_marker(m)
             and not is_preserved(m)
             and len(m.contents) == 1
-            and m.contents[0].type == "text"
+            and _is_bare_text(m.contents[0])
         )
 
     replacements: dict[int, Message] = {}

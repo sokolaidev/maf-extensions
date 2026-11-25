@@ -20,6 +20,7 @@ from agent_framework._compaction import (
 )
 
 from ._anchored import EXCLUDE_REASON as SHED_EXCLUDE_REASON
+from ._anchored import split_combined_notes
 from ._artifacts import is_marker
 from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
@@ -751,6 +752,10 @@ def replay_match(
     }
     window_keys: dict[int, str] = {}
     notes: list[int] | None = None
+    # Built once, the first time a window holding a combined note needs its older key.
+    split: tuple[list[Message], dict[int, int]] | None | bool = False
+    split_keys: dict[int, str] = {}
+    split_windows: dict[int, str] = {}
     for count in sorted({count for _, count in certificates}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
@@ -763,9 +768,30 @@ def replay_match(
             # A note between the records: an edit accepted before notes were skipped has the
             # window's older key.
             if notes[run[-1]["end_index"] + 1] > notes[run[0]["start_index"]]:
-                legacy = _source_key(
-                    messages, run, message_keys, key_cache, window_keys, skip_notes=False
-                )
+                if split is False:
+                    split = split_combined_notes(messages)
+                window = range(run[0]["start_index"], run[-1]["end_index"] + 1)
+                if split and any(index not in split[1] for index in window):
+                    view, at = split
+                    legacy = _source_key(
+                        view,
+                        [
+                            {
+                                **g,
+                                "start_index": at[g["start_index"]],
+                                "end_index": at[g["end_index"]],
+                            }
+                            for g in run
+                        ],
+                        split_keys,
+                        None,
+                        split_windows,
+                        skip_notes=False,
+                    )
+                else:
+                    legacy = _source_key(
+                        messages, run, message_keys, key_cache, window_keys, skip_notes=False
+                    )
                 found = [*found, *certificates.get((legacy, count), [])] if legacy else found
             for certificate, excluded in found:
                 if not any(
