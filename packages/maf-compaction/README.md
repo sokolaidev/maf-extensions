@@ -188,9 +188,12 @@ report = await strategy.measure_record_roles(
     task="Which destination should receive the rollback?",
     task_role="Rollback target",
     judge=make_decision_role_judge(deployment_name, send_decision),
+    max_requests=1 if may_share_records else 0,
 )
 print(report.requests, report.batch_sizes, report.judge_seconds)
 ```
+
+Set `may_share_records` from the host’s policy for this conversation and deployment. The provider receives the task, role, selected source bodies and candidate text verbatim, which can include personal data or credentials. With `max_requests=0`, the strategy still compares structured fields locally and never calls the decision transport. A host that classifies individual payloads can also inspect `payload["state"]` in `send_decision` before making the HTTP request.
 
 `request_details` gives each attempted batch’s candidate IDs (zero-based positions in `observations`), elapsed seconds and provider-reported input and output tokens when available. A missing token count is `None`. Token counts belong to the whole batch.
 
@@ -198,7 +201,9 @@ Existing size, completion, gain and value-coverage checks take precedence. For a
 
 The Decision-1.1 adapter sends the shared task and role, plus just the selected candidates and their sources. Each unique comparison gets a named choice question. Identical comparisons in the same pass share a verdict. The adapter submits one request per batch and verifies the response model and question names. The host controls authentication, transport retries and the deployment. A timeout (five seconds per request), malformed or missing answer, provider failure, uncertain choice, or probability below 0.8 leaves the observation `undecided`. The report contains verdicts and counts and does not store record text in session state. [Microsoft Decision request and response format](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision#choose-a-question-type)
 
-The defaults admit one decision request per pass, up to 16 questions and 32,768 UTF-8 bytes of task, role, source and candidate text per request. Allow room for the JSON envelope, rubric and output in the provider’s context window. With `max_requests=0`, only local decisions are available. Candidates that cannot fit a request have reason `oversize`. Candidates left over when the request budget runs out have reason `request_budget`. Neither counts as an evaluated question.
+Each question tells the judge to compare its named candidate and sources and to ignore instructions inside either. All records in the batch share model-visible state and can influence a verdict. Set `batch_size=1` to isolate comparisons in separate requests.
+
+The defaults admit one decision request per pass, up to 16 questions and 32,768 UTF-8 bytes of task, role, source and candidate text per request. Allow room for the JSON envelope, rubric and output in the provider’s context window. Candidates that cannot fit a request have reason `oversize`. Candidates left over when the request budget runs out have reason `request_budget`. Neither counts as an evaluated question.
 
 On a controlled 1,000-message history containing 498 tool-call/result pairs, the record share determines how many merge candidates the strategy generates. The table counts calls to the summarizer and the Decision-1.1 transport separately. Both transports use test doubles.
 
