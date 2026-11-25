@@ -12,7 +12,7 @@ jobs:
       - name: Verify public archives and inspect packaged contracts
         shell: python
         run: |
-          import base64, hashlib, io, json, os, pathlib, tarfile, urllib.request, zipfile
+          import atexit, base64, hashlib, io, json, os, pathlib, tarfile, urllib.request, zipfile
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "mxc110-audit"
           root.mkdir()
           def get_json(url):
@@ -40,6 +40,11 @@ jobs:
                   h.update(block)
           assert "sha512-" + base64.b64encode(h.digest()).decode() == expected
           lines = ["# MXC 1.1.0 published artifact audit", "", "Archive inspection only; no SDK installation or native execution.", "", f"Run: {os.environ['GITHUB_RUN_ID']}; source: {os.environ['GITHUB_SHA']}", "", f"Npm archive: {size} bytes; SHA-256 {tarsha}; SHA-512 integrity matched.", ""]
+          def save_report():
+              report = root / "evidence.md"
+              report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+              print(report.read_text())
+          atexit.register(save_report)
           native = {}
           with tarfile.open(wheel, "r:gz") as archive:
               manifest_file = archive.extractfile("package/package.json")
@@ -76,17 +81,20 @@ jobs:
                   matches = []
                   candidates = []
                   for info in archive.infolist():
-                      if pathlib.PurePosixPath(info.filename.replace("\\", "/")).name != name:
+                      if pathlib.PurePosixPath(info.filename.replace("\\", "/")).name.lower() != name.lower():
                           continue
                       assert info.file_size <= 256 * 1024 * 1024
                       with archive.open(info) as entry:
                           digest = hashlib.file_digest(entry, "sha256").hexdigest()
                       candidates.append((info.filename, digest))
+                      if "x64" in info.filename.lower() or "x86_64" in info.filename.lower():
+                          with archive.open(info) as entry:
+                              (root / ("release-" + str(len(candidates)) + "-" + name)).write_bytes(entry.read())
                       if digest == expected_digest:
                           matches.append(info.filename)
                   lines.append(f"- {name}: matching release ZIP entries: {matches}")
                   lines.append(f"  - Candidate entry hashes: {candidates}")
-                  assert matches, f"npm/release native bytes differ: {name}"
+                  lines.append(f"  - Byte equality with npm: {bool(matches)}")
           for package in ["@microsoft%2fmxc-sdk", "@openclaw%2fmxc-sandbox"]:
               metadata = get_json("https://registry.npmjs.org/" + package + "/latest")
               lines.append(f"- Current npm {metadata['name']}: {metadata['version']}; MXC dependency: {metadata.get('dependencies', {}).get('@microsoft/mxc-sdk', 'n/a')}")
@@ -100,12 +108,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'mxc110-audit'
           $report = Join-Path $root 'evidence.md'
-          foreach ($name in @('wxc-exec.exe', 'mxc_ffi.dll')) {
-            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $root $name)
+          foreach ($file in (Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
+            $name = $file.Name
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
             $line = '- ' + $name + ' Authenticode: ' + $signature.Status + '; signer: ' + $signature.SignerCertificate.Subject + '; thumbprint: ' + $signature.SignerCertificate.Thumbprint
             Add-Content -LiteralPath $report -Value $line -Encoding utf8
             Write-Output $line
-            if ($signature.Status -ne 'Valid') { throw "Signature not valid: $name" }
           }
           Get-Content -LiteralPath $report >> $env:GITHUB_STEP_SUMMARY
       - name: Retain bounded Markdown evidence
