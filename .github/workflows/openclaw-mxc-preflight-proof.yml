@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/proof-tools" --ignore-scripts --no-audit --no-fund vitest@5.0.3 zod@4.6.7 oxfmt@0.72.0 pnpm@12.15.0
           cd "$RUNNER_TEMP/openclaw"
-          "$RUNNER_TEMP/proof-tools/node_modules/.bin/oxfmt" --write $(git diff --name-only | grep -v pnpm-lock.yaml)
+          "$RUNNER_TEMP/proof-tools/node_modules/.bin/oxfmt" --check $(git diff --name-only | grep -v pnpm-lock.yaml)
           mkdir -p "$RUNNER_TEMP/focused/src" "$RUNNER_TEMP/focused/test"
           cp extensions/mxc/src/{mxc-spawn-launcher.mjs,readiness.ts,windows-env.ts,plugin-root.ts} "$RUNNER_TEMP/focused/src/"
           cp extensions/mxc/{package.json,openclaw.plugin.json} "$RUNNER_TEMP/focused/"
@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/openclaw"
-          "$RUNNER_TEMP/proof-tools/node_modules/.bin/pnpm" install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          "$RUNNER_TEMP/proof-tools/node_modules/.bin/pnpm" install --lockfile-only --ignore-scripts --frozen-lockfile
       - name: Retain formatted patch and proof
         if: always()
         shell: bash
@@ -75,5 +75,42 @@ jobs:
         if: always()
         with:
           name: openclaw-mxc-preflight-proof
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
+  windows-proof:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.1
+      - name: Replay production launcher boundary proof on Windows
+        shell: pwsh
+        run: |
+          $subject = Join-Path $env:RUNNER_TEMP 'openclaw-proof'
+          $sourceDir = Join-Path $subject 'extensions/mxc/src'
+          $evidence = Join-Path $env:RUNNER_TEMP 'evidence'
+          New-Item -ItemType Directory -Force -Path $sourceDir, $evidence | Out-Null
+          $launcher = Join-Path $sourceDir 'mxc-spawn-launcher.mjs'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/openclaw/openclaw/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src/mxc-spawn-launcher.mjs' -OutFile $launcher
+          $proof = Join-Path $env:GITHUB_WORKSPACE 'scripts/experiments/openclaw_mxc_preflight/verify.mjs'
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'scripts/experiments/openclaw_mxc_preflight/proposal.patch'
+          node $proof $launcher --baseline | Tee-Object -FilePath (Join-Path $evidence 'baseline.md')
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline reproduction failed' }
+          Set-Location $subject
+          git init -q
+          git apply --check --include=extensions/mxc/src/mxc-spawn-launcher.mjs $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch check failed' }
+          git apply --include=extensions/mxc/src/mxc-spawn-launcher.mjs $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch application failed' }
+          node $proof $launcher | Tee-Object -FilePath (Join-Path $evidence 'proof.md')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows fixture proof failed' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: openclaw-mxc-preflight-windows-proof
           path: ${{ runner.temp }}/evidence/
           retention-days: 30

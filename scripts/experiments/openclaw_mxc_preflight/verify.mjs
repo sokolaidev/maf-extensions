@@ -10,6 +10,8 @@ import { pathToFileURL } from "node:url";
 
 const source = path.resolve(process.argv[2]);
 const baseline = process.argv.includes("--baseline");
+const launcherSha256 = createHash("sha256").update(readFileSync(source)).digest("hex");
+if (baseline) assert.equal(launcherSha256, "dd70a621b515c8055368a86f42103dedbec864f5f346855b2213aa9a5c143510");
 const root = mkdtempSync(path.join(tmpdir(), "openclaw-preflight-proof-"));
 const launcher = path.join(root, "launcher.mjs");
 copyFileSync(source, launcher);
@@ -37,6 +39,7 @@ export function probe(request) {
     case "malformed": process.stdout.write("not-json"); process.exit(0);
     case "oversized": process.stdout.write("x".repeat(128 * 1024)); break;
     case "changed": appendFileSync(path.join(process.env.MXC_FFI_DIR, "mxc_ffi.dll"), "changed"); break;
+    case "changed-executor": appendFileSync(path.join(process.env.MXC_FFI_DIR, "wxc-exec.exe"), "changed"); break;
     case "hang": Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); break;
   }
   return { tier: "base-container", needsDaclAugmentation: false, warnings: [] };
@@ -122,7 +125,7 @@ try {
       assertGone();
       rows.push(`| ${pty ? "PTY" : "plain"} | same effective request; bounded diagnostic; probe exited | passed |`);
     }
-    for (const name of ["fallback", "null", "error", "contradictory", "malformed", "oversized", "changed", "hang", "creation-error"]) {
+    for (const name of ["fallback", "null", "error", "contradictory", "malformed", "oversized", "changed", "changed-executor", "hang", "creation-error"]) {
       const result = await run(name);
       assert.equal(result.code, 127, `${name}: ${result.stderr}`);
       assert.equal(result.events.filter((x) => x.kind === "spawn").length, name === "creation-error" ? 1 : 0);
@@ -150,7 +153,7 @@ try {
     }
     rows.push("| supervisor | abort synchronous probe; join child exit | passed |");
   }
-  console.log(`# MXC preflight launcher proof\n\nNode: ${process.version}; platform: ${process.platform}.\n\nInert SDK and synthetic native files only. No MXC library or workload executed.\n\n| Path | Contract | Result |\n| --- | --- | --- |\n${rows.join("\n")}\n`);
+  console.log(`# MXC preflight launcher proof\n\nNode: ${process.version}; platform: ${process.platform}.\nLauncher SHA-256: ${launcherSha256}.\n\nInert SDK and synthetic native files only. No MXC library or workload executed.\n\n| Path | Contract | Result |\n| --- | --- | --- |\n${rows.join("\n")}\n`);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
