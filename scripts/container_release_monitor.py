@@ -194,7 +194,14 @@ def notification(
             + "\n\nDetails truncated; see the finish job log, which retains full diagnostics "
             "even if the monitor-diagnostics artifact upload fails."
         )
-    return json.dumps({"attention": health["attention"], "problems": identity, "summary": summary})
+    return json.dumps(
+        {
+            "attention": health["attention"],
+            "operationalAttention": bool(health["monitoringProblems"] or health["publication"]),
+            "problems": identity,
+            "summary": summary,
+        }
+    )
 
 
 def target_name(target: dict[str, Any]) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -15,6 +16,7 @@ from collections.abc import Collection
 from datetime import datetime
 from typing import IO, Any
 
+import image_security_issue as image_issue
 from chrome_repository import MAX_PACKAGE
 from report_workflow_failure import gh, notification_marker
 
@@ -120,6 +122,27 @@ def collect(kind: str, repo: str, run_id: str, attempt: str) -> tuple[dict, dict
             result[name.removeprefix("image-security-")] = values
         else:
             result.update(values)
+    if kind == "scan":
+        pages = json.loads(
+            gh(
+                f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
+                "--paginate",
+                "--slurp",
+            )
+        )
+        for page in pages:
+            for job in page["jobs"]:
+                matched = re.fullmatch(r"Image security \(([a-z0-9-]+)\)", job["name"])
+                if matched and any(
+                    step["name"] == "Enforce image vulnerability applicability"
+                    and step["conclusion"] == "failure"
+                    for step in job["steps"]
+                ):
+                    assessment = result.get(matched[1], {}).get("assessment.json", {})
+                    if assessment.get("outcome") != "vulnerable" or not assessment.get("findings"):
+                        raise ValueError("Failed vulnerability gate has no retained findings")
+                    if result[matched[1]].get("build.json", {}).get("profile") != matched[1]:
+                        raise ValueError("Retained findings belong to another profile")
     return run, result
 
 
@@ -234,20 +257,6 @@ def cell(value: Any) -> str:
     return escaped if len(escaped) <= 240 else escaped[:237] + "..."
 
 
-def unchanged(tracker: dict, endpoint: str, marker: str, lane: str) -> bool:
-    """Compare the latest notification from this workflow within the shared image issue."""
-    pages = json.loads(
-        gh(f"{endpoint}/{tracker['number']}/comments?per_page=100", "--paginate", "--slurp")
-    )
-    bodies = [tracker.get("body") or ""] + [
-        comment.get("body") or ""
-        for page in pages
-        for comment in page
-        if comment.get("user", {}).get("login") == "github-actions[bot]"
-    ]
-    return next((marker in body for body in reversed(bodies) if lane in body), False)
-
-
 def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: str) -> None:
     """Deduplicate notifications without treating source delivery as published recovery."""
     rows = (
@@ -266,28 +275,19 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         print("No retained findings require a new maintainer notification.")
         return
     endpoint = f"repos/{repo}/issues"
-    pages = json.loads(gh(f"{endpoint}?state=open&per_page=100", "--paginate", "--slurp"))
+    pages = json.loads(
+        gh(f"{endpoint}?state=all&sort=created&direction=asc&per_page=100", "--paginate", "--slurp")
+    )
+    issues = [issue for page in pages for issue in page]
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}/attempts/{attempt}"
     for profile, findings in sorted(grouped.items()):
         if not re.fullmatch(r"[a-z0-9-]+", profile):
             raise ValueError("Invalid image profile")
         marker = f"<!-- image-remediation-attention:{profile} -->"
         lane = f"<!-- image-remediation-workflow:{kind} -->"
-        tracker = next(
-            (
-                issue
-                for page in pages
-                for issue in page
-                if "pull_request" not in issue
-                and issue.get("user", {}).get("login") == "github-actions[bot]"
-                and marker in (issue.get("body") or "")
-            ),
-            None,
-        )
+        tracker = image_issue.select(issues, profile)
         stable = sorted({json.dumps(row, sort_keys=True) for row in findings})
         state = notification_marker(json.dumps(stable))
-        if tracker is not None and unchanged(tracker, endpoint, state, lane):
-            continue
         lines = [
             "| Finding | Component | Installed | Reported fixes | Why maintainer action is needed |",
             "|---|---|---|---|---|",
@@ -323,16 +323,39 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             "A PR may cover only some findings. Maintainers close this issue after verifying the appropriate recovery evidence.\n\n"
             f"{state}"
         )
-        if tracker is None:
-            gh(
-                endpoint,
-                body={
-                    "title": f"Image remediation needs maintainer action: {profile}",
-                    "body": message,
-                },
-            )
-        else:
-            gh(f"{endpoint}/{tracker['number']}/comments", body={"body": message})
+        signals = image_issue.findings_signals(findings)
+        for row in findings:
+            if "Publish a replacement image" in row["reason"]:
+                signals.add(f"publish:{row['id']}")
+            if kind == "chrome":
+                signals.add(f"advisory:chrome:{hashlib.sha256(row['reason'].encode()).hexdigest()}")
+                signals.update(f"finding:{v}" for v in re.findall(r"CVE-[\w-]+", row["reason"]))
+        payload = image_issue.update(
+            tracker,
+            profile,
+            kind,
+            message,
+            signals,
+            related=image_issue.matches(issues, profile),
+        )
+        message = image_issue.notice(tracker, signals)
+        if message and tracker is not None:
+            comment_endpoint = f"{endpoint}/{tracker['number']}/comments"
+            comments = json.loads(gh(f"{comment_endpoint}?per_page=100", "--paginate", "--slurp"))
+            if not image_issue.already_notified(
+                [item for page in comments for item in page], message
+            ):
+                gh(comment_endpoint, body={"body": message})
+        if payload is not None:
+            if tracker is None:
+                gh(endpoint, body=payload)
+            else:
+                gh(f"{endpoint}/{tracker['number']}", "--method", "PATCH", body=payload)
+        if tracker is not None:
+            for previous in image_issue.matches(issues, profile):
+                retired = image_issue.retirement(previous, tracker, profile)
+                if retired:
+                    gh(f"{endpoint}/{previous['number']}", "--method", "PATCH", body=retired)
 
 
 def main() -> None:

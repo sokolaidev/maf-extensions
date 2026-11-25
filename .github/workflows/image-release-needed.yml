@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: image-release-needed
+  group: image-remediation-attention
   queue: max
   cancel-in-progress: false
 

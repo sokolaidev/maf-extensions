@@ -657,6 +657,7 @@ def test_monitor_notification_identifies_findings_and_ignores_scan_timestamps():
 
     original = details()
     assert original["attention"] is True
+    assert original["operationalAttention"] is False
     for expected in (
         "bicep/0.1.0",
         CANDIDATE["registryDigest"],
@@ -698,6 +699,7 @@ def test_monitor_notification_includes_a_candidate_reserved_during_the_scan():
     catalogue = reserve(empty_catalogue(), CANDIDATE, AT)
     report = json.loads(monitor.notification(catalogue, monitor.monitoring_health(catalogue, DONE)))
     assert report["attention"] is True
+    assert report["operationalAttention"] is True
     assert "bicep/0.1.0" in report["summary"]
     assert "publication: incomplete" in report["summary"]
     assert "delivery: pending" in report["summary"]

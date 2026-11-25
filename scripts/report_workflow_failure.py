@@ -87,6 +87,63 @@ def gh(*args: str, body: dict[str, str] | None = None) -> str:
     return result.stdout
 
 
+def scan_findings_only() -> bool:
+    """Suppress the aggregate alert only after the per-image reporter successfully delivered."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    run, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+    pages = json.loads(
+        gh(
+            f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
+            "--paginate",
+            "--slurp",
+        )
+    )
+    jobs = {job["name"]: job for page in pages for job in page["jobs"]}
+    if any(
+        jobs.get(name, {}).get("conclusion") != "success"
+        for name in (
+            "Select image security profiles",
+            "Report findings requiring maintainer action",
+        )
+    ):
+        return False
+    if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {"success", "skipped"}:
+        return False
+    scans = [job for name, job in jobs.items() if name.startswith("Image security (")]
+    failing = [job for job in scans if job["conclusion"] == "failure"]
+    return bool(failing) and all(
+        job["conclusion"] == "success"
+        or (
+            job["conclusion"] == "failure"
+            and {
+                step["name"]
+                for step in job["steps"]
+                if step["conclusion"] not in {"success", "skipped"}
+            }
+            == {"Enforce image vulnerability applicability"}
+        )
+        for job in scans
+    )
+
+
+def monitor_findings_only() -> bool:
+    """Keep incomplete publication, evidence and scanner execution failures visible."""
+    try:
+        report = json.loads(os.environ.get("MONITOR_NOTIFICATION", "{}"))
+        jobs = json.loads(os.environ.get("MONITOR_JOB_RESULTS", "{}"))
+    except ValueError:
+        return False
+    return (
+        isinstance(report, dict)
+        and isinstance(jobs, dict)
+        and report.get("attention") is True
+        and report.get("operationalAttention") is False
+        and jobs.get("begin") == jobs.get("finish") == "success"
+        and jobs.get("scan") in {"success", "skipped"}
+        and jobs.get("result") == "failure"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Report the failed run identified by the standard GitHub Actions environment."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -98,6 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--expected", required=True)
     parser.add_argument("--packages", nargs="+", required=True, help="workspace package names")
     parser.add_argument("--context", default="", help="guidance included on every failure")
+    parser.add_argument("--image-security", action="store_true")
     parser.add_argument(
         "--monitor", action="store_true", help="report monitor state changes and recovery"
     )
@@ -110,6 +168,10 @@ def main(argv: list[str] | None = None) -> None:
         help="recovery policy included in new trackers",
     )
     args = parser.parse_args(argv)
+
+    if (args.image_security and scan_findings_only()) or (args.monitor and monitor_findings_only()):
+        print("Vulnerability findings are tracked per image; no aggregate workflow issue needed.")
+        return
 
     repo = os.environ["GITHUB_REPOSITORY"]
     run_url = (
