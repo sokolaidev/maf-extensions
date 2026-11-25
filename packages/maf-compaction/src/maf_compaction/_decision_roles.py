@@ -22,6 +22,30 @@ def _tokens(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _verdicts(result: dict[str, Any], ids: dict[str, int]) -> dict[int, RecordRoleVerdict]:
+    model = result.get("model")
+    answers = result.get("answers")
+    if (
+        not isinstance(model, str)
+        or model.casefold() != "microsoft-decision-1.1"
+        or not _json_object(answers)
+        or answers.keys() - ids.keys()
+    ):
+        return {}
+    verdicts: dict[int, RecordRoleVerdict] = {}
+    for name, key in ids.items():
+        answer = answers.get(name)
+        if not _json_object(answer) or answer.get("type") != "choice":
+            continue
+        choice = answer.get("choice")
+        probabilities = answer.get("probabilities")
+        if choice in ("faithful", "changed", "uncertain") and _json_object(probabilities):
+            probability = probabilities.get(choice)
+            if isinstance(probability, (int, float)) and not isinstance(probability, bool):
+                verdicts[key] = RecordRoleVerdict(choice, probability)
+    return verdicts
+
+
 def make_decision_role_judge(
     deployment: str,
     send: Callable[[dict[str, Any]], Awaitable[object]],
@@ -61,26 +85,7 @@ def make_decision_role_judge(
         )
         if not _json_object(result):
             return RecordRoleResponse({})
-        model = result.get("model")
-        answers = result.get("answers")
-        if (
-            not isinstance(model, str)
-            or model.casefold() != "microsoft-decision-1.1"
-            or not _json_object(answers)
-            or answers.keys() - ids.keys()
-        ):
-            return RecordRoleResponse({})
-        verdicts: dict[int, RecordRoleVerdict] = {}
-        for name, key in ids.items():
-            answer = answers.get(name)
-            if not _json_object(answer) or answer.get("type") != "choice":
-                continue
-            choice = answer.get("choice")
-            probabilities = answer.get("probabilities")
-            if choice in ("faithful", "changed", "uncertain") and _json_object(probabilities):
-                probability = probabilities.get(choice)
-                if isinstance(probability, (int, float)) and not isinstance(probability, bool):
-                    verdicts[key] = RecordRoleVerdict(choice, probability)
+        verdicts = _verdicts(result, ids)
         usage = result.get("usage")
         if not _json_object(usage):
             return RecordRoleResponse(verdicts)
