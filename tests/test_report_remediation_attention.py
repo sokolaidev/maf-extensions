@@ -240,12 +240,12 @@ def test_archive_reader_ignores_nested_evidence_and_traversal():
             "results/candidate/qualification.json": {"status": "ready"},
         }
     )
-    assert report.documents(raw) == {"plan.json": {"findings": []}}
+    assert report.documents(io.BytesIO(raw)) == {"plan.json": {"findings": []}}
 
 
 def test_archive_reader_refuses_ambiguous_roots():
     with pytest.raises(ValueError, match="Duplicate"):
-        report.documents(archive(**{"plan.json": {}, "remediation/plan.json": {}}))
+        report.documents(io.BytesIO(archive(**{"plan.json": {}, "remediation/plan.json": {}})))
 
 
 def test_collection_filters_old_attempts_and_prefers_delivery_snapshot(monkeypatch):
@@ -276,15 +276,98 @@ def test_collection_filters_old_attempts_and_prefers_delivery_snapshot(monkeypat
     )
     downloads = []
 
-    def download(args):
+    def download(args, *, stdout, check):
         downloads.append(args[-1])
-        return archive(**{"publication.json": {"stage": args[-1]}})
+        stdout.write(archive(**{"publication.json": {"stage": args[-1]}}))
 
-    monkeypatch.setattr(report.subprocess, "check_output", download)
+    monkeypatch.setattr(report.subprocess, "run", download)
     _, values = report.collect("platform", "example/repo", "123", "2")
     assert len(downloads) == 3
     assert values["publication.json"]["stage"].endswith("/3/zip")
     assert not any("/9/" in path for path in downloads)
+
+
+@pytest.mark.parametrize("compact", [False, True])
+@pytest.mark.parametrize("delivered", [False, True])
+def test_chrome_collects_the_final_notification_from_current_or_legacy_artifacts(
+    monkeypatch, compact, delivered
+):
+    receipt = {"before": "157", "package": {"version": "158"}}
+    requirement = {"kind": "security", "reason": "High finding"}
+    data = {"receipt.json": receipt, "delivery-requirement.json": requirement}
+    full = archive(**data, **{"upstream/chrome.deb": "x" * 2000})
+    snapshots = [("chrome-update-123-2", full)]
+    if delivered:
+        publication = {"publication.json": {"status": "created", "url": "https://example.com/pr/1"}}
+        data.update(publication)
+        if not compact:
+            snapshots.append(("chrome-update-delivery-123-2", archive(**publication)))
+    if compact:
+        snapshots.append(("chrome-update-attention-123-2", archive(**data)))
+    artifacts = [
+        {
+            "id": i,
+            "name": name,
+            "size_in_bytes": len(raw),
+            "expired": False,
+            "created_at": "2026-11-21T15:10:00Z",
+        }
+        for i, (name, raw) in enumerate(snapshots, 1)
+    ]
+    run = source_run(path=".github/workflows/chrome-image-update.yml")
+    monkeypatch.setattr(report, "MAX_ARTIFACT", 1000)
+    monkeypatch.setattr(
+        report,
+        "gh",
+        lambda endpoint, *args: json.dumps(
+            [{"artifacts": artifacts}] if "/artifacts?" in endpoint else run
+        ),
+    )
+    downloads = []
+
+    def download(args, *, stdout, check):
+        artifact_id = int(args[-1].split("/")[-2])
+        downloads.append(artifact_id)
+        stdout.write(snapshots[artifact_id - 1][1])
+
+    monkeypatch.setattr(report.subprocess, "run", download)
+    _, values = report.collect("chrome", "example/repo", "123", "2")
+    assert downloads == ([2] if compact else list(range(1, len(snapshots) + 1)))
+    assert values == data
+    assert len(report.pending(values, "chrome")) == (0 if delivered else 1)
+
+    if compact:
+        artifacts[-1]["size_in_bytes"] = 1001
+        with pytest.raises(ValueError, match="exceeds size limit"):
+            report.collect("chrome", "example/repo", "123", "2")
+        assert downloads == [2]
+
+
+def test_chrome_notification_snapshot_includes_evidence_even_when_delivery_is_skipped():
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/chrome-image-update.yml").read_text("utf-8")
+    )
+    steps = workflow["jobs"]["update"]["steps"]
+    snapshot = next(
+        step
+        for step in steps
+        if step.get("with", {}).get("name")
+        == "chrome-update-attention-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert steps.index(snapshot) > next(
+        i for i, step in enumerate(steps) if step.get("id") == "deliver"
+    )
+    assert snapshot["if"] == "always() && steps.acquire.outcome == 'success'"
+    assert snapshot["with"]["if-no-files-found"] == "error"
+    assert set(snapshot["with"]["path"].splitlines()) == {
+        "${{ runner.temp }}/chrome-update/" + name
+        for name in (
+            "receipt.json",
+            "publication.json",
+            "deferral.json",
+            "delivery-requirement.json",
+        )
+    }
 
 
 @pytest.mark.parametrize(

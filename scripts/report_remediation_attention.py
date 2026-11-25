@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import argparse
 import html
-import io
 import json
 import os
 import re
 import subprocess
+import tempfile
 import zipfile
 from collections import Counter
+from collections.abc import Collection
 from datetime import datetime
-from typing import Any
+from typing import IO, Any
 
+from chrome_repository import MAX_PACKAGE
 from report_workflow_failure import gh, notification_marker
 
 WORKFLOWS = {
@@ -35,13 +37,19 @@ DOCUMENTS = {
     "grype.json",
 }
 REBUILD = {"rebuild-required", "source-pin-sufficient", "override-already-sufficient"}
+MAX_ARTIFACT = 150 * 1024**2
 
 
-def artifact_names(kind: str, run_id: str, attempt: str) -> list[str]:
+def artifact_names(kind: str, run_id: str, attempt: str, available: Collection[str]) -> list[str]:
     """Order acquisition, qualification and delivery snapshots by authority."""
     if kind == "scan":
-        return []
+        return sorted(
+            name for name in available if re.fullmatch(r"image-security-[a-z0-9-]+", name)
+        )
     if kind == "chrome":
+        snapshot = f"chrome-update-attention-{run_id}-{attempt}"
+        if snapshot in available:
+            return [snapshot]
         return [f"chrome-update-{run_id}-{attempt}", f"chrome-update-delivery-{run_id}-{attempt}"]
     prefix = "platform-remediation" if kind == "platform" else "remediation"
     return [
@@ -52,10 +60,10 @@ def artifact_names(kind: str, run_id: str, attempt: str) -> list[str]:
     ]
 
 
-def documents(raw: bytes) -> dict[str, Any]:
+def documents(raw: IO[bytes]) -> dict[str, Any]:
     """Read only notification documents; never extract or execute archive content."""
     result = {}
-    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+    with zipfile.ZipFile(raw) as archive:
         for entry in archive.infolist():
             name = entry.filename.removeprefix("remediation/")
             if name not in DOCUMENTS:
@@ -88,22 +96,26 @@ def collect(kind: str, repo: str, run_id: str, attempt: str) -> tuple[dict, dict
                 if name in available:
                     raise ValueError("Ambiguous artifact for this attempt")
                 available[name] = item
-    names = artifact_names(kind, run_id, attempt)
-    if kind == "scan":
-        names = sorted(
-            name for name in available if re.fullmatch(r"image-security-[a-z0-9-]+", name)
-        )
     result: dict[str, Any] = {}
-    for name in names:
+    for name in artifact_names(kind, run_id, attempt, available):
         if name not in available:
             continue
         artifact = available[name]
-        if artifact["size_in_bytes"] > 150 * 1024 * 1024:
+        limit = MAX_ARTIFACT
+        if name == f"chrome-update-{run_id}-{attempt}":
+            # Older Chrome attempts bundled the authenticated Debian package with the receipt.
+            limit += MAX_PACKAGE
+        if artifact["size_in_bytes"] > limit:
             raise ValueError("Notification artifact exceeds size limit")
-        raw = subprocess.check_output(
-            ["gh", "api", f"repos/{repo}/actions/artifacts/{int(artifact['id'])}/zip"]
-        )
-        values = documents(raw)
+        with tempfile.TemporaryFile() as raw:
+            subprocess.run(
+                ["gh", "api", f"repos/{repo}/actions/artifacts/{int(artifact['id'])}/zip"],
+                stdout=raw,
+                check=True,
+            )
+            if raw.seek(0, os.SEEK_END) > limit:
+                raise ValueError("Notification artifact exceeds size limit")
+            values = documents(raw)
         if kind == "scan":
             result[name.removeprefix("image-security-")] = values
         else:
