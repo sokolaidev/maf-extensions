@@ -12,7 +12,7 @@ jobs:
       - name: Verify public archives and inspect packaged contracts
         shell: python
         run: |
-          import atexit, base64, hashlib, io, json, os, pathlib, tarfile, urllib.request, zipfile
+          import atexit, base64, hashlib, io, json, os, pathlib, struct, tarfile, urllib.request, zipfile
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "mxc110-audit"
           root.mkdir()
           def get_json(url):
@@ -95,6 +95,27 @@ jobs:
                   lines.append(f"- {name}: matching release ZIP entries: {matches}")
                   lines.append(f"  - Candidate entry hashes: {candidates}")
                   lines.append(f"  - Byte equality with npm: {bool(matches)}")
+          def signing_excluded_hash(path):
+              data = bytearray(path.read_bytes())
+              pe = struct.unpack_from("<I", data, 0x3c)[0]
+              assert data[pe:pe+4] == b"PE\0\0"
+              optional = pe + 24
+              magic = struct.unpack_from("<H", data, optional)[0]
+              assert magic in (0x10b, 0x20b)
+              security = optional + (112 if magic == 0x20b else 96) + 32
+              cert_offset, cert_size = struct.unpack_from("<II", data, security)
+              assert cert_offset > 0 and cert_size > 0 and cert_offset + cert_size <= len(data)
+              data[optional+64:optional+68] = b"\0" * 4
+              data[security:security+8] = b"\0" * 8
+              del data[cert_offset:cert_offset+cert_size]
+              return hashlib.sha256(data).hexdigest()
+          lines.extend(["", "PE comparison excludes only the checksum, security-directory entry and certificate table; this is not an Authenticode digest.", ""])
+          for name in native:
+              npm_hash = signing_excluded_hash(root / name)
+              lines.append(f"- {name} npm PE signing-excluded SHA-256: {npm_hash}")
+              for release_file in root.glob("release-*-" + name):
+                  release_hash = signing_excluded_hash(release_file)
+                  lines.append(f"- {release_file.name} PE signing-excluded SHA-256: {release_hash}; matches npm: {release_hash == npm_hash}")
           for package in ["@microsoft%2fmxc-sdk", "@openclaw%2fmxc-sandbox"]:
               metadata = get_json("https://registry.npmjs.org/" + package + "/latest")
               lines.append(f"- Current npm {metadata['name']}: {metadata['version']}; MXC dependency: {metadata.get('dependencies', {}).get('@microsoft/mxc-sdk', 'n/a')}")
@@ -115,6 +136,8 @@ jobs:
             Add-Content -LiteralPath $report -Value $line -Encoding utf8
             Write-Output $line
           }
+          $reportHash = (Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash
+          Write-Output ('Evidence Markdown SHA-256: ' + $reportHash)
           Get-Content -LiteralPath $report >> $env:GITHUB_STEP_SUMMARY
       - name: Retain bounded Markdown evidence
         if: always()
