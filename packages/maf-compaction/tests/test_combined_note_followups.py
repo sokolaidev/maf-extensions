@@ -217,7 +217,7 @@ async def test_an_edit_matched_by_the_current_key_never_builds_the_older_list(
     assert await _merge_first_two(strategy, messages) == "accepted"
     _shed(strategy, messages, "tb")
     built: list[int] = []
-    split = replay.split_combined_notes
+    split = anchored.split_combined_notes
     monkeypatch.setattr(replay, "split_combined_notes", lambda m: built.append(len(m)) or split(m))
 
     _assert_replays(strategy, messages)
