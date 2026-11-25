@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.10.0...maf-sandbox-terraform-v0.11.0) (2026-11-25)
+
+
+### Features
+
+* name trusted input files in shell and Terraform/OpenTofu diagnostics ([#2959](https://github.com/sokolaidev/maf-extensions/issues/2959)) ([992033e](https://github.com/sokolaidev/maf-extensions/commit/992033e002d37efe71aab73227d4aae3c1d46299))
+
 ## [0.10.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.9.0...maf-sandbox-terraform-v0.10.0) (2026-11-22)
 
 
