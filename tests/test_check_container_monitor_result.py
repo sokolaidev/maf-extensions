@@ -60,6 +60,7 @@ def run_gate(tmp_path, details, *, diagnostic_content=None, **changes):
             "ATTENTION": "false",
             "MONITOR_DIAGNOSTICS": str(diagnostics),
             "GITHUB_STEP_SUMMARY": str(summary),
+            "GITHUB_OUTPUT": str(tmp_path / "outputs"),
         }
         | changes,
         capture_output=True,

@@ -87,6 +87,107 @@ def gh(*args: str, body: dict[str, str] | None = None) -> str:
     return result.stdout
 
 
+def failed_only_at(job: dict, step_name: str) -> bool:
+    """Require a completed job whose sole unsuccessful step is the expected gate."""
+    steps = job.get("steps")
+    return (
+        job.get("conclusion") == "failure"
+        and isinstance(steps, list)
+        and bool(steps)
+        and {step["name"] for step in steps if step["conclusion"] not in {"success", "skipped"}}
+        == {step_name}
+        and all(step["conclusion"] in {"success", "skipped", "failure"} for step in steps)
+    )
+
+
+def attempt_jobs() -> dict[str, dict]:
+    """Require unambiguous job metadata from this workflow attempt."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    run, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+    pages = json.loads(
+        gh(
+            f"repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100",
+            "--paginate",
+            "--slurp",
+        )
+    )
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("Missing attempt jobs")
+    jobs = {}
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise ValueError("Invalid attempt jobs")
+        for job in page["jobs"]:
+            name = job["name"]
+            if not isinstance(name, str) or name in jobs:
+                raise ValueError("Ambiguous attempt job")
+            jobs[name] = job
+    return jobs
+
+
+def scan_findings_only() -> bool:
+    """Suppress only verified gate failures; unavailable job metadata preserves the alert."""
+    try:
+        jobs = attempt_jobs()
+        if any(
+            jobs.get(name, {}).get("conclusion") != "success"
+            for name in (
+                "Select image security profiles",
+                "Report findings requiring maintainer action",
+            )
+        ):
+            return False
+        if jobs.get("Prepare shared Python APKs", {}).get("conclusion") not in {
+            "success",
+            "skipped",
+        }:
+            return False
+        if not failed_only_at(
+            jobs.get("Image security checks", {}), "Require successful selection and selected scans"
+        ):
+            return False
+        scans = [job for name, job in jobs.items() if name.startswith("Image security (")]
+        failing = [job for job in scans if job["conclusion"] == "failure"]
+        return bool(failing) and all(
+            job["conclusion"] == "success"
+            or failed_only_at(job, "Enforce image vulnerability applicability")
+            for job in scans
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        print("Image security suppression could not be verified; reporting the workflow failure.")
+        return False
+
+
+def monitor_findings_only() -> bool:
+    """Keep incomplete publication, evidence and scanner execution failures visible."""
+    try:
+        report = json.loads(os.environ.get("MONITOR_NOTIFICATION", "{}"))
+        jobs = json.loads(os.environ.get("MONITOR_JOB_RESULTS", "{}"))
+    except ValueError:
+        return False
+    confirmed = (
+        isinstance(report, dict)
+        and isinstance(jobs, dict)
+        and report.get("attention") is True
+        and isinstance(report.get("summary"), str)
+        and isinstance(report.get("problems"), str)
+        and report.get("operationalAttention") is False
+        and jobs.get("begin") == jobs.get("finish") == "success"
+        and jobs.get("scan") in {"success", "skipped"}
+        and jobs.get("result") == "failure"
+        and os.environ.get("MONITOR_VULNERABILITY_ONLY") == "true"
+    )
+    if not confirmed:
+        return False
+    try:
+        return failed_only_at(
+            attempt_jobs().get("result", {}),
+            "Require healthy current releases and complete monitoring delivery",
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def main(argv: list[str] | None = None) -> None:
     """Report the failed run identified by the standard GitHub Actions environment."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -98,6 +199,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--expected", required=True)
     parser.add_argument("--packages", nargs="+", required=True, help="workspace package names")
     parser.add_argument("--context", default="", help="guidance included on every failure")
+    parser.add_argument("--image-security", action="store_true")
     parser.add_argument(
         "--monitor", action="store_true", help="report monitor state changes and recovery"
     )
@@ -110,6 +212,10 @@ def main(argv: list[str] | None = None) -> None:
         help="recovery policy included in new trackers",
     )
     args = parser.parse_args(argv)
+
+    if (args.image_security and scan_findings_only()) or (args.monitor and monitor_findings_only()):
+        print("Vulnerability findings are tracked per image; no aggregate workflow issue needed.")
+        return
 
     repo = os.environ["GITHUB_REPOSITORY"]
     run_url = (

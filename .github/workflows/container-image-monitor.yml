@@ -157,6 +157,8 @@ jobs:
     if: always() && needs.begin.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      vulnerability_only: ${{ steps.gate.outputs.vulnerability_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,6 +178,7 @@ jobs:
             echo "::warning::$WARNINGS superseded releases need attention. See the finish job summary for replacements and monitoring end dates."
           fi
       - name: Require healthy current releases and complete monitoring delivery
+        id: gate
         if: always()
         env:
           BEGIN: ${{ needs.begin.result }}
@@ -191,6 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       issues: write
     steps:
@@ -202,6 +206,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MONITOR_NOTIFICATION: ${{ needs.finish.outputs.notification }}
+          MONITOR_VULNERABILITY_ONLY: ${{ needs.result.outputs.vulnerability_only }}
           MONITOR_JOB_RESULTS: >-
             {"begin":"${{ needs.begin.result }}","scan":"${{ needs.scan.result }}","finish":"${{ needs.finish.result }}","result":"${{ needs.result.result }}"}
         run: >-

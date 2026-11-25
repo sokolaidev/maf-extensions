@@ -12,9 +12,10 @@ import tempfile
 import zipfile
 from collections import Counter
 from collections.abc import Collection
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import IO, Any
 
+import image_security_issue as image_issue
 from chrome_repository import MAX_PACKAGE
 from report_workflow_failure import gh, notification_marker
 
@@ -120,13 +121,34 @@ def collect(kind: str, repo: str, run_id: str, attempt: str) -> tuple[dict, dict
             result[name.removeprefix("image-security-")] = values
         else:
             result.update(values)
+    if kind == "scan":
+        pages = json.loads(
+            gh(
+                f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
+                "--paginate",
+                "--slurp",
+            )
+        )
+        for page in pages:
+            for job in page["jobs"]:
+                matched = re.fullmatch(r"Image security \(([a-z0-9-]+)\)", job["name"])
+                if matched and any(
+                    step["name"] == "Enforce image vulnerability applicability"
+                    and step["conclusion"] == "failure"
+                    for step in job["steps"]
+                ):
+                    assessment = result.get(matched[1], {}).get("assessment.json", {})
+                    if assessment.get("outcome") != "vulnerable" or not assessment.get("findings"):
+                        raise ValueError("Failed vulnerability gate has no retained findings")
+                    if result[matched[1]].get("build.json", {}).get("profile") != matched[1]:
+                        raise ValueError("Retained findings belong to another profile")
     return run, result
 
 
 def scan_rows(values: dict, run_id: str, attempt: str) -> list[dict]:
     """Preserve reviewed non-applicability when explaining a failing build scan."""
     assessment = values.get("assessment.json", {})
-    if assessment.get("outcome") != "vulnerable":
+    if assessment.get("outcome") not in {"clean", "vulnerable"}:
         return []
     build = values["build.json"]
     if str(build["run_id"]) != run_id or str(build["run_attempt"]) != attempt:
@@ -155,6 +177,8 @@ def scan_rows(values: dict, run_id: str, attempt: str) -> list[dict]:
         (r["id"], r["severity"]) for r in assessment["findings"]
     ):
         raise ValueError("Findings differ from the retained applicability assessment")
+    if (assessment["outcome"] == "clean") != (not rows):
+        raise ValueError("Scan outcome differs from the retained findings")
     return rows
 
 
@@ -200,6 +224,7 @@ def pending(values: dict, kind: str) -> list[dict]:
             {
                 "profile": finding["profile"],
                 "id": finding["id"],
+                "severity": finding.get("severity", "unknown"),
                 "component": finding.get("component", finding.get("module", "unknown")),
                 "installed": finding["installed"],
                 "fix": fix,
@@ -210,18 +235,28 @@ def pending(values: dict, kind: str) -> list[dict]:
         requirement = values.get("delivery-requirement.json", {})
         if requirement.get("kind") == "security":
             receipt = values.get("receipt.json", {})
-            rows.append(
+            advisories = requirement.get("findings") or [
                 {
-                    "profile": "document-export",
-                    "id": "Chrome security update",
-                    "component": "chrome",
-                    "installed": receipt.get("before", "see evidence"),
-                    "fix": {
-                        "versions": [receipt.get("package", {}).get("version", "see evidence")]
-                    },
-                    "reason": f"{requirement.get('reason', 'A security update was authorized')} PR delivery did not complete. Inspect delivery settings, credentials and logs.",
+                    "id": identifier,
+                    "fixedVersion": receipt.get("package", {}).get("version", "see evidence"),
                 }
-            )
+                for identifier in sorted(
+                    set(re.findall(r"CVE-[\w-]+", requirement.get("reason", "")))
+                )
+                or ["Chrome security update"]
+            ]
+            for advisory in advisories:
+                rows.append(
+                    {
+                        "profile": "document-export",
+                        "id": advisory["id"],
+                        "severity": advisory.get("severity", "unknown"),
+                        "component": "chrome",
+                        "installed": receipt.get("before", "see evidence"),
+                        "fix": {"versions": [advisory["fixedVersion"]]},
+                        "reason": f"{requirement.get('reason', 'A security update was authorized')} PR delivery did not complete. Inspect delivery settings, credentials and logs.",
+                    }
+                )
     return rows
 
 
@@ -234,18 +269,17 @@ def cell(value: Any) -> str:
     return escaped if len(escaped) <= 240 else escaped[:237] + "..."
 
 
-def unchanged(tracker: dict, endpoint: str, marker: str, lane: str) -> bool:
-    """Compare the latest notification from this workflow within the shared image issue."""
-    pages = json.loads(
-        gh(f"{endpoint}/{tracker['number']}/comments?per_page=100", "--paginate", "--slurp")
-    )
-    bodies = [tracker.get("body") or ""] + [
-        comment.get("body") or ""
-        for page in pages
-        for comment in page
-        if comment.get("user", {}).get("login") == "github-actions[bot]"
-    ]
-    return next((marker in body for body in reversed(bodies) if lane in body), False)
+def retire_linked(endpoint: str, tracker: dict, profile: str, issues: list[dict]) -> None:
+    """Retry consolidation only after the saved canonical body links the earlier report."""
+    for previous in image_issue.matches(issues, profile):
+        reference = (
+            f"Earlier report: #{previous['number']} (retained evidence and maintainer discussion)."
+        )
+        if reference not in (tracker.get("body") or ""):
+            continue
+        retired = image_issue.retirement(previous, tracker, profile)
+        if retired:
+            gh(f"{endpoint}/{previous['number']}", "--method", "PATCH", body=retired)
 
 
 def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: str) -> None:
@@ -262,32 +296,54 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             "versions": sorted(set(row["fix"].get("versions") or [])),
         }
         grouped.setdefault(row["profile"], []).append(row)
+    if kind == "scan":
+        for profile, data in values.items():
+            if data.get("assessment.json", {}).get("outcome") in {"clean", "vulnerable"}:
+                if data["build.json"]["profile"] != profile:
+                    raise ValueError("Retained findings belong to another profile")
+                grouped.setdefault(profile, [])
+    elif kind in {"platform", "go"}:
+        plan = values.get("plan.json", {})
+        if plan.get("schemaVersion") == 1 and isinstance(plan.get("findings"), list):
+            for record in plan.get("evidence", []):
+                grouped.setdefault(record["profile"], [])
+    elif (
+        values.get("delivery-requirement.json", {}).get("kind") == "security"
+        and values.get("publication.json", {}).get("status") in {"created", "updated", "unchanged"}
+        and values.get("publication.json", {}).get("url")
+        and values.get("receipt.json", {}).get("package", {}).get("version")
+    ):
+        grouped.setdefault("document-export", [])
     if not grouped:
         print("No retained findings require a new maintainer notification.")
         return
     endpoint = f"repos/{repo}/issues"
-    pages = json.loads(gh(f"{endpoint}?state=open&per_page=100", "--paginate", "--slurp"))
+    pages = json.loads(
+        gh(f"{endpoint}?state=all&sort=created&direction=asc&per_page=100", "--paginate", "--slurp")
+    )
+    issues = [issue for page in pages for issue in page]
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}/attempts/{attempt}"
     for profile, findings in sorted(grouped.items()):
         if not re.fullmatch(r"[a-z0-9-]+", profile):
             raise ValueError("Invalid image profile")
         marker = f"<!-- image-remediation-attention:{profile} -->"
         lane = f"<!-- image-remediation-workflow:{kind} -->"
-        tracker = next(
-            (
-                issue
-                for page in pages
-                for issue in page
-                if "pull_request" not in issue
-                and issue.get("user", {}).get("login") == "github-actions[bot]"
-                and marker in (issue.get("body") or "")
-            ),
-            None,
-        )
+        tracker = image_issue.select(issues, profile)
+        observation = None
+        if kind == "scan":
+            collected = datetime.fromisoformat(values[profile]["assessment.json"]["assessedAt"])
+            if collected.tzinfo is None:
+                raise ValueError("Scan ordering requires a timezone-aware observation")
+            observation = (collected.astimezone(UTC).isoformat(), int(run_id), int(attempt))
+            previous = image_issue.lanes(tracker).get(kind, {}).get("observation")
+            if previous is not None and observation <= tuple(previous):
+                if tracker is not None:
+                    retire_linked(endpoint, tracker, profile, issues)
+                continue
+        if not findings and (tracker is None or kind not in image_issue.lanes(tracker)):
+            continue
         stable = sorted({json.dumps(row, sort_keys=True) for row in findings})
         state = notification_marker(json.dumps(stable))
-        if tracker is not None and unchanged(tracker, endpoint, state, lane):
-            continue
         lines = [
             "| Finding | Component | Installed | Reported fixes | Why maintainer action is needed |",
             "|---|---|---|---|---|",
@@ -306,14 +362,17 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
                 + " |"
             )
         details = "\n".join(lines)
+        if not findings:
+            details = "No pending findings in this workflow's retained evidence. A delivered source PR does not establish published-image recovery; other reporter sections remain independent."
         if len(stable) > 40:
             details += f"\n\nShowing 40 of {len(stable)} finding/component records; the linked artifacts retain all findings."
         context = ""
         for name in ("deferral.json", "competing-pulls.json", "publication.json"):
             if name in values:
                 context += f"\n\n{cell(name)}: {cell(json.dumps(values[name], sort_keys=True))}"
+        status = "needs maintainer action" if findings else "has no pending action in this workflow"
         message = (
-            f"{marker}\n{lane}\n\n**Describe the bug**\nImage `{profile}` needs maintainer action after {cell(run['name'])}. "
+            f"{marker}\n{lane}\n\n**Describe the bug**\nImage `{profile}` {status} after {cell(run['name'])}. "
             f"[Run, logs and retained evidence]({run_url}).\n\n{details}{context}\n\n"
             "**To Reproduce**\nInspect the linked attempt's plan, qualification and delivery artifacts, or its build inventory and applicability assessment.\n\n"
             "**Expected behavior**\nDeliver a qualified source fix, publish a qualified replacement when only a rebuild is needed, or record the remaining blocker and follow-up.\n\n"
@@ -323,16 +382,35 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             "A PR may cover only some findings. Maintainers close this issue after verifying the appropriate recovery evidence.\n\n"
             f"{state}"
         )
-        if tracker is None:
-            gh(
-                endpoint,
-                body={
-                    "title": f"Image remediation needs maintainer action: {profile}",
-                    "body": message,
-                },
-            )
-        else:
-            gh(f"{endpoint}/{tracker['number']}/comments", body={"body": message})
+        signals = image_issue.findings_signals(findings)
+        for row in findings:
+            if "Publish a replacement image" in row["reason"]:
+                signals.add(f"publish:{row['id']}")
+        payload = image_issue.update(
+            tracker,
+            profile,
+            kind,
+            message,
+            signals,
+            active=bool(findings),
+            related=image_issue.matches(issues, profile),
+            observation=observation,
+        )
+        message = image_issue.notice(tracker, signals, lane=kind)
+        if message and tracker is not None:
+            comment_endpoint = f"{endpoint}/{tracker['number']}/comments"
+            comments = json.loads(gh(f"{comment_endpoint}?per_page=100", "--paginate", "--slurp"))
+            if not image_issue.already_notified(
+                [item for page in comments for item in page], message
+            ):
+                gh(comment_endpoint, body={"body": message})
+        if payload is not None:
+            if tracker is None:
+                gh(endpoint, body=payload)
+            else:
+                gh(f"{endpoint}/{tracker['number']}", "--method", "PATCH", body=payload)
+        if tracker is not None:
+            retire_linked(endpoint, tracker | (payload or {}), profile, issues)
 
 
 def main() -> None:

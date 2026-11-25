@@ -1167,10 +1167,12 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
             work.remember(messages, 50)
         try:
             await work.start(tool_reply())
+            worker = running(work)
             await asyncio.wait_for(entered.wait(), 2)
             # The search runs beside the pass on its own state: the pass is not held up waiting for
             # it, and leaves the merging to it.
             await asyncio.wait_for(strategy(messages), 2)
+            await asyncio.wait_for(worker, 2)
         finally:
             await work.close()
     assert set(requests) <= {"background"}

@@ -24,12 +24,14 @@ def main() -> int:
         if os.environ.get(job) not in allowed:
             problems.append(f"The {job.lower()} job did not complete successfully.")
     attention = os.environ.get("ATTENTION")
+    healthy_jobs = not problems
     if attention != "false":
         problems.append(
             "Current images or monitoring delivery need attention."
             if attention == "true"
             else "The finish job did not provide a valid health result."
         )
+    vulnerability_only = False
     try:
         notification = json.loads(
             Path(os.environ["MONITOR_DIAGNOSTICS"]).read_text(encoding="utf-8")
@@ -37,6 +39,13 @@ def main() -> int:
         details = notification["summary"]
         if not isinstance(details, str) or not details.strip():
             raise ValueError("Missing summary")
+        vulnerability_only = (
+            healthy_jobs
+            and attention == "true"
+            and notification.get("attention") is True
+            and notification.get("operationalAttention") is False
+            and isinstance(notification.get("problems"), str)
+        )
     except (OSError, ValueError, KeyError, TypeError):
         details = (
             "Image assessment details are unavailable; inspect the begin, scan and finish jobs."
@@ -80,6 +89,9 @@ def main() -> int:
             stream.write(report)
     for problem in problems:
         print(f"::error::{problem}", flush=True)
+    if path := os.environ.get("GITHUB_OUTPUT"):
+        with Path(path).open("a", encoding="utf-8") as stream:
+            stream.write(f"vulnerability_only={str(vulnerability_only).lower()}\n")
     return int(bool(problems))
 
 

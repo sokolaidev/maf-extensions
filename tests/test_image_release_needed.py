@@ -338,10 +338,16 @@ class Issues(GitHub):
     def __init__(self):
         self.items = []
         self.calls = []
+        self.comments = []
 
     def request(self, endpoint, **kwargs):
+        if "/comments?" in endpoint:
+            return encode(self.comments)
         payload = json.loads(kwargs["payload"])
         self.calls.append((endpoint, kwargs["method"], payload))
+        if endpoint.endswith("/comments"):
+            self.comments.append(payload | {"user": {"login": "github-actions[bot]"}})
+            return b"{}"
         if kwargs["method"] == "POST":
             self.items.append(
                 payload
@@ -853,6 +859,7 @@ def test_pr_scans_and_tracker_cannot_publish():
         "1-Container image release",
     }
     assert workflow["concurrency"]["cancel-in-progress"] is False
+    assert workflow["concurrency"]["group"] == "image-remediation-attention"
     job = workflow["jobs"]["reconcile"]
     assert job["concurrency"] == {
         "group": "container-security-catalogue",
@@ -903,7 +910,13 @@ def reporter(monkeypatch):
     monkeypatch.setattr(tracker, "package_requirements", lambda _: {})
     monkeypatch.setattr(tracker.History, "head", head)
     monkeypatch.setattr(tracker, "GitHub", lambda: client)
-    monkeypatch.setattr(client, "pages", lambda _: copy.deepcopy(client.items))
+    monkeypatch.setattr(
+        client,
+        "pages",
+        lambda endpoint: copy.deepcopy(
+            client.comments if "/comments" in endpoint else client.items
+        ),
+    )
     monkeypatch.setattr(tracker, "baseline", lambda *_: current["released"])
     monkeypatch.setattr(
         tracker,
@@ -939,14 +952,13 @@ def test_reporter_retires_drift_without_reopening_or_creating_successor(reporter
     tracker.main()
     assert len(client.items) == len(client.calls) == 1
     assert client.items[0]["state"] == "closed"
-    assert client.items[0]["state_reason"] == "not_planned"
     assert "No replacement release is claimed" in client.items[0]["body"]
     current["record"] = vulnerable_record()
     tracker.main()
     tracker.main()
-    assert len(client.items) == len(client.calls) == 2
-    assert client.items[0]["state"] == "closed"
-    assert client.items[1]["title"] == "Image release needed: graphviz (replace 0.1.0)"
+    assert len(client.items) == 1 and len(client.calls) == 2
+    assert client.items[0]["state"] == "open"
+    assert client.items[0]["title"] == "Image security needs attention: graphviz"
 
 
 def test_reporter_does_not_open_drift_only_request(reporter):
@@ -957,7 +969,38 @@ def test_reporter_does_not_open_drift_only_request(reporter):
     assert client.calls == []
 
 
-def test_reporter_keeps_manual_closure_and_creates_one_security_successor(reporter):
+def test_release_migrates_to_existing_remediation_issue_without_losing_blocker(reporter):
+    client, current = reporter
+    tracker.main()
+    legacy_release = copy.deepcopy(client.items[0])
+    # Model the separate trackers written before canonical issue identities existed.
+    client.items[0]["body"] = tracker.body("graphviz", desired(record=vulnerable_record()))
+    client.items.append(
+        {
+            "number": 8,
+            "state": "open",
+            "user": {"login": "github-actions[bot]", "type": "Bot"},
+            "body": "<!-- image-remediation-attention:graphviz -->\nAwaiting upstream fix; preserve maintainer context.",
+        }
+    )
+    tracker.main()
+    tracker.main()
+    assert len(client.items) == 2
+    assert client.items[0]["state"] == "closed"
+    assert "Tracking continues in #8" in client.items[0]["body"]
+    assert legacy_release["number"] == 1
+    shared = client.items[1]
+    assert "Awaiting upstream fix" in shared["body"]
+    assert "Earlier report: #1" in shared["body"]
+    assert tracker.STATE.search(shared["body"])
+    current["record"] = replacement()
+    tracker.main()
+    assert shared["state"] == "open"
+    assert tracker.image_issue.lanes(shared)["release"]["active"] is False
+    assert tracker.image_issue.lanes(shared)["legacy-remediation"]["active"] is True
+
+
+def test_reporter_respects_manual_dismissal_without_a_successor(reporter):
     client, current = reporter
     tracker.main()
     client.items[0]["state"] = "closed"
@@ -966,8 +1009,8 @@ def test_reporter_keeps_manual_closure_and_creates_one_security_successor(report
     tracker.main()
     tracker.main()
     assert client.items[0] == historical
-    assert len(client.items) == len(client.calls) == 2
-    assert client.items[1]["state"] == "open"
+    assert len(client.items) == len(client.calls) == 1
+    assert client.items[0]["state"] == "closed"
 
 
 def test_reporter_opens_and_satisfies_package_requirement(reporter, monkeypatch):
@@ -1005,7 +1048,7 @@ def test_source_reconciliation_requires_verified_evidence_and_comparison(
 
 
 @pytest.mark.parametrize("extra_component", [False, True])
-def test_reporter_creates_updates_closes_and_starts_new_issue(reporter, extra_component):
+def test_reporter_reuses_issue_after_verified_recovery_and_recurrence(reporter, extra_component):
     client, current = reporter
     tracker.main()
     tracker.main()
@@ -1025,12 +1068,10 @@ def test_reporter_creates_updates_closes_and_starts_new_issue(reporter, extra_co
     assert len(client.calls) == 3
     current["record"] = vulnerable_record(**replacement())
     current["observed"] = candidate(version="4", observedAt="2026-01-04T00:00:00Z")
-    closed = copy.deepcopy(client.items[0])
     tracker.main()
     tracker.main()
-    assert len(client.items) == 2
-    assert client.items[0] == closed
-    assert client.items[1]["state"] == "open"
+    assert len(client.items) == 1
+    assert client.items[0]["state"] == "open"
     assert len(client.calls) == 4
 
 
@@ -1143,10 +1184,11 @@ def test_unowned_marker_issue_is_never_used_or_modified(reporter, author):
 def test_uncertain_issue_creation_is_reconciled_without_duplicate(
     reporter, monkeypatch, closed_predecessor
 ):
-    client, _ = reporter
+    client, current = reporter
     if closed_predecessor:
         tracker.main()
         client.items[0]["state"] = "closed"
+        current["record"]["latestAttempt"]["findings"].append(FINDING | {"id": "CVE-new"})
     original = client.request
 
     def uncertain(*args, **kwargs):
@@ -1158,9 +1200,9 @@ def test_uncertain_issue_creation_is_reconciled_without_duplicate(
         tracker.main()
     monkeypatch.setattr(client, "request", original)
     tracker.main()
-    assert len(client.items) == len(client.calls) == (2 if closed_predecessor else 1)
-    if closed_predecessor:
-        assert client.items[0]["state"] == "closed"
+    assert len(client.items) == 1
+    assert len(client.calls) == (2 if closed_predecessor else 1)
+    assert client.items[0]["state"] == "open"
 
 
 def test_unavailable_baseline_preserves_existing_request(reporter, monkeypatch):
@@ -1759,15 +1801,22 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
     state = desired(record=vulnerable_record(), observed=candidate())
     tracker.reconcile(client, "graphviz", state, None)
     again = desired(
-        record=vulnerable_record(), observed=candidate(evidence="run/2"), previous=state
+        record=vulnerable_record(),
+        observed=candidate(evidence="run/2", observedAt="2026-01-02T00:00:01Z"),
+        previous=state,
     )
     tracker.reconcile(client, "graphviz", again, client.items[0])
-    assert len(client.items) == len(client.calls) == 1
+    assert len(client.items) == 1
+    assert len(client.calls) == 2
+    assert "run/2" in client.items[0]["body"]
+    assert client.calls[-1][1] == "PATCH"
+    tracker.reconcile(client, "graphviz", again, client.items[0])
+    assert len(client.calls) == 2
     changed = desired(
-        observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
+        observed=candidate(version="3", observedAt="2026-01-02T00:00:02Z"), previous=again
     )
     tracker.reconcile(client, "graphviz", changed, client.items[0])
-    assert len(client.calls) == 2
+    assert len(client.calls) == 3
     assert client.calls[-1][1] == "PATCH"
 
 

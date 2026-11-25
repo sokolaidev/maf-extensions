@@ -769,6 +769,7 @@ def test_security_authorization_and_delivery_recompute_the_requirement(
     assert read(work / "publication.json")["status"] == "created"
     update.main()
     assert read(work / "publication.json")["status"] == "unchanged"
+    assert read(work / "delivery-requirement.json") == requirement
     assert len(client.pulls) == 1
     assert "Verified published-image security requirement" in client.pulls[0]["body"]
     assert "CVE-2026-130910" in client.pulls[0]["body"]
