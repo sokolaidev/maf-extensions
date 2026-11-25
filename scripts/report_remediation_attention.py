@@ -272,7 +272,9 @@ def cell(value: Any) -> str:
 def retire_linked(endpoint: str, tracker: dict, profile: str, issues: list[dict]) -> None:
     """Retry consolidation only after the saved canonical body links the earlier report."""
     for previous in image_issue.matches(issues, profile):
-        reference = f"Earlier report: #{previous['number']} (retained evidence and maintainer discussion)."
+        reference = (
+            f"Earlier report: #{previous['number']} (retained evidence and maintainer discussion)."
+        )
         if reference not in (tracker.get("body") or ""):
             continue
         retired = image_issue.retirement(previous, tracker, profile)
