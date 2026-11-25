@@ -87,7 +87,7 @@ def release_signals(state: dict) -> set[str]:
     return signals
 
 
-def notice(issue: dict | None, signals: set[str]) -> str | None:
+def notice(issue: dict | None, signals: set[str], *, lane: str = "scan") -> str | None:
     """Notify only about added findings or remediation opportunities, never refreshed evidence."""
     saved = lanes(issue)
     if not saved or issue is None or issue.get("state", "open") != "open":
@@ -96,8 +96,8 @@ def notice(issue: dict | None, signals: set[str]) -> str | None:
     added = sorted(signals - known)
     if not added:
         return None
-    generation = sum(value.get("generation", 0) for value in saved.values())
-    digest = hashlib.sha256(json.dumps([generation, added]).encode()).hexdigest()
+    generation = saved.get(lane, {}).get("generation", 0)
+    digest = hashlib.sha256(json.dumps([lane, generation, sorted(signals)]).encode()).hexdigest()
     details = html.escape("\n".join(added)).replace("@", "&#64;")[:8000]
     return f"<!-- image-security-change:{digest} -->\nNew findings or remediation opportunities:\n\n<pre>{details}</pre>\n\nThe issue body retains the latest evidence from each reporter."
 

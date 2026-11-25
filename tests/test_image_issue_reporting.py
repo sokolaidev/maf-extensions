@@ -96,6 +96,29 @@ class IssueAPI:
 
 
 class TestImageIssueReporting(unittest.TestCase):
+    def test_other_reporter_updates_do_not_duplicate_a_partially_delivered_scan_notice(self):
+        api = IssueAPI()
+        with patch.object(attention, "gh", api.gh):
+            attention.notify("scan", RUN, scan("1"), "example/repo", "1", "1")
+        changed = scan("2")
+        new_finding = FINDING | {"id": "CVE-new"}
+        changed["antivirus"]["assessment.json"]["findings"][0] = new_finding
+        changed["antivirus"]["grype.json"]["matches"][0]["vulnerability"] = new_finding
+
+        def interrupted(endpoint, *args, body=None):
+            if "PATCH" in args:
+                raise OSError("Canonical write failed after the comment")
+            return api.gh(endpoint, *args, body=body)
+
+        with patch.object(attention, "gh", interrupted), self.assertRaises(OSError):
+            attention.notify("scan", RUN, changed, "example/repo", "2", "1")
+        self.assertEqual(len(api.comments), 1)
+        api.items[0] = observe(api.items[0], "platform", {"finding:unrelated"})
+        with patch.object(attention, "gh", api.gh):
+            attention.notify("scan", RUN, changed, "example/repo", "2", "1")
+        self.assertEqual(len(api.comments), 1)
+        self.assertIn("finding:CVE-new", shared.lanes(api.items[0])["scan"]["signals"])
+
     def test_equal_scan_retries_only_retirement_already_linked_to_canonical_issue(self):
         api = IssueAPI()
         canonical = observe(None, "scan", {"finding:CVE-test"})

@@ -396,7 +396,7 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             related=image_issue.matches(issues, profile),
             observation=observation,
         )
-        message = image_issue.notice(tracker, signals)
+        message = image_issue.notice(tracker, signals, lane=kind)
         if message and tracker is not None:
             comment_endpoint = f"{endpoint}/{tracker['number']}/comments"
             comments = json.loads(gh(f"{comment_endpoint}?per_page=100", "--paginate", "--slurp"))

@@ -741,7 +741,7 @@ def reconcile(
     ):
         payload["state_reason"] = "not_planned"
     if issue:
-        message = image_issue.notice(issue, signals)
+        message = image_issue.notice(issue, signals, lane="release")
         if message:
             comment_endpoint = f"{endpoint}/{issue['number']}/comments"
             if not image_issue.already_notified(client.pages(comment_endpoint), message):
