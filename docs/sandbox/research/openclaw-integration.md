@@ -1192,13 +1192,13 @@ The candidate's MXC lint command exits 1 with five findings. A [fresh unchanged 
 
 | Rule | Unchanged upstream location | Candidate location |
 |---|---|---|
-| `default-param-last` | `test/readiness.test.ts:46` | `test/readiness.test.ts:48` |
-| `default-param-last` | `src/mxc-spawn-launcher.mjs:308` | `src/mxc-spawn-launcher.mjs:312` |
-| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:213` | `test/mxc-spawn-launcher.test.ts:255` |
-| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:339` | `test/mxc-spawn-launcher.test.ts:387` |
-| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:540` | `test/mxc-spawn-launcher.test.ts:601` |
+| `default-param-last` | [readiness.test.ts, line 46](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/test/readiness.test.ts#L46) | Same file, line 48 |
+| `default-param-last` | [mxc-spawn-launcher.mjs, line 308](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src/mxc-spawn-launcher.mjs#L308) | Same file, line 312 |
+| `no-promise-executor-return` | [mxc-spawn-launcher.test.ts, line 213](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/test/mxc-spawn-launcher.test.ts#L213) | Same file, line 255 |
+| `no-promise-executor-return` | [mxc-spawn-launcher.test.ts, line 339](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/test/mxc-spawn-launcher.test.ts#L339) | Same file, line 387 |
+| `no-promise-executor-return` | [mxc-spawn-launcher.test.ts, line 540](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/test/mxc-spawn-launcher.test.ts#L540) | Same file, line 601 |
 
-Paths in this table are relative to `extensions/mxc/`. Both runs use `node scripts/run-oxlint.mjs --tsconfig extensions/tsconfig.json extensions/mxc`. These existing findings remain visible for the migration owner; this proposal does not add unrelated lint repairs. The first exploratory workflow's shell pipeline masked lint's exit status; the linked final candidate run uses `pipefail` and is correctly red. Its in-place baseline attempt failed because the ignored lockfile retained the candidate version; only the separate fresh baseline run above establishes the comparison.
+Paths in this table are relative to `extensions/mxc/`. Both runs use the [upstream lint wrapper](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/scripts/run-oxlint.mjs) with `--tsconfig extensions/tsconfig.json extensions/mxc`. These existing findings remain visible for the migration owner; this proposal does not add unrelated lint repairs. The first exploratory workflow's shell pipeline masked lint's exit status; the linked final candidate run uses `pipefail` and is correctly red. Its in-place baseline attempt failed because the ignored lockfile retained the candidate version; only the separate fresh baseline run above establishes the comparison.
 
 ### Submission and qualification limits
 
