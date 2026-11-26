@@ -34,6 +34,8 @@ from maf_compaction._artifacts import (
     MARKER_ID_PREFIX,
     SHED_NOTES,
     TOOL_CALL,
+    USER_FOLD_EXCLUDE_REASON,
+    USER_SUMMARY_MARKER,
     is_marker,
     is_user_summary,
 )
@@ -458,3 +460,78 @@ async def test_a_background_answer_applies_after_the_user_phase_folds_a_turn_bet
     assert await work.apply_ready(messages)
     assert strategy.records_merged == 1
     await work.close()
+
+
+class _MessageCounter:
+    """A tokenizer that counts whole messages, so each snapshot counts its history again."""
+
+    def count_message_tokens(self, message: Message) -> int:
+        return 4 + sum(len(json.dumps(c.to_dict(), default=str)) for c in message.contents) // 4
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
+
+@pytest.mark.parametrize("between", ["a user summary", "a shed's note"])
+async def test_a_recounting_snapshot_still_reads_what_stands_between_the_records(between: str):
+    """A tokenizer that counts whole messages makes the snapshot count its history again, and
+    the annotation it drops carried the links that make a summary or a note one. The snapshot
+    still leaves it out of its gaps, as the applying pass does, and the answer applies."""
+    strategy = _strategy(
+        _Summarizer(), budget=100_000, share=0.001, cap=None, tokenizer=_MessageCounter()
+    )
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    if between == "a user summary":
+        messages = _user_turns_between_records()
+        _size(messages)
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == "middle0"
+        )
+        strategy.user_turns._replace(messages, [group], "Summary. " * 40, summary_id="summary_0")
+        assert any(is_user_summary(m) for m in messages)
+    else:
+        messages = _interleaved()
+        _shed_with_notes(strategy, messages)
+    work.remember(messages, strategy._budget)
+    await work.start(tool_reply())
+    await running(work)
+    assert work._ready, "the premise: the worker prepared an answer"
+
+    assert await work.apply_ready(messages)
+    assert strategy.records_merged == 1
+    await work.close()
+
+
+def test_a_summary_carrying_reasoning_still_counts_in_the_gaps() -> None:
+    """Reasoning counts where it stands, whatever message carries it: an excluded summary holding
+    reasoning is not left out of the gaps, so removing it changes the snapshot."""
+    messages = _history(2)
+    summary = Message(
+        "user",
+        [
+            Content.from_text(f"{USER_SUMMARY_MARKER} Earlier turns."),
+            Content.from_text_reasoning(text="Weighing the earlier turns."),
+        ],
+        message_id="summary_r",
+        additional_properties={
+            GROUP_ANNOTATION_KEY: {
+                SUMMARY_OF_MESSAGE_IDS_KEY: ["gone"],
+                SUMMARY_OF_GROUP_IDS_KEY: ["group_gone"],
+            },
+            # A summary a fold superseded: excluded, and only reasoning keeps it in the key.
+            EXCLUDED_KEY: True,
+            EXCLUDE_REASON_KEY: USER_FOLD_EXCLUDE_REASON,
+        },
+    )
+    assert is_user_summary(summary), "the premise: it reads as a summary"
+    with_it = [*messages[:4], summary, *messages[4:]]
+    _size(with_it)
+    _size(messages)
+
+    gaps = [str(m.message_id) for m in BackgroundRecords.capture(with_it).messages]
+    without = [str(m.message_id) for m in BackgroundRecords.capture(messages).messages]
+
+    assert gaps != without
