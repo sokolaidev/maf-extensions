@@ -1,0 +1,69 @@
+name: Temporary OpenClaw MXC Windows integration checks
+on:
+  push:
+    branches: [antsok-openclaw-mxc-windows-integration-2104]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  integration:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      OPENCLAW_VITEST_MAX_WORKERS: "1"
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.1
+      - name: Prepare pinned upstream source and retained patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/openclaw" "$RUNNER_TEMP/evidence"
+          curl --fail --location --retry 2 https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -o "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
+          cd "$RUNNER_TEMP/openclaw"
+          git init -q
+          git add .
+          git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
+          git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
+          git apply "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
+          git add .
+          sha256sum "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/"* extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/artifact-hashes.txt"
+          git diff --cached --stat > "$RUNNER_TEMP/evidence/scope.txt"
+          npm install --global --ignore-scripts --no-audit --no-fund pnpm@12.15.0
+      - name: Install frozen upstream workspace
+        id: install
+        timeout-minutes: 20
+        working-directory: ${{ runner.temp }}/openclaw
+        run: pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/evidence/install.txt"
+      - name: Complete MXC plugin lane
+        id: tests
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: ${{ runner.temp }}/openclaw
+        run: pnpm test:extension mxc --maxWorkers=1 --exclude extensions/mxc/test/mxc-sdk-wire-contract.integration.test.ts 2>&1 | tee "$RUNNER_TEMP/evidence/plugin-tests.txt"
+      - name: Replay actual launcher with inert fixtures
+        timeout-minutes: 5
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/replay.txt"
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs --cleanup-regression | tee "$RUNNER_TEMP/evidence/cleanup.txt"
+      - name: Require plugin lane success
+        if: always()
+        env:
+          TEST_RESULT: ${{ steps.tests.outcome }}
+        run: test "$TEST_RESULT" = success
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: openclaw-mxc-windows-integration
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
