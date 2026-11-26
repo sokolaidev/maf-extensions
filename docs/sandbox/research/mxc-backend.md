@@ -2202,6 +2202,8 @@ Reverse the underlying MXC 1.0 layers afterward, in storage/output/session order
 
 ## Bounded-file profile reproduction
 
+The post-merge Windows qualification completed on `main` at `734799e7` in 69 minutes. The job reached `adapter-codeact`, completed `remove-files`, and uploaded its evidence bundle. The bundle is the source for individual JUnit outcomes. [Windows job](https://github.com/sokolaidev/maf-extensions/actions/runs/45695070760/job/139490818054) · [Run artifact](https://github.com/sokolaidev/maf-extensions/actions/runs/45695070760/artifacts/15064663308)
+
 Tooling: [scripts/experiments/mxc_files_patch](../../../scripts/experiments/mxc_files_patch).
 
 This profile adds bounded input files, a virtual workspace and named artifact delivery to the [separate-stream experiment](#byte-stream-profile-reproduction). It is repository qualification tooling, not a production backend. The [design](#runtime-and-files) records the selected policy; the [research](#native-file-candidate) records implementation boundaries and candidate-specific evidence.
