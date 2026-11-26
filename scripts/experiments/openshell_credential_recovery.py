@@ -190,7 +190,14 @@ class CredentialRecovery(RestartAuthority):
             self.stable(runtime, spec)
             if boundary_descriptor(self.identity, runtime) != boundary:
                 raise RuntimeError("replacement boundary descriptor changed")
-            if authority_identity(status) != authority_identity(accepted):
+            identity, previous = authority_identity(status), authority_identity(accepted)
+            pending_process = (
+                status.state == self.client.pb.PROVIDER_READINESS_STATE_PENDING
+                and identity[:2] == previous[:2]
+                and not identity[2]
+                and not status.observed.launch_environment_installed
+            )
+            if identity != previous and not pending_process:
                 raise RuntimeError("replacement authority identity changed")
             if receipt_installed(
                 status, status.receipt, self.client.pb.PROVIDER_READINESS_STATE_READY

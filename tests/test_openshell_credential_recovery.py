@@ -564,7 +564,23 @@ def test_rotation_pins_only_a_new_environment_target(probe, monkeypatch, fault):
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "target", "receipt", "sequence", "identity", "descriptor", "runtime"]
+    "fault",
+    [
+        None,
+        "pending-process",
+        "pending-timeout",
+        "pending-network",
+        "pending-session",
+        "pending-installed",
+        "pending-foreign-process",
+        "ready-missing-process",
+        "target",
+        "receipt",
+        "sequence",
+        "identity",
+        "descriptor",
+        "runtime",
+    ],
 )
 def test_current_target_requires_exact_installed_and_advancing_evidence(probe, monkeypatch, fault):
     target = desired()
@@ -601,14 +617,37 @@ def test_current_target_requires_exact_installed_and_advancing_evidence(probe, m
     elif fault == "identity":
         current.network_instance_id = "foreign"
     fixture = NS(
-        client=NS(pb=NS(PROVIDER_READINESS_STATE_READY="READY")),
+        client=NS(
+            pb=NS(
+                PROVIDER_READINESS_STATE_READY="READY", PROVIDER_READINESS_STATE_PENDING="PENDING"
+            )
+        ),
         owners=[{"name": "owned-name", "sandbox_id": "owned"}],
     )
     records = []
     authority = probe.CredentialRecovery(
         fixture, NS(), "192.0.2.1", lambda kind, row: records.append(row)
     )
-    authority.current_status = lambda: current
+    if fault and (fault.startswith("pending-") or fault == "ready-missing-process"):
+        pending = copy.deepcopy(current)
+        pending.state = "PENDING"
+        pending.observed.process_instance_id = ""
+        pending.observed.launch_environment_installed = False
+        if fault == "pending-network":
+            pending.network_instance_id = "foreign"
+        elif fault == "pending-session":
+            pending.observed.session_id = "foreign"
+        elif fault == "pending-installed":
+            pending.observed.launch_environment_installed = True
+        elif fault == "pending-foreign-process":
+            pending.observed.process_instance_id = "foreign"
+        elif fault == "ready-missing-process":
+            pending.state = "READY"
+        current.observed.sequence = 4
+        statuses = iter([pending, current])
+        authority.current_status = lambda: next(statuses)
+    else:
+        authority.current_status = lambda: current
 
     def stable(*args):
         if fault == "runtime":
@@ -619,9 +658,10 @@ def test_current_target_requires_exact_installed_and_advancing_evidence(probe, m
     monkeypatch.setattr(
         probe, "boundary_descriptor", lambda *args: {} if fault == "descriptor" else boundary
     )
-    ticks = iter([0, 31])
+    ticks = iter([0, 1] if fault == "pending-process" else [0, 31])
+    monkeypatch.setattr(probe.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(probe.time, "monotonic", lambda: next(ticks))
-    if fault:
+    if fault not in (None, "pending-process"):
         with pytest.raises(RuntimeError):
             authority.attest_current(target, before, {}, "spec", accepted, boundary=boundary)
     else:
