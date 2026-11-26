@@ -190,29 +190,33 @@ def session_sample(client, owner, profile):
     }
 
 
-def session_outcome(samples, same_runtime):
-    """Require an explicit disconnect between installed reports on the same physical runtime."""
-    first, last, after_guest = samples[0], samples[-2], samples[-1]
-    if not same_runtime:
-        return "runtime_changed"
+def session_outcome(before, after):
+    """Identify a disconnected session followed by fresh installation reports after guest traffic."""
+    first, last = before[0], before[-1]
     if not all(
         s["installed"]
         and all(s[k] for k in ("session", "network", "process"))
         and s["sequence"] > 0
-        for s in (first, last, after_guest)
+        for s in (first, last, *after)
     ):
         return "installation_unconfirmed"
-    if any(s[k] != first[k] for s in (last, after_guest) for k in ("process", "network")):
+    if any(s[k] != first[k] for s in (last, *after) for k in ("process", "network")):
         return "runtime_identity_changed"
-    if after_guest["session"] != last["session"] or after_guest["sequence"] < last["sequence"]:
-        return "session_changed_around_guest_request"
+    sequence = last["sequence"]
+    advances = 0
+    for report in after:
+        if report["session"] != last["session"] or report["sequence"] < sequence:
+            return "session_changed_around_guest_request"
+        if report["sequence"] > sequence:
+            advances += 1
+        sequence = report["sequence"]
     disconnected = "PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
     gap = [
         i
-        for i, s in enumerate(samples[1:-2], 1)
+        for i, s in enumerate(before[1:-1], 1)
         if s["reason"] == disconnected and not s["installed"]
     ]
-    installed_sessions = {s["session"] for s in samples if s["installed"]}
+    installed_sessions = {s["session"] for s in before if s["installed"]}
     if first["session"] == last["session"]:
         if len(installed_sessions) > 1:
             return "multiple_sessions_observed"
@@ -220,18 +224,32 @@ def session_outcome(samples, same_runtime):
     if not gap:
         return "session_changed_without_observed_disconnect"
     if (
-        any(s["installed"] and s["session"] != first["session"] for s in samples[: gap[0]])
-        or any(s["installed"] for s in samples[gap[0] : gap[-1]])
-        or any(s["installed"] and s["session"] != last["session"] for s in samples[gap[-1] :])
+        any(s["installed"] and s["session"] != first["session"] for s in before[: gap[0]])
+        or any(s["installed"] for s in before[gap[0] : gap[-1]])
+        or any(s["installed"] and s["session"] != last["session"] for s in before[gap[-1] :])
         or any(
             s["installed"] and (s["network"], s["process"]) != (first["network"], first["process"])
-            for s in samples
+            for s in before
         )
     ):
         return "multiple_sessions_observed"
-    if after_guest["sequence"] == last["sequence"]:
-        return "fresh_report_unconfirmed"
-    return "reconnected"
+    # The first advance read after traffic may already have been cached when the request began.
+    return "reconnected" if advances >= 2 else "fresh_report_unconfirmed"
+
+
+def observe_session_after_request(client, owner, profile, before, after):
+    """Allow up to fifteen seconds for two new post-request reports on a reconnect candidate."""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        after.append(session_sample(client, owner, profile))
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            return "post_request_window_elapsed"
+        outcome = session_outcome(before, after)
+        if outcome != "fresh_report_unconfirmed":
+            return outcome
+        time.sleep(min(1, remaining))
+    return "fresh_report_unconfirmed"
 
 
 def propagation_observation(observed, events, request, minted):
@@ -783,15 +801,21 @@ async def measure_credentials(fixture, ip, ca_file):
                 await asyncio.to_thread(session_sample, fixture.client, sandbox.owner, profile)
             )
             await check("worker_refresh_preserves_launch_reference", worker, converge=True)
-            sessions.append(
-                await asyncio.to_thread(session_sample, fixture.client, sandbox.owner, profile)
+            post_request = window["post_request_samples"] = []
+            outcome = await asyncio.to_thread(
+                observe_session_after_request,
+                fixture.client,
+                sandbox.owner,
+                profile,
+                sessions,
+                post_request,
             )
             current_runtime = await asyncio.to_thread(snapshot, transitions.identity)
             same_runtime = await asyncio.to_thread(
                 runtime_continuity, transitions.identity, runtime, current_runtime
             )
             window["same_physical_runtime"] = same_runtime
-            window["outcome"] = session_outcome(sessions, same_runtime)
+            window["outcome"] = outcome if same_runtime else "runtime_changed"
             fixture.save()
 
             issuer.configure(mode="temporarily_unavailable")

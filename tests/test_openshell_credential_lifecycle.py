@@ -1040,7 +1040,12 @@ def sample_session(session, sequence=1, *, reason="none", installed=True):
         ("request", "session_changed_around_guest_request"),
         ("cached", "fresh_report_unconfirmed"),
         ("old_after_gap", "multiple_sessions_observed"),
-        ("replacement", "runtime_changed"),
+        ("single_advance", "fresh_report_unconfirmed"),
+        ("repeated_advance", "fresh_report_unconfirmed"),
+        ("regression", "session_changed_around_guest_request"),
+        ("second_session", "session_changed_around_guest_request"),
+        ("second_runtime", "runtime_identity_changed"),
+        ("second_pending", "installation_unconfirmed"),
     ],
 )
 def test_disconnect_requires_owned_runtime_and_observed_session_transition(probe, fault, expected):
@@ -1061,5 +1066,54 @@ def test_disconnect_requires_owned_runtime_and_observed_session_transition(probe
     samples = [first, *([] if fault == "no_gap" else [gap])]
     if fault == "old_after_gap":
         samples.append(first)
-    samples.extend((last, after))
-    assert probe.session_outcome(samples, fault != "replacement") == expected
+    samples.append(last)
+    post = [after]
+    if fault != "single_advance":
+        final = {**after, "sequence": after["sequence"] + 1}
+        if fault == "repeated_advance":
+            final["sequence"] = after["sequence"]
+        if fault == "regression":
+            final["sequence"] -= 2
+        if fault == "second_session":
+            final["session"] = "other"
+        if fault == "second_runtime":
+            final["network"] = "other"
+        if fault == "second_pending":
+            final["installed"] = False
+        post.append(final)
+    assert probe.session_outcome(samples, post) == expected
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        (None, "reconnected"),
+        ("late", "post_request_window_elapsed"),
+        ("cached", "fresh_report_unconfirmed"),
+    ],
+)
+def test_post_request_confirmation_waits_only_for_timely_advances(
+    probe, monkeypatch, fault, expected
+):
+    before = [
+        sample_session("old"),
+        sample_session(
+            "", installed=False, reason="PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+        ),
+        sample_session("new", 2),
+    ]
+    after = []
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    def read(*args):
+        if len(after) and fault == "late":
+            sleep(16)
+        return sample_session("new", 3 if not after or fault == "cached" else 4)
+
+    monkeypatch.setattr(probe, "session_sample", read)
+    monkeypatch.setattr(probe, "time", NS(monotonic=lambda: clock[0], sleep=sleep))
+    assert probe.observe_session_after_request(None, None, None, before, after) == expected
+    assert len(after) >= 2
