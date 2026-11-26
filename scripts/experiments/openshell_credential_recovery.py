@@ -529,13 +529,15 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                 converge=True,
             )
             receipt = await asyncio.to_thread(authority.provider, True)
-            restored = await asyncio.to_thread(authority.replace, gateway, receipt)
-            receipt, *replacement = restored
+            receipt, before, runtime, spec, boundary, accepted = await asyncio.to_thread(
+                authority.replace, gateway, receipt
+            )
+            replacement = [before, runtime, spec, boundary, accepted]
             interruption_owner = {
                 "sandbox_id": sandbox.owner["sandbox_id"],
                 "containers": [
                     container["Id"]
-                    for container in replacement[1]["containers"]
+                    for container in runtime["containers"]
                     if container["Labels"].get("openshell.ai/isolation-role") == "supervisor"
                 ],
             }

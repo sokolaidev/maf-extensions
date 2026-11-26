@@ -376,7 +376,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
     def urlopen(request, **kwargs):
         case = fixture.report["credential_recovery"]["cases"][-1]
         if fault == "interruption" and case["case"] in interrupted_cases and not case["attempts"]:
-            raise http.client.RemoteDisconnected()
+            raise http.client.RemoteDisconnected("supervisor disconnected")
         url = urlsplit(request.full_url)
         reference = request.get_header("Authorization", "").removeprefix("Bearer ")
         refusal = None
