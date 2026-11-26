@@ -198,23 +198,20 @@ index 22e4b6c..96c8189 100644
      factory: createMxcSandboxBackendFactory(config),
      manager: mxcSandboxBackendManager,
 diff --git a/extensions/mxc/src/readiness.ts b/extensions/mxc/src/readiness.ts
-index 05d5b5b..48f0fcb 100644
+index 05d5b5b..871ad99 100644
 --- a/extensions/mxc/src/readiness.ts
 +++ b/extensions/mxc/src/readiness.ts
-@@ -1,22 +1,17 @@
+@@ -1,5 +1,4 @@
  import { execFileSync } from "node:child_process";
 -import path from "node:path";
  import { z } from "zod";
  import { resolveMxcLauncherPath } from "./plugin-root.js";
  import { buildLauncherEnv } from "./windows-env.js";
- 
- const MxcLauncherProbeSchema = z.object({
+@@ -8,15 +7,11 @@ const MxcLauncherProbeSchema = z.object({
    probe: z.object({
--    tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
--    warnings: z.array(z.string()).default([]),
-+    tier: z.literal("base-container"),
-+    warnings: z.array(z.string()),
-+    needsDaclAugmentation: z.literal(false),
+     tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+     warnings: z.array(z.string()).default([]),
++    needsDaclAugmentation: z.boolean().optional(),
      error: z.string().optional(),
    }),
  });
@@ -239,7 +236,7 @@ index 05d5b5b..48f0fcb 100644
          `plugins.entries.mxc.config.mxcBinaryPath and restart the Gateway to use the ` +
          `bundled SDK components.`,
        cause === undefined ? undefined : { cause },
-@@ -58,76 +53,13 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+@@ -58,76 +53,16 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
      throw notReady("the MXC host check returned an unexpected result", parsed.error);
    }
    const { probe: result } = parsed.data;
@@ -247,11 +244,11 @@ index 05d5b5b..48f0fcb 100644
 -    const reason = result.error || "the check reported no isolation tier";
 -    throw notReady(`MXC cannot select an isolation tier on this host (${reason})`);
 +  if (result.error !== undefined) {
-+    throw notReady("the MXC host check reported an error");
++    throw notReady(result.error || "the MXC host check reported an error");
    }
-   return { tier: result.tier, warnings: result.warnings };
- }
- 
+-  return { tier: result.tier, warnings: result.warnings };
+-}
+-
 -// AppContainer processes need directory-traversal/list rights on the system
 -// drive root (C:\) to enumerate directories inside the sandbox.
 -// `wxc-host-prep prepare-system-drive` adds ACEs for the well-known
@@ -274,7 +271,9 @@ index 05d5b5b..48f0fcb 100644
 -    // If icacls itself fails, assume prepared rather than emitting a spurious
 -    // warning on a host we cannot probe.
 -    return true;
--  }
++  if (result.tier !== "base-container" || result.needsDaclAugmentation !== false) {
++    throw notReady("the MXC host check requires BaseContainer without DACL augmentation");
+   }
 -  // Look for the well-known ALL APPLICATION PACKAGES SID (S-1-15-2-1) or its
 -  // display name. Both forms can appear depending on OS locale/version.
 -  return output.includes("S-1-15-2-1") || output.includes("APPLICATION PACKAGES");
@@ -312,14 +311,15 @@ index 05d5b5b..48f0fcb 100644
 -    `sandboxed commands in a regular AppContainer, not a least-privilege AppContainer ` +
 -    `(LPAC), so they can reach resources granted to ALL APPLICATION PACKAGES.`
 -  );
--}
--
++  return { tier: result.tier, warnings: result.warnings };
+ }
+ 
 -// @microsoft/mxc-sdk 1.0.0 refuses non-PTY commands on Windows outside this Node
 +// @microsoft/mxc-sdk 1.1.0 refuses non-PTY commands on Windows outside this Node
  // range (dist/bindings/native-stdio.js), which is narrower than OpenClaw's own
  // engines range. The launcher runs on the Gateway's Node, so check it once here
  // instead of failing every command. Recheck on each SDK bump.
-@@ -139,10 +71,9 @@ function supportsMxcWindowsNode(version: string): boolean {
+@@ -139,10 +74,9 @@ function supportsMxcWindowsNode(version: string): boolean {
  }
  
  /**
@@ -332,7 +332,7 @@ index 05d5b5b..48f0fcb 100644
   */
  export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
    if (process.platform !== "win32") {
-@@ -150,15 +81,12 @@ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }
+@@ -150,15 +84,12 @@ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }
    }
    if (!supportsMxcWindowsNode(process.versions.node)) {
      throw new Error(
@@ -350,7 +350,7 @@ index 05d5b5b..48f0fcb 100644
      console.warn(
        `[mxc] MXC sandbox is using the ${probe.tier} isolation tier: ${probe.warnings.join("; ")}`,
 diff --git a/extensions/mxc/test/plugin.test.ts b/extensions/mxc/test/plugin.test.ts
-index 1229792..8d37b09 100644
+index 1229792..3934257 100644
 --- a/extensions/mxc/test/plugin.test.ts
 +++ b/extensions/mxc/test/plugin.test.ts
 @@ -37,7 +37,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
@@ -385,7 +385,7 @@ index 1229792..8d37b09 100644
 +        JSON.stringify({ probe: { tier, needsDaclAugmentation: false, warnings: [] } }),
 +      );
 +
-+      expect(fixture.register).toThrow(/host check returned an unexpected result/u);
++      expect(fixture.register).toThrow(/requires BaseContainer without DACL augmentation/u);
 +      fixture.expectDormant();
 +    },
 +  );
@@ -394,7 +394,7 @@ index 1229792..8d37b09 100644
      const legacyOverride = "C:\\Tools\\old-wxc-exec.exe";
      const compatibleOverride = "C:\\Tools\\x64\\wxc-exec.exe";
 diff --git a/extensions/mxc/test/readiness.test.ts b/extensions/mxc/test/readiness.test.ts
-index a940827..5627235 100644
+index a940827..c113d0f 100644
 --- a/extensions/mxc/test/readiness.test.ts
 +++ b/extensions/mxc/test/readiness.test.ts
 @@ -1,7 +1,6 @@
@@ -473,7 +473,7 @@ index a940827..5627235 100644
 +  test.each(["appcontainer-dacl", "appcontainer-bfs"])("refuses the %s fallback mode", (tier) => {
 +    mockProbe({ probe: probeOutput({ tier }) });
 +    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
-+      /host check returned an unexpected result/u,
++      /requires BaseContainer without DACL augmentation/u,
 +    );
 +  });
  
@@ -514,18 +514,17 @@ index a940827..5627235 100644
  
      expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
 -      /cannot select an isolation tier on this host \(DACL fallback required.*MXC 1\.0 release layout/u,
-+      /host check returned an unexpected result/u,
++      /native PSEC support is unavailable/u,
      );
    });
  
-@@ -160,6 +139,17 @@ describe("assertMxcReadiness", () => {
+@@ -160,6 +139,26 @@ describe("assertMxcReadiness", () => {
      );
    });
  
 +  test.each([
 +    { needsDaclAugmentation: true },
 +    { needsDaclAugmentation: undefined },
-+    { error: "native host check failed" },
 +    { error: "" },
 +  ])("rejects an incompatible BaseContainer result: %j", (result) => {
 +    mockProbe({ probe: probeOutput({ tier: "base-container", ...result }) });
@@ -533,10 +532,20 @@ index a940827..5627235 100644
 +    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(/host check/u);
 +  });
 +
++  test("preserves an SDK error even when the result names BaseContainer", () => {
++    mockProbe({
++      probe: probeOutput({ tier: "base-container", error: "required native feature is unavailable" }),
++    });
++
++    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
++      /required native feature is unavailable/u,
++    );
++  });
++
    test("rejects a probe that does not report JSON", () => {
      mockProbe({ probe: "Error: MXC native component is missing" });
  
-@@ -178,25 +168,3 @@ describe("assertMxcReadiness", () => {
+@@ -178,25 +177,3 @@ describe("assertMxcReadiness", () => {
      ).toThrow(/host check failed: probe ran without the pinned native environment/u);
    });
  });
