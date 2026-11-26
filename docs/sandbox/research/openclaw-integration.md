@@ -1178,6 +1178,8 @@ Issue [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) remains 
 
 ## Upstream integration checks and contribution handoff (2026-11-26)
 
+> Historical preflight-proposal evidence. The [migration-only scope below](#migration-only-contribution-scope-2026-11-26) supersedes this section's submission draft and proposed prerequisites.
+
 The contribution retained by [#2980](https://github.com/sokolaidev/maf-extensions/pull/2980) is now tested through the pinned OpenClaw workspace's own wrappers, rather than only the minimal launcher/readiness environment. The migration remains open/draft at `0cbf9b5481de42e1ea4207c1b27fd50441e51c0b`. The revised patch also aligns the runtime schema and manifest help with SDK 1.1 and bounded debug records, and types the probe supervisor's retained failure as `Error | undefined`. This annotation removes the new type-aware lint finding without changing runtime behavior. No configuration key or schema shape changes.
 
 The revised patch SHA-256 is `82035df6d7e19b6da99bfc1d83a7160ac4e9036a8d48376b274e121656427727`; its launcher SHA-256 is `5819f02832e88e89afce891cf799caf69be914c7e866cdaced71878a9a3287fd`. The replay harness remains `4683b92bad0a6caa4e448a616c5ea9df1008bc10698a331b1a8875947f94626b`. Earlier hashes and observations above describe the original proposal.
@@ -1218,6 +1220,48 @@ These results do not establish real SDK/native request acceptance, PTY/non-PTY n
 >
 > Would you prefer to incorporate the patch here, or receive a PR against this migration branch? I would also appreciate guidance on whether the proposed debug record is a suitable supported diagnostic contract.
 
+## Migration-only contribution scope (2026-11-26)
+
+> Prepared upstream proposal, narrowed by maintainer decision after the preflight experiment. This section supersedes the earlier contribution scope and unposted coordination draft; their historical evidence is unchanged.
+
+### Problem and decision
+
+The Core migration [#167292](https://github.com/openclaw/openclaw/pull/167292) still targets SDK 1.0.0 at `0cbf9b5481de42e1ea4207c1b27fd50441e51c0b` and accepts the retired AppContainer fallback modes. [MXC 1.1.0](https://github.com/microsoft/mxc/releases/tag/v1.1.0) removes those ProcessContainer fallbacks and owns rejection of unsupported hosts and request policies before workload launch. The useful first contribution is to align the existing migration with that runtime contract.
+
+The maintainer selected direct native creation rather than adding a per-command probe. A host probe does not establish request compatibility, but a second incomplete probe does not replace creation-time enforcement either. It adds another process per command, repeats checks and leaves a gap between checking and executing. Its supervisor bounds the extra probe, not native creation. Request/native fingerprint diagnostics could be considered separately if an operational need is established; they are not prerequisites for #2104.
+
+### Retained artifacts and scope
+
+The active [SDK 1.1 proposal](../../../scripts/experiments/openclaw_mxc_sdk11/README.md) contains the applyable migration patch and an inert direct-creation replay. It updates the SDK/generated lockfile, requires BaseContainer without DACL augmentation or a probe error at startup, removes obsolete host-preparation code and advice, and updates configuration descriptions and tests. Startup retains the existing 30-second host-probe timeout. No new configuration key, per-command supervisor, request probe or fingerprint schema is introduced. Existing debug behavior remains unchanged.
+
+The command launcher and its lifecycle test file are byte-identical to the pinned migration base. The launcher SHA-256 remains `dd70a621b515c8055368a86f42103dedbec864f5f346855b2213aa9a5c143510`. The [preflight experiment](../../../scripts/experiments/openclaw_mxc_preflight/README.md) remains historical and unchanged; its 72/119-test receipts and supervised replay do not qualify this new patch.
+
+### Verification of the narrowed patch
+
+The [hosted proof run](https://github.com/sokolaidev/maf-extensions/actions/runs/45899825052) uses Node 26.12.1 and pnpm 12.15.0 in secretless Linux and Windows jobs against the pinned migration base. Both frozen installs passed. With the three native wire-contract cases excluded, Linux passed 75 tests and skipped 47; Windows passed all 122 tests. The five-case direct-creation fixture passed on both platforms. Production extension type checking and changed-source formatting passed on Linux.
+
+The broad Linux job remains red: lint reports four unchanged findings in the launcher and its lifecycle tests, previously reproduced in the [unmodified upstream baseline](https://github.com/sokolaidev/maf-extensions/actions/runs/45865976523). They are one default-parameter-order finding and three promise-executor-return findings. This is not a green upstream gate. Restoring the original readiness and registration code while retaining the new tests gives eight failures and 20 passes, demonstrating that the tests reject the original fallback acceptance and missing refusal behavior.
+
+The complete retained patch SHA-256 is `0a06d243946f9b1931464389d93a734bd5a6a2f86595125cee0f9bbf9d3b10d1`; the fixture replay SHA-256 is `64f1ff8abbc068f745cfc05362d4498609c618b63022aa9c657afb5f09bb8c69`. The patch combines the identical formatted source exported by both jobs (`46ebc361a09573278a9a0d207b69288ddc285cbe5f4d02a04f0f8a4943901e02`) with the unchanged SDK 1.1 lockfile hunk used by their frozen installations. Git's ignored lockfile was absent from the staged export. The input patch before formatting was `59529b0dcab8110706a0f1c62d9e886be07768dc935db5572ae12a02e3d29a2a`; the complete retained patch applies cleanly to the pinned base and reverses cleanly from the verified file set.
+
+Independent read-only review identified an unsupported-host diagnostic being hidden by strict result parsing. The patch now preserves the SDK's nonempty error reason before admitting a successful native result, and the reviewer verified the repair. Local patch/whitespace and replay syntax checks passed. The repository-wide Python gate could not run in the local checkout; repository PR CI is a separate gate. No native workload, native creation cancellation/timeout, descendant cleanup, Gateway/model flow or installed upgrade was executed.
+
+### Qualification and ownership
+
+This belongs to the Core sandbox plugin layer of [OpenClaw #168499](https://github.com/openclaw/openclaw/issues/168499), under the existing migration owner. It does not change Windows Node command containment or the native Gateway's persistent isolation session. Moving to 1.1 and dropping unsupported hosts requires upstream acceptance; the existing migration's separate upgrade, dependency/security and runtime-proof requirements remain.
+
+Keep #2104 open with `blocked` and `upstream`. Verify the exact installed tuple and request through the production creation path, refusal and visible errors, a permitted native command, timeout/cancellation and cleanup. The wider #1974 access/network matrix, arbitrary override provenance, Gateway/model flow and installed upgrade remain unqualified. A successful startup probe cannot certify arbitrary native overrides or replace the native refusal/positive-control checks. No request-observation API or per-command preflight implementation is now required merely to proceed with this migration.
+
+### Updated coordination draft — not posted
+
+> SDK 1.1 removes the ProcessContainer fallback modes, while this branch still targets 1.0 and accepts those modes. I have prepared a small [follow-up patch](https://github.com/sokolaidev/maf-extensions/blob/7ad7a6460373b4df4a8d30af99deb8e5348101a5/scripts/experiments/openclaw_mxc_sdk11/proposal.patch) to move this migration to 1.1, require BaseContainer at startup and remove the obsolete DACL preparation guidance.
+>
+> Commands still go directly to SDK creation. The patch adds no per-command preflight, diagnostic fingerprint format or configuration option. Hosts without native PSEC support would be unsupported, so that compatibility change needs your agreement.
+>
+> The plugin tests pass on Linux and Windows with native cases excluded; four existing launcher lint findings remain. Native workload and installed-upgrade qualification remain outstanding.
+>
+> Would you prefer to incorporate the patch here, or receive a PR against your migration branch?
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -1238,5 +1282,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
 | Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; revised hosted prerequisites passed; BaseContainer direction selected without LPAC; v1 compatibility and usable skills layout pending; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
-| Official MXC policy/runtime compatibility | Blocked by upstream at maintainer direction; native-only source evidence retained; independent Docker adoption continues in #2185 | [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) (open) |
+| Official MXC policy/runtime compatibility | Blocked upstream; SDK 1.1 migration-only contribution prepared, per-command preflight deferred; native execution and installed upgrade unqualified; independent Docker adoption continues in #2185 | [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |
