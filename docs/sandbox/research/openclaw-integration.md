@@ -1176,6 +1176,48 @@ The real 30-second hang case is intentional: it proves the production supervisor
 
 Issue [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) remains open, blocked and upstream. None of its native acceptance checkboxes closes from this proposal. Full OpenClaw extension/plugin-registration tests, repository-wide lint/type checks, real SDK/native execution, Gateway/model end-to-end behavior, latest-stable upgrade and the broader #1974 matrix were not verified. The canonical OpenClaw autoreview helper was not run; the recorded independent review is narrower. Next, agree the supported request diagnostic contract with the owning migration and obtain approval before submitting this prepared contribution upstream. After upstream acceptance, bind the complete installed OpenClaw/plugin/SDK/native/Node/Windows tuple and execute refusal cases plus the bounded native positive control. No upstream comment, PR, package publication or merge was performed during preparation.
 
+## Upstream integration checks and contribution handoff (2026-11-26)
+
+The contribution retained by [#2980](https://github.com/sokolaidev/maf-extensions/pull/2980) is now tested through the pinned OpenClaw workspace's own wrappers, rather than only the minimal launcher/readiness environment. The migration remains open/draft at `0cbf9b5481de42e1ea4207c1b27fd50441e51c0b`. The revised patch also aligns the runtime schema and manifest help with SDK 1.1 and bounded debug records, and types the probe supervisor's retained failure as `Error | undefined`. This annotation removes the new type-aware lint finding without changing runtime behavior. No configuration key or schema shape changes.
+
+The revised patch SHA-256 is `82035df6d7e19b6da99bfc1d83a7160ac4e9036a8d48376b274e121656427727`; its launcher SHA-256 is `5819f02832e88e89afce891cf799caf69be914c7e866cdaced71878a9a3287fd`. The replay harness remains `4683b92bad0a6caa4e448a616c5ea9df1008bc10698a331b1a8875947f94626b`. Earlier hashes and observations above describe the original proposal.
+
+[Linux candidate evidence](https://github.com/sokolaidev/maf-extensions/actions/runs/45864997462) uses Node 26.12.1, pnpm 12.15.0 and a frozen workspace install with lifecycle scripts disabled. `pnpm test:extension mxc --maxWorkers=1` passes 72 tests with 50 platform skips across 14 files; `pnpm tsgo:extensions` and changed-source formatting pass. The formatter reports oxfmt/Bun parity on the selected files. The production-launcher inert replay and its delayed-supervisor cleanup control also pass. This is extension production-type coverage, not every OpenClaw type/lint/test lane.
+
+[Windows candidate evidence](https://github.com/sokolaidev/maf-extensions/actions/runs/45865852806) passes all 119 tests in 13 files through `pnpm test:extension mxc --maxWorkers=1 --exclude extensions/mxc/test/mxc-sdk-wire-contract.integration.test.ts`. The three real-native wire-contract cases are explicitly excluded. Registration, readiness, backend lifecycle and the remaining plugin cases use their normal upstream test setup. The separate inert production-launcher replay and delayed-supervisor cleanup control also pass. Patch and launcher hashes match Linux. No real native workload or Gateway/model flow was run.
+
+### Lint classification
+
+The candidate's MXC lint command exits 1 with five findings. A [fresh unchanged migration checkout](https://github.com/sokolaidev/maf-extensions/actions/runs/45865976523), including its original frozen dependency install, reproduces all five. The corrected candidate adds no diagnostics; lint is not green.
+
+| Rule | Unchanged upstream location | Candidate location |
+|---|---|---|
+| `default-param-last` | `test/readiness.test.ts:46` | `test/readiness.test.ts:48` |
+| `default-param-last` | `src/mxc-spawn-launcher.mjs:308` | `src/mxc-spawn-launcher.mjs:312` |
+| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:213` | `test/mxc-spawn-launcher.test.ts:255` |
+| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:339` | `test/mxc-spawn-launcher.test.ts:387` |
+| `no-promise-executor-return` | `test/mxc-spawn-launcher.test.ts:540` | `test/mxc-spawn-launcher.test.ts:601` |
+
+Paths in this table are relative to `extensions/mxc/`. Both runs use `node scripts/run-oxlint.mjs --tsconfig extensions/tsconfig.json extensions/mxc`. These existing findings remain visible for the migration owner; this proposal does not add unrelated lint repairs. The first exploratory workflow's shell pipeline masked lint's exit status; the linked final candidate run uses `pipefail` and is correctly red. Its in-place baseline attempt failed because the ignored lockfile retained the candidate version; only the separate fresh baseline run above establishes the comparison.
+
+### Submission and qualification limits
+
+Independent read-only review found the stale configuration help and verified the error annotation repair. This narrative review is not certification from the canonical OpenClaw autoreview helper, which remains unrun.
+
+Coordinate with the author of [OpenClaw #167292](https://github.com/openclaw/openclaw/pull/167292) on the existing migration branch. Offer the applyable patch or a PR against that branch; opening another migration against OpenClaw main would duplicate its ownership. The supported diagnostic contract and upstream dependency/security approval remain maintainer decisions. No upstream message or PR has been submitted.
+
+These results do not establish real SDK/native request acceptance, PTY/non-PTY native refusal or cancellation, Gateway/model behavior, installed upgrade, or #1974's broader containment matrix. Earlier upstream Windows observations concern SDK 1.0 and a different source candidate. Issue #2104 remains open with `blocked` and `upstream`; no native acceptance checkbox closes.
+
+### Draft coordination comment — not posted
+
+> MXC 1.1.0 removes the fallback execution paths, but this migration still checks host readiness without probing each workload's actual request.
+>
+> I have prepared an [applyable patch](https://github.com/sokolaidev/maf-extensions/blob/2e48c4be29ab4fe909d5b653f758532a50961214/scripts/experiments/openclaw_mxc_preflight/proposal.patch) against `0cbf9b54` that updates the SDK to 1.1.0, requires BaseContainer at readiness, and checks the effective request in a separate process with a deadline before launch. It also adds bounded debug records containing request/native hashes and counts, without command text, environment values or host paths.
+>
+> The upstream plugin wrapper passes 72 tests on Linux (50 platform skips) and [119 on Windows](https://github.com/sokolaidev/maf-extensions/actions/runs/45865852806), with the three real-native cases excluded. The [integration evidence](https://github.com/sokolaidev/maf-extensions/actions/runs/45864997462) records the platform results and type/format checks. Five lint findings also reproduce on the [unchanged migration](https://github.com/sokolaidev/maf-extensions/actions/runs/45865976523); the patch adds no lint diagnostics. Real Windows SDK execution and installed-upgrade testing are still outstanding, so this is a contribution for review rather than a claim of runtime qualification.
+>
+> Would you prefer to incorporate the patch here, or receive a PR against this migration branch? I would also appreciate guidance on whether the proposed debug record is a suitable supported diagnostic contract.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
