@@ -1,0 +1,139 @@
+name: Temporary OpenClaw MXC SDK 1.1 checks
+on:
+  push:
+    branches: [antsok-proof-mxc-sdk11-2104]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      OPENCLAW_VITEST_MAX_WORKERS: "1"
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.1
+      - name: Prepare source on Linux
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/openclaw" "$RUNNER_TEMP/evidence"
+          curl --fail --location --retry 2 https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -o "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
+      - name: Prepare source on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/openclaw", "$env:RUNNER_TEMP/evidence" -Force | Out-Null
+          Invoke-WebRequest -Uri https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -OutFile "$env:RUNNER_TEMP/source.tar.gz"
+          & "$env:SystemRoot/System32/tar.exe" -xzf "$env:RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$env:RUNNER_TEMP/openclaw"
+          if ($LASTEXITCODE -ne 0) { throw "Source extraction failed" }
+      - name: Apply migration patch
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          git init -q
+          git config core.autocrlf false
+          git add .
+          git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
+          git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_sdk11/proposal.patch"
+          git apply "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_sdk11/proposal.patch"
+          git add .
+          git diff --cached --check
+          sha256sum "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_sdk11/"* extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/artifact-hashes.txt"
+          git diff --cached --stat | tee "$RUNNER_TEMP/evidence/scope.txt"
+          npm install --global --ignore-scripts --no-audit --no-fund pnpm@12.15.0
+      - name: Install frozen workspace
+        id: install
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/evidence/install.txt"
+      - name: Full plugin lane without native workload
+        id: tests
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          pnpm test:extension mxc --maxWorkers=1 --exclude extensions/mxc/test/mxc-sdk-wire-contract.integration.test.ts 2>&1 | tee "$RUNNER_TEMP/evidence/plugin-tests.txt"
+      - name: Direct creation through unchanged launcher
+        id: replay
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_sdk11/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/direct-creation.txt"
+      - name: Extension production types
+        if: runner.os == 'Linux'
+        id: types
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          pnpm tsgo:extensions 2>&1 | tee "$RUNNER_TEMP/evidence/types.txt"
+      - name: MXC lint
+        if: runner.os == 'Linux'
+        id: lint
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          node scripts/run-oxlint.mjs --tsconfig extensions/tsconfig.json extensions/mxc 2>&1 | tee "$RUNNER_TEMP/evidence/lint.txt"
+      - name: Changed source format
+        if: runner.os == 'Linux'
+        id: format
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --cached --name-only | grep -v '^pnpm-lock.yaml$')
+          OPENCLAW_FORMAT_TOOL=oxfmt pnpm format:check "${changed[@]}" 2>&1 | tee "$RUNNER_TEMP/evidence/format.txt"
+      - name: Baseline rejects new startup expectations
+        if: runner.os == 'Linux'
+        id: baseline
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          git restore --source=HEAD --worktree extensions/mxc/src/readiness.ts extensions/mxc/src/plugin.ts
+          set +e
+          pnpm test extensions/mxc/test/readiness.test.ts extensions/mxc/test/plugin.test.ts --maxWorkers=1 2>&1 | tee "$RUNNER_TEMP/evidence/baseline-startup.txt"
+          status=${PIPESTATUS[0]}
+          set -e
+          git checkout-index --force -- extensions/mxc/src/readiness.ts extensions/mxc/src/plugin.ts
+          test "$status" -ne 0
+          grep -q 'refuses the appcontainer-dacl fallback mode' "$RUNNER_TEMP/evidence/baseline-startup.txt"
+          grep -q 'does not register a backend for the retired appcontainer-dacl mode' "$RUNNER_TEMP/evidence/baseline-startup.txt"
+      - name: Collect outcomes
+        if: always()
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          TEST_RESULT: ${{ steps.tests.outcome }}
+          REPLAY_RESULT: ${{ steps.replay.outcome }}
+          TYPE_RESULT: ${{ steps.types.outcome }}
+          LINT_RESULT: ${{ steps.lint.outcome }}
+          FORMAT_RESULT: ${{ steps.format.outcome }}
+        run: |
+          printf 'Install: %s\nTests: %s\nDirect creation: %s\nTypes: %s\nLint: %s\nFormat: %s\n' "$INSTALL_RESULT" "$TEST_RESULT" "$REPLAY_RESULT" "$TYPE_RESULT" "$LINT_RESULT" "$FORMAT_RESULT" | tee "$RUNNER_TEMP/evidence/outcome.txt" >> "$GITHUB_STEP_SUMMARY"
+          test "$INSTALL_RESULT/$TEST_RESULT/$REPLAY_RESULT" = success/success/success
+          if [ "$RUNNER_OS" = Linux ]; then
+            test "$TYPE_RESULT/$LINT_RESULT/$FORMAT_RESULT" = success/success/success
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mxc-sdk11-${{ runner.os }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30

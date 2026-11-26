@@ -1,0 +1,605 @@
+diff --git a/extensions/mxc/README.md b/extensions/mxc/README.md
+index 65de982..749ad49 100644
+--- a/extensions/mxc/README.md
++++ b/extensions/mxc/README.md
+@@ -50,7 +50,7 @@ and out-of-range values fail plugin activation with an actionable error
+ 
+ | Field            | Type                              | Default                                | Notes                                                                                                                                                         |
+ | ---------------- | --------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+-| `mxcBinaryPath`  | `string`                          | unset                                  | Non-empty override for an MXC 1.0 native layout: `<dir>\<x64\|arm64>\wxc-exec.exe` with `mxc_ffi.dll` beside it; see [Host readiness](#host-readiness).      |
++| `mxcBinaryPath`  | `string`                          | unset                                  | Non-empty override for an MXC 1.1 native layout: `<dir>\<x64\|arm64>\wxc-exec.exe` with `mxc_ffi.dll` beside it; see [Host readiness](#host-readiness).      |
+ | `containment`    | `"process" \| "processcontainer"` | `"process"`                            | Both currently resolve to Windows ProcessContainer.                                                                                                           |
+ | `network`        | `"none" \| "default"`             | `"none"`                               | `"default"` allows outbound network via the `internetClient` capability.                                                                                      |
+ | `timeoutSeconds` | `number`                          | unset (baseline default `300` applies) | Must be `>= 1` and `<= 2147000` (the largest Node-safe `setTimeout` delay in whole seconds). Capped to the sandbox policy baseline timeout when both are set. |
+@@ -65,7 +65,7 @@ help stay in sync with plugin runtime validation.
+ 
+ - Windows hosts with the MXC executor installed through `@microsoft/mxc-sdk`.
+ - A Gateway running Node.js 24.21.0 or newer within Node.js 24, or 26.8.0 or
+-  newer. `@microsoft/mxc-sdk@1.0.0` refuses to run commands on Windows with
++  newer. `@microsoft/mxc-sdk@1.1.0` refuses to run commands on Windows with
+   older Node.js releases, so the plugin blocks activation there.
+ - Explicit opt-in after plugin install with `sandbox.backend: "mxc"`.
+ - MXC `process` containment, which resolves to Windows ProcessContainer.
+@@ -93,7 +93,7 @@ help stay in sync with plugin runtime validation.
+   plugin's Node launcher through a short-lived local payload file, and deletes
+   that file and its temp directory when the launcher or run finishes.
+ - Non-PTY commands run through the in-process `mxc_ffi` library. PTY commands
+-  run through `wxc-exec`, and `@microsoft/mxc-sdk@1.0.0` carries the full
++  run through `wxc-exec`, and `@microsoft/mxc-sdk@1.1.0` carries the full
+   base64 request envelope on that process's argv. A host user with
+   process-inspection rights can observe that command, environment, and policy
+   data while a PTY command is running. Do not put secrets in MXC command
+@@ -101,9 +101,7 @@ help stay in sync with plugin runtime validation.
+   ([microsoft/mxc#626](https://github.com/microsoft/mxc/issues/626)).
+ - A command stopped by the configured timeout exits with status `124` and
+   writes `MXC sandbox command timed out and was terminated.` to stderr.
+-- On AppContainer isolation tiers, MXC SDK 1.0 runs commands in a regular
+-  AppContainer rather than LPAC; see
+-  [Isolation tiers under SDK 1.0](#isolation-tiers-under-sdk-10).
++- BaseContainer is required. Hosts without native PSEC support cannot activate the backend.
+ 
+ ## Not supported yet
+ 
+@@ -269,31 +267,17 @@ agents may still use them.
+ 
+ ## Host readiness
+ 
+-Before registering the sandbox backend, the plugin checks that the Gateway's
+-Node.js meets MXC SDK 1.0's Windows requirement, then runs MXC SDK 1.0's host
+-check (`probe()` from `@microsoft/mxc-sdk/v1`) through its Node launcher, with
+-the same pinned native components it launches commands with, including an
+-`mxcBinaryPath` override. The check must select an isolation tier. MXC's tier
+-degradation warnings are logged but do not block activation.
++Before registering the sandbox backend, the plugin checks the Gateway Node.js version and runs the SDK host probe through its existing launcher with the selected native components. Activation requires BaseContainer, no DACL augmentation and no probe error. The host probe retains its 30-second timeout.
+ 
+-### Isolation tiers under SDK 1.0
++SDK 1.1 removes the legacy filesystem-broker and host-permission fallback modes. Hosts without native PSEC support are unsupported; changing system-drive permissions cannot enable this backend.
+ 
+-MXC picks the isolation tier for the host; the plugin does not choose it.
+-MXC SDK 1.0 cannot request a least-privilege AppContainer (LPAC), which the
+-SDK 0.8 integration always requested, so this plugin accepts the weaker
+-isolation MXC SDK 1.0 provides on the AppContainer tiers:
++Each command goes directly to SDK creation. The native runtime owns request-policy enforcement and rejects unsupported requests before workload launch. Creation failures remain visible without a host-execution retry. Startup readiness is not proof that every command request will succeed.
+ 
+-| Tier | Hosts where it was observed | Change from SDK 0.8 |
+-| --- | --- | --- |
+-| `appcontainer-dacl`, `appcontainer-bfs` | Windows builds 22631, 26100, and 26200 selected `appcontainer-dacl` | Commands run in a regular AppContainer instead of LPAC. They can reach files, registry keys, and other resources granted to `ALL APPLICATION PACKAGES` that an LPAC process could not. |
+-| `base-container` | Windows builds 26600 and later with the process security environment API | None. `base-container` is a different isolation model without an LPAC token in either SDK version. |
+-
+-On an AppContainer tier the plugin logs a notice naming the tier when it
+-activates. It does not block activation.
++Native overrides must select a separately verified SDK 1.1 executor/DLL pair. A successful host probe or an existing file alone does not establish the version or provenance of an arbitrary override.
+ 
+ ### Native component overrides
+ 
+-MXC SDK 1.0 loads `mxc_ffi.dll` for non-PTY commands and runs `wxc-exec.exe`
++MXC SDK 1.1 loads `mxc_ffi.dll` for non-PTY commands and runs `wxc-exec.exe`
+ for PTY commands, so an override must provide both from the same release:
+ 
+ ```text
+@@ -305,7 +289,7 @@ Use `arm64` instead of `x64` on Arm64 hosts; the directory must match the host
+ architecture. A bare `wxc-exec.exe` path from an SDK 0.8 setup, a mismatched
+ architecture directory, or a missing `mxc_ffi.dll` stops plugin activation
+ instead of falling back to the bundled components. To use the
+-`@microsoft/mxc-sdk@1.0.0` components installed with the plugin, remove the
++`@microsoft/mxc-sdk@1.1.0` components installed with the plugin, remove the
+ override:
+ 
+ ```powershell
+@@ -316,16 +300,6 @@ Restart the Gateway after changing the override. If the bundled components
+ also fail the check, address the reported host-readiness error before
+ retrying.
+ 
+-Host preparation is advisory. If directory listing inside the sandbox fails with
+-`Access is denied`, run this once from an elevated prompt:
+-
+-```powershell
+-wxc-host-prep prepare-system-drive
+-```
+-
+-`wxc-host-prep` ships with `@microsoft/mxc-sdk` under
+-`node_modules/@microsoft/mxc-sdk/bin/<arch>/`.
+-
+ ## Testing
+ 
+ ```powershell
+diff --git a/extensions/mxc/openclaw.plugin.json b/extensions/mxc/openclaw.plugin.json
+index f3ec807..b93ae2a 100644
+--- a/extensions/mxc/openclaw.plugin.json
++++ b/extensions/mxc/openclaw.plugin.json
+@@ -34,7 +34,7 @@
+       "mxcBinaryPath": {
+         "type": "string",
+         "minLength": 1,
+-        "description": "Absolute path to an MXC 1.0 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk."
++        "description": "Absolute path to an MXC 1.1 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk."
+       },
+       "containment": {
+         "type": "string",
+@@ -72,7 +72,7 @@
+   "uiHints": {
+     "mxcBinaryPath": {
+       "label": "MXC Executor Path",
+-      "help": "Optional absolute path to an MXC 1.0 executor (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. Leave unset to use the installed @microsoft/mxc-sdk.",
++      "help": "Optional absolute path to an MXC 1.1 executor (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. Leave unset to use the installed @microsoft/mxc-sdk.",
+       "advanced": true
+     },
+     "containment": {
+diff --git a/extensions/mxc/package.json b/extensions/mxc/package.json
+index 048808b..cceade5 100644
+--- a/extensions/mxc/package.json
++++ b/extensions/mxc/package.json
+@@ -11,7 +11,7 @@
+     "@openclaw/plugin-sdk": "workspace:*"
+   },
+   "dependencies": {
+-    "@microsoft/mxc-sdk": "1.0.0",
++    "@microsoft/mxc-sdk": "1.1.0",
+     "zod": "4.6.7"
+   },
+   "openclaw": {
+diff --git a/extensions/mxc/src/binary-resolver.ts b/extensions/mxc/src/binary-resolver.ts
+index dacb6ad..c0366a1 100644
+--- a/extensions/mxc/src/binary-resolver.ts
++++ b/extensions/mxc/src/binary-resolver.ts
+@@ -8,7 +8,7 @@ const NATIVE_LIBRARY_NAME = "mxc_ffi.dll";
+ /**
+  * Native MXC components the plugin pins for one launcher run.
+  *
+- * MXC SDK 1.0 runs piped commands through the in-process `mxc_ffi` library
++ * MXC SDK 1.1 runs piped commands through the in-process `mxc_ffi` library
+  * and ProcessContainer PTY commands through `wxc-exec`. It silently falls back
+  * to its packaged binaries when `MXC_FFI_DIR`/`MXC_BIN_DIR` do not resolve, so
+  * the plugin validates both files from one directory and pins both variables.
+@@ -77,7 +77,7 @@ function resolveOverride(configOverride: string): MxcNativeBinaries {
+   if (!isRegularFile(binaries.nativeLibraryPath)) {
+     throw new Error(
+       `MXC native library ${binaries.nativeLibraryPath} is missing next to the configured ` +
+-        `mxcBinaryPath. MXC SDK 1.0 needs both files from the same release (${expectedLayout}).`,
++        `mxcBinaryPath. MXC SDK 1.1 needs both files from the same release (${expectedLayout}).`,
+     );
+   }
+   return binaries;
+diff --git a/extensions/mxc/src/config.ts b/extensions/mxc/src/config.ts
+index 7ed374a..3e78124 100644
+--- a/extensions/mxc/src/config.ts
++++ b/extensions/mxc/src/config.ts
+@@ -35,7 +35,7 @@ const nonEmptyTrimmedString = (message: string) =>
+ const MxcPluginConfigSchema = z.strictObject({
+   mxcBinaryPath: nonEmptyTrimmedString("mxcBinaryPath must be a non-empty string")
+     .describe(
+-      "Absolute path to an MXC 1.0 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk.",
++      "Absolute path to an MXC 1.1 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk.",
+     )
+     .optional(),
+   containment: z
+diff --git a/extensions/mxc/src/plugin.ts b/extensions/mxc/src/plugin.ts
+index 22e4b6c..96c8189 100644
+--- a/extensions/mxc/src/plugin.ts
++++ b/extensions/mxc/src/plugin.ts
+@@ -4,7 +4,7 @@ import { buildMxcNativeEnv, resolveMxcNativeBinaries } from "./binary-resolver.j
+ import { resolveConfig } from "./config.js";
+ import { createMxcSandboxBackendFactory } from "./mxc-backend-factory.js";
+ import { mxcSandboxBackendManager } from "./mxc-backend.js";
+-import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "./readiness.js";
++import { assertMxcReadiness } from "./readiness.js";
+ 
+ export function registerMxcPlugin(api: OpenClawPluginApi): void {
+   if (api.registrationMode !== "full") {
+@@ -29,10 +29,6 @@ export function registerMxcPlugin(api: OpenClawPluginApi): void {
+   }
+   assertMxcReadiness({ nativeEnv });
+ 
+-  // Advisory: warn (don't block) when the system drive lacks AppContainer
+-  // directory-access ACEs, which only degrades in-sandbox directory listing.
+-  warnMxcHostPrepIfNeeded();
+-
+   const unregister = registerSandboxBackend("mxc", {
+     factory: createMxcSandboxBackendFactory(config),
+     manager: mxcSandboxBackendManager,
+diff --git a/extensions/mxc/src/readiness.ts b/extensions/mxc/src/readiness.ts
+index 05d5b5b..48f0fcb 100644
+--- a/extensions/mxc/src/readiness.ts
++++ b/extensions/mxc/src/readiness.ts
+@@ -1,22 +1,17 @@
+ import { execFileSync } from "node:child_process";
+-import path from "node:path";
+ import { z } from "zod";
+ import { resolveMxcLauncherPath } from "./plugin-root.js";
+ import { buildLauncherEnv } from "./windows-env.js";
+ 
+ const MxcLauncherProbeSchema = z.object({
+   probe: z.object({
+-    tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+-    warnings: z.array(z.string()).default([]),
++    tier: z.literal("base-container"),
++    warnings: z.array(z.string()),
++    needsDaclAugmentation: z.literal(false),
+     error: z.string().optional(),
+   }),
+ });
+ 
+-function resolveWindowsSystemExecutable(name: string): string {
+-  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+-  return path.win32.join(systemRoot || "C:\\Windows", "System32", name);
+-}
+-
+ // The probe runs in the launcher, with the same pinned `mxc_ffi` that executes
+ // commands. A probe can succeed without selecting a tier; only a selected and
+ // admitted tier means this host can run MXC sandboxes.
+@@ -27,9 +22,9 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+   const notReady = (reason: string, cause?: unknown) =>
+     new Error(
+       `[mxc] MXC Windows ProcessContainer sandbox is not ready: ${reason}. ` +
+-        `The plugin probes the host through @microsoft/mxc-sdk 1.0 with the native ` +
++        `The plugin probes the host through @microsoft/mxc-sdk 1.1 with the native ` +
+         `components in ${nativeEnv.MXC_FFI_DIR}. If mxcBinaryPath is set, it must point ` +
+-        `to an MXC 1.0 release layout; otherwise unset ` +
++        `to an MXC 1.1 release layout; otherwise unset ` +
+         `plugins.entries.mxc.config.mxcBinaryPath and restart the Gateway to use the ` +
+         `bundled SDK components.`,
+       cause === undefined ? undefined : { cause },
+@@ -58,76 +53,13 @@ function probeMxcIsolationTier(nativeEnv: Record<string, string>): {
+     throw notReady("the MXC host check returned an unexpected result", parsed.error);
+   }
+   const { probe: result } = parsed.data;
+-  if (!result.tier) {
+-    const reason = result.error || "the check reported no isolation tier";
+-    throw notReady(`MXC cannot select an isolation tier on this host (${reason})`);
++  if (result.error !== undefined) {
++    throw notReady("the MXC host check reported an error");
+   }
+   return { tier: result.tier, warnings: result.warnings };
+ }
+ 
+-// AppContainer processes need directory-traversal/list rights on the system
+-// drive root (C:\) to enumerate directories inside the sandbox.
+-// `wxc-host-prep prepare-system-drive` adds ACEs for the well-known
+-// ALL APPLICATION PACKAGES (S-1-15-2-1) and ALL RESTRICTED APPLICATION PACKAGES
+-// (S-1-15-2-2) SIDs. Without this, directory listing (e.g. `dir`) inside the
+-// sandbox fails with "Access is denied". This is advisory: the sandbox still
+-// runs basic cmd.exe read/write workloads without it, so a missing grant warns
+-// rather than blocking activation.
+-function isSystemDrivePrepared(): boolean {
+-  const systemDrive = process.env.SystemDrive || "C:";
+-  let output: string;
+-  try {
+-    output = execFileSync(resolveWindowsSystemExecutable("icacls.exe"), [`${systemDrive}\\`], {
+-      encoding: "utf-8",
+-      stdio: "pipe",
+-      timeout: 5_000,
+-      windowsHide: true,
+-    });
+-  } catch {
+-    // If icacls itself fails, assume prepared rather than emitting a spurious
+-    // warning on a host we cannot probe.
+-    return true;
+-  }
+-  // Look for the well-known ALL APPLICATION PACKAGES SID (S-1-15-2-1) or its
+-  // display name. Both forms can appear depending on OS locale/version.
+-  return output.includes("S-1-15-2-1") || output.includes("APPLICATION PACKAGES");
+-}
+-
+-function systemDrivePrepWarning(systemDrive: string): string {
+-  return (
+-    `[mxc] MXC sandbox host preparation incomplete: the system drive root (${systemDrive}\\) ` +
+-    `does not grant directory access to AppContainer processes, so directory listing ` +
+-    `(e.g. \`dir\`) inside the sandbox will fail with "Access is denied". Basic read/write ` +
+-    `workloads still run.\n` +
+-    `Fix (one-time, elevated): wxc-host-prep prepare-system-drive (ships with @microsoft/mxc-sdk).`
+-  );
+-}
+-
+-/**
+- * Emits an advisory warning when the system drive is not prepared for
+- * AppContainer directory access. Non-fatal: the sandbox still activates.
+- */
+-export function warnMxcHostPrepIfNeeded(): void {
+-  if (process.platform !== "win32") {
+-    return;
+-  }
+-  if (!isSystemDrivePrepared()) {
+-    console.warn(systemDrivePrepWarning(process.env.SystemDrive || "C:"));
+-  }
+-}
+-
+-// SDK 0.8 requested a least-privilege AppContainer (LPAC); SDK 1.0 cannot, so
+-// the AppContainer tiers now run a regular AppContainer. base-container has no
+-// LPAC token in either version and is unaffected.
+-function appContainerTierNotice(tier: string): string {
+-  return (
+-    `[mxc] MXC selected the ${tier} isolation tier. With MXC SDK 1.0 this tier runs ` +
+-    `sandboxed commands in a regular AppContainer, not a least-privilege AppContainer ` +
+-    `(LPAC), so they can reach resources granted to ALL APPLICATION PACKAGES.`
+-  );
+-}
+-
+-// @microsoft/mxc-sdk 1.0.0 refuses non-PTY commands on Windows outside this Node
++// @microsoft/mxc-sdk 1.1.0 refuses non-PTY commands on Windows outside this Node
+ // range (dist/bindings/native-stdio.js), which is narrower than OpenClaw's own
+ // engines range. The launcher runs on the Gateway's Node, so check it once here
+ // instead of failing every command. Recheck on each SDK bump.
+@@ -139,10 +71,9 @@ function supportsMxcWindowsNode(version: string): boolean {
+ }
+ 
+ /**
+- * Fails plugin activation unless the Gateway's Node.js meets MXC SDK 1.0's
++ * Fails plugin activation unless the Gateway's Node.js meets MXC SDK 1.1's
+  * Windows requirement and MXC's host probe, run with the pinned native
+- * components, selects an isolation tier. The AppContainer-tier isolation notice
+- * and the probe's degradation warnings are reported but do not block activation.
++ * components, selects BaseContainer without DACL augmentation.
+  */
+ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }): void {
+   if (process.platform !== "win32") {
+@@ -150,15 +81,12 @@ export function assertMxcReadiness(params: { nativeEnv: Record<string, string> }
+   }
+   if (!supportsMxcWindowsNode(process.versions.node)) {
+     throw new Error(
+-      `[mxc] MXC Windows ProcessContainer sandbox is not ready: @microsoft/mxc-sdk 1.0 ` +
++      `[mxc] MXC Windows ProcessContainer sandbox is not ready: @microsoft/mxc-sdk 1.1 ` +
+         `requires Node.js ${WINDOWS_NODE_REQUIREMENT} on Windows, and the Gateway runs ` +
+         `Node.js ${process.versions.node}. Upgrade Node.js and restart the Gateway.`,
+     );
+   }
+   const probe = probeMxcIsolationTier(params.nativeEnv);
+-  if (probe.tier !== "base-container") {
+-    console.info(appContainerTierNotice(probe.tier));
+-  }
+   if (probe.warnings.length > 0) {
+     console.warn(
+       `[mxc] MXC sandbox is using the ${probe.tier} isolation tier: ${probe.warnings.join("; ")}`,
+diff --git a/extensions/mxc/test/plugin.test.ts b/extensions/mxc/test/plugin.test.ts
+index 1229792..8d37b09 100644
+--- a/extensions/mxc/test/plugin.test.ts
++++ b/extensions/mxc/test/plugin.test.ts
+@@ -37,7 +37,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
+ import { registerMxcPlugin } from "../src/plugin.js";
+ 
+ const readyProbe = JSON.stringify({
+-  probe: { tier: "base-container", warnings: [], probes: {} },
++  probe: { tier: "base-container", needsDaclAugmentation: false, warnings: [], probes: {} },
+ });
+ const originalPlatform = process.platform;
+ const originalNodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+@@ -118,9 +118,7 @@ describe("registerMxcPlugin", () => {
+   let warnSpy: ReturnType<typeof vi.spyOn>;
+ 
+   beforeEach(() => {
+-    mocks.probe.mockReset().mockImplementation((command: string) => {
+-      return command === process.execPath ? readyProbe : "S-1-15-2-1";
+-    });
++    mocks.probe.mockReset().mockReturnValue(readyProbe);
+     mocks.resolveNative.mockReset();
+     mocks.resolveNative.mockReturnValue({
+       binDir: "C:\\mxc",
+@@ -172,6 +170,19 @@ describe("registerMxcPlugin", () => {
+     fixture.expectDormant();
+   });
+ 
++  test.each(["appcontainer-dacl", "appcontainer-bfs"])(
++    "does not register a backend for the retired %s mode",
++    (tier) => {
++      const fixture = createApi();
++      mocks.probe.mockReturnValueOnce(
++        JSON.stringify({ probe: { tier, needsDaclAugmentation: false, warnings: [] } }),
++      );
++
++      expect(fixture.register).toThrow(/host check returned an unexpected result/u);
++      fixture.expectDormant();
++    },
++  );
++
+   test("blocks an older override and registers after selecting compatible native components", async () => {
+     const legacyOverride = "C:\\Tools\\old-wxc-exec.exe";
+     const compatibleOverride = "C:\\Tools\\x64\\wxc-exec.exe";
+diff --git a/extensions/mxc/test/readiness.test.ts b/extensions/mxc/test/readiness.test.ts
+index a940827..5627235 100644
+--- a/extensions/mxc/test/readiness.test.ts
++++ b/extensions/mxc/test/readiness.test.ts
+@@ -1,7 +1,6 @@
+ import { execFileSync } from "node:child_process";
+-import path from "node:path";
+ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+-import { assertMxcReadiness, warnMxcHostPrepIfNeeded } from "../src/readiness.js";
++import { assertMxcReadiness } from "../src/readiness.js";
+ 
+ vi.mock("node:child_process", async (importOriginal) => ({
+   ...(await importOriginal<typeof import("node:child_process")>()),
+@@ -27,27 +26,22 @@ afterEach(() => {
+   vi.restoreAllMocks();
+ });
+ 
+-const SYSTEM32 = path.win32.join(
+-  process.env.SystemRoot || process.env.WINDIR || "C:\\Windows",
+-  "System32",
+-);
+-const ICACLS = path.win32.join(SYSTEM32, "icacls.exe");
+ const NATIVE_ENV = { MXC_BIN_DIR: "C:\\mxc\\bin", MXC_FFI_DIR: "C:\\mxc\\bin\\x64" };
+ 
+ function probeOutput(result: Record<string, unknown>): string {
+-  return JSON.stringify({ probe: { warnings: [], probes: {}, ...result } });
++  return JSON.stringify({
++    probe: { warnings: [], probes: {}, needsDaclAugmentation: false, ...result },
++  });
+ }
+ 
+ // Only the plugin launcher, run with the pinned native environment, answers --probe.
+-function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } = {}) {
++function mockProbe(params: { probe?: string | Error } = {}) {
+   const probe = params.probe ?? probeOutput({ tier: "base-container" });
+-  const systemDriveAcl =
+-    params.systemDriveAcl ?? "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n    S-1-15-2-1:(R)\n";
+-  const exec = vi.mocked(execFileSync).mockImplementation((command, args = [], options) => {
++  const exec = vi.mocked(execFileSync).mockImplementation((command, args, options) => {
+     if (
+       command === process.execPath &&
+-      String(args[0]).endsWith("mxc-spawn-launcher.mjs") &&
+-      args[1] === "--probe"
++      String(args?.[0]).endsWith("mxc-spawn-launcher.mjs") &&
++      args?.[1] === "--probe"
+     ) {
+       const env = (options as { env?: Record<string, string> } | undefined)?.env;
+       if (env?.MXC_FFI_DIR !== NATIVE_ENV.MXC_FFI_DIR || env.MXC_BIN_DIR !== NATIVE_ENV.MXC_BIN_DIR) {
+@@ -58,9 +52,6 @@ function mockProbe(params: { probe?: string | Error; systemDriveAcl?: string } =
+       }
+       return probe;
+     }
+-    if (command === ICACLS) {
+-      return systemDriveAcl;
+-    }
+     throw new Error(`spawn ${command} ENOENT`);
+   });
+   return exec;
+@@ -85,41 +76,29 @@ describe("assertMxcReadiness", () => {
+     expect(info).not.toHaveBeenCalled();
+   });
+ 
+-  test.each(["appcontainer-dacl", "appcontainer-bfs"])(
+-    "accepts the %s tier and discloses that it runs without LPAC",
+-    (tier) => {
+-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+-      mockProbe({ probe: probeOutput({ tier }) });
+-
+-      expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
+-      expect(warn).not.toHaveBeenCalled();
+-      expect(info).toHaveBeenCalledOnce();
+-      expect(info.mock.calls[0]?.[0]).toMatch(
+-        new RegExp(`${tier} isolation tier.*regular AppContainer.*ALL APPLICATION PACKAGES`, "u"),
+-      );
+-    },
+-  );
++  test.each(["appcontainer-dacl", "appcontainer-bfs"])("refuses the %s fallback mode", (tier) => {
++    mockProbe({ probe: probeOutput({ tier }) });
++    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
++      /host check returned an unexpected result/u,
++    );
++  });
+ 
+-  test("reports tier degradation without requiring system-drive preparation", () => {
++  test("reports SDK warnings on a supported host", () => {
+     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+     mockProbe({
+-      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
+       probe: probeOutput({
+         tier: "base-container",
+-        warnings: ["DACL deny augmentation is unavailable"],
++        warnings: ["synthetic SDK warning"],
+       }),
+     });
+ 
+     expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).not.toThrow();
+     expect(warn).toHaveBeenCalledOnce();
+-    expect(warn.mock.calls[0]?.[0]).toMatch(
+-      /base-container isolation tier: DACL deny augmentation is unavailable/u,
+-    );
++    expect(warn.mock.calls[0]?.[0]).toMatch(/base-container isolation tier: synthetic SDK warning/u);
+   });
+ 
+   test.each(["24.18.0", "25.9.0", "26.7.0"])(
+-    "rejects Node.js %s, which MXC SDK 1.0 cannot run commands on, before probing",
++    "rejects Node.js %s, which MXC SDK 1.1 cannot run commands on, before probing",
+     (version) => {
+       setNodeVersion(version);
+       const exec = mockProbe();
+@@ -141,12 +120,12 @@ describe("assertMxcReadiness", () => {
+   test("rejects hosts where MXC cannot select an isolation tier", () => {
+     mockProbe({
+       probe: probeOutput({
+-        error: "DACL fallback required but fallback.allowDaclMutation is false",
++        error: "native PSEC support is unavailable",
+       }),
+     });
+ 
+     expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(
+-      /cannot select an isolation tier on this host \(DACL fallback required.*MXC 1\.0 release layout/u,
++      /host check returned an unexpected result/u,
+     );
+   });
+ 
+@@ -160,6 +139,17 @@ describe("assertMxcReadiness", () => {
+     );
+   });
+ 
++  test.each([
++    { needsDaclAugmentation: true },
++    { needsDaclAugmentation: undefined },
++    { error: "native host check failed" },
++    { error: "" },
++  ])("rejects an incompatible BaseContainer result: %j", (result) => {
++    mockProbe({ probe: probeOutput({ tier: "base-container", ...result }) });
++
++    expect(() => assertMxcReadiness({ nativeEnv: NATIVE_ENV })).toThrow(/host check/u);
++  });
++
+   test("rejects a probe that does not report JSON", () => {
+     mockProbe({ probe: "Error: MXC native component is missing" });
+ 
+@@ -178,25 +168,3 @@ describe("assertMxcReadiness", () => {
+     ).toThrow(/host check failed: probe ran without the pinned native environment/u);
+   });
+ });
+-
+-describe("warnMxcHostPrepIfNeeded", () => {
+-  test("is a no-op on non-Windows platforms", () => {
+-    setPlatform("linux");
+-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-    mockProbe();
+-
+-    warnMxcHostPrepIfNeeded();
+-    expect(warn).not.toHaveBeenCalled();
+-  });
+-
+-  test("warns when the system drive lacks AppContainer ACEs", () => {
+-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+-    mockProbe({
+-      systemDriveAcl: "C:\\ BUILTIN\\Administrators:(OI)(CI)(F)\n",
+-    });
+-
+-    warnMxcHostPrepIfNeeded();
+-    expect(warn).toHaveBeenCalledOnce();
+-    expect(warn.mock.calls[0]?.[0]).toMatch(/prepare-system-drive/u);
+-  });
+-});
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 310eaa5..320d487 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1879,8 +1879,8 @@ importers:
+   extensions/mxc:
+     dependencies:
+       '@microsoft/mxc-sdk':
+-        specifier: 1.0.0
+-        version: 1.0.0(supports-color@10.2.2)
++        specifier: 1.1.0
++        version: 1.1.0(supports-color@10.2.2)
+       zod:
+         specifier: 4.6.7
+         version: 4.6.7
+@@ -4767,9 +4767,14 @@ packages:
+     resolution: {integrity: sha512-j37dj/h6p6pots1L7pLPPNuABEEu9WP4OYg9pW1g+nYG331j0+3canE9OagtYdytYvdSAMG+2fKU5cxep6LgjA==}
+     engines: {node: '>=22.12.0'}
+ 
+-  '@microsoft/mxc-sdk@1.0.0':
+-    resolution: {integrity: sha512-7aVR+GHVKveIknZmUtkAEFwUBp61qgEmhJRe1ZyKHJ274yWlKWB/ZfDP/u/whfmDyck0wRNKZN49atlF+SZt2Q==}
++  '@microsoft/mxc-sdk@1.1.0':
++    resolution: {integrity: sha512-tSOPZ14ddCiXHc4hVNQp5Yi22HSQEfXh58Z4O/tLzERi+23rfRmMrJoxVK5jZYhlll68u4eF/UlQSaXWyUMj4w==}
+     engines: {node: '>=24.0.0'}
++    peerDependencies:
++      '@microsoft/mxc-sdk-nvx-runtime-win32-x64': 1.1.0
++    peerDependenciesMeta:
++      '@microsoft/mxc-sdk-nvx-runtime-win32-x64':
++        optional: true
+ 
+   '@microsoft/teams.api@2.1.0':
+     resolution: {integrity: sha512-tS7NRqxpyzrgCwHCZh4xUys1Waon/cEtVb801Yx6DekOIOZaOgHA4KFuspM6FvlErzTt5tm6GGlXDstm4dkHbw==}
+@@ -13267,7 +13272,7 @@ snapshots:
+     dependencies:
+       '@chevrotain/types': 13.2.0
+ 
+-  '@microsoft/mxc-sdk@1.0.0(supports-color@10.2.2)':
++  '@microsoft/mxc-sdk@1.1.0(supports-color@10.2.2)':
+     dependencies:
+       koffi: 3.3.2
+       node-pty: 1.1.0(supports-color@10.2.2)
