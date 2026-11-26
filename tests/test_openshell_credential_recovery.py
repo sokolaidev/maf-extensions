@@ -138,6 +138,7 @@ def test_raw_authority_payloads_are_fingerprinted_recursively(probe):
         "replacement",
         "original_descriptor",
         "descriptor",
+        "status_read",
         "policy",
         "receipt",
         "attest",
@@ -211,6 +212,21 @@ def test_restart_requires_physical_replacement_before_new_authority(probe, monke
 
     monkeypatch.setattr(probe, "runtime_continuity", continuity)
 
+    def observe(previous, runtime, serialized_spec, boundary):
+        assert events[-1] == "physical-proof"
+        assert (previous, runtime, serialized_spec) == (
+            before,
+            replacement,
+            spec.SerializeToString().hex(),
+        )
+        assert boundary == {"session_id": "new-boundary"}
+        events.append("status-read")
+        if failure == "status_read":
+            raise RuntimeError("status unavailable")
+        return {"outcome": "not_confirmed_within_window"}
+
+    authority.observe_before_restoration = observe
+
     def submit(method, request):
         events.append("policy")
         assert request.policy == "owned-policy"
@@ -243,15 +259,26 @@ def test_restart_requires_physical_replacement_before_new_authority(probe, monke
             "start",
             "ready",
             "physical-proof",
+            "status-read",
             "policy",
             "policy-installed",
             "provider",
             "attest",
         ]
         assert records[-1][1]["completed"]
+        assert (
+            records[-1][1]["pre_restoration_readiness"]["outcome"] == "not_confirmed_within_window"
+        )
     if failure in ("preexited", "shutdown"):
         assert "start" in events and "policy" not in events
-    if failure in ("intent", "continuity", "replacement", "descriptor", "original_descriptor"):
+    if failure in (
+        "intent",
+        "continuity",
+        "replacement",
+        "descriptor",
+        "original_descriptor",
+        "status_read",
+    ):
         assert "policy" not in events
     text = json.dumps(records)
     assert "private-payload" not in text and b"private-payload".hex() not in text
@@ -565,6 +592,120 @@ def desired(revision=2):
     )
 
 
+def readiness_status(receipt, prefix, sequence):
+    target = receipt.desired
+    return Message(
+        receipt=receipt,
+        state="READY",
+        reason="NONE",
+        network_instance_id=prefix + "-network",
+        observed=NS(
+            session_id=prefix + "-session",
+            process_instance_id="boundary",
+            sequence=sequence,
+            attachment_epoch=target.attachment_epoch,
+            provider_env_revision=target.provider_env_revision,
+            config_revision=target.config_revision,
+            policy_hash=target.policy_hash,
+            credentials_installed=True,
+            policy_active=True,
+            launch_environment_installed=True,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        (None, "confirmed"),
+        ("new-target", "confirmed"),
+        ("pending", "not_confirmed_within_window"),
+        ("cached", "not_confirmed_within_window"),
+        ("incomplete", "not_confirmed_within_window"),
+        ("old-runtime", "not_confirmed_within_window"),
+        ("foreign-boundary", "not_confirmed_within_window"),
+        ("target-changed", "not_confirmed_within_window"),
+        ("session-changed", "not_confirmed_within_window"),
+        ("intervening-pending", "not_confirmed_within_window"),
+        ("late", "not_confirmed_within_window"),
+        ("regression", "sequence regressed"),
+        ("receipt", "observation receipt"),
+        ("mutation", "observation receipt"),
+        ("descriptor", "boundary descriptor changed"),
+        ("no-timely-read", "no provider status sampled"),
+    ],
+)
+def test_pre_restoration_requires_two_timely_reports_for_one_installed_target(
+    probe, monkeypatch, fault, expected
+):
+    receipt = Message(desired=desired(), kind="OBSERVE", receipt_id="observation")
+    before = readiness_status(receipt, "old", 20)
+    pb = NS(
+        PROVIDER_MUTATION_KIND_OBSERVE="OBSERVE",
+        PROVIDER_READINESS_STATE_READY="READY",
+        ProviderReadinessState=NS(Name=str),
+        ProviderReadinessReason=NS(Name=str),
+    )
+    records = []
+    authority = probe.CredentialRecovery(
+        NS(client=NS(pb=pb), owners=[{"name": "owned-name", "sandbox_id": "owned"}]),
+        NS(),
+        "192.0.2.1",
+        lambda kind, row: records.append(row),
+    )
+    elapsed = 0.0
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    def current():
+        index = len(records)
+        seq = 2 if index and fault != "cached" else 1
+        sample = readiness_status(
+            copy.deepcopy(receipt), "old" if fault == "old-runtime" else "new", seq
+        )
+        if fault == "new-target" or (fault == "target-changed" and index):
+            sample.receipt.desired = desired(3)
+            sample.observed.provider_env_revision = 3
+        if fault == "pending" or (fault == "intervening-pending" and index == 1):
+            sample.state = "PENDING"
+        if fault == "incomplete":
+            sample.observed.policy_active = False
+        if fault == "session-changed" and index:
+            sample.observed.session_id = "another-session"
+        if fault == "foreign-boundary":
+            sample.observed.process_instance_id = "foreign"
+        if fault == "regression":
+            sample.observed.sequence = 2 if not index else 1
+        if fault == "receipt":
+            sample.receipt.receipt_id = ""
+        if fault == "mutation":
+            sample.receipt.kind = "ATTACH"
+        if fault == "no-timely-read" or (fault == "late" and index):
+            sleep(16)
+        return sample
+
+    authority.current_status = current
+    authority.stable = lambda runtime, spec: None
+    boundary = {"session_id": "boundary"}
+    monkeypatch.setattr(
+        probe, "boundary_descriptor", lambda *args: {} if fault == "descriptor" else boundary
+    )
+    monkeypatch.setattr(probe, "time", NS(monotonic=lambda: elapsed, sleep=sleep))
+    if expected not in ("confirmed", "not_confirmed_within_window"):
+        with pytest.raises(RuntimeError, match=expected):
+            authority.observe_before_restoration(before, {}, "spec", boundary)
+        return
+    result = authority.observe_before_restoration(before, {}, "spec", boundary)
+    assert result["outcome"] == expected
+    assert result["samples_within_window"] == sum(r["elapsed_seconds"] <= 15 for r in records)
+    if expected == "confirmed":
+        assert result["samples_within_window"] == 2
+        assert records[-1]["advancing"]
+        assert records[-1]["same_target_as_before_restart"] is (fault != "new-target")
+
+
 @pytest.mark.parametrize(
     "fault",
     [None, "attachment_epoch", "config_revision", "policy_hash", "provider_id", "unchanged"],
@@ -615,26 +756,9 @@ def test_current_target_requires_exact_installed_and_advancing_evidence(probe, m
     target = desired()
     receipt = NS(desired=target)
 
-    def status(prefix, sequence):
-        return Message(
-            receipt=receipt,
-            state="READY",
-            network_instance_id=prefix + "-network",
-            observed=NS(
-                session_id=prefix + "-session",
-                process_instance_id="boundary",
-                sequence=sequence,
-                attachment_epoch=target.attachment_epoch,
-                provider_env_revision=target.provider_env_revision,
-                config_revision=target.config_revision,
-                policy_hash=target.policy_hash,
-                credentials_installed=True,
-                policy_active=True,
-                launch_environment_installed=True,
-            ),
-        )
-
-    before, accepted, current = status("old", 1), status("new", 2), status("new", 3)
+    before = readiness_status(receipt, "old", 1)
+    accepted = readiness_status(receipt, "new", 2)
+    current = readiness_status(receipt, "new", 3)
     current.receipt = copy.deepcopy(receipt)
     if fault == "target":
         current.receipt.desired.provider_env_revision = 9

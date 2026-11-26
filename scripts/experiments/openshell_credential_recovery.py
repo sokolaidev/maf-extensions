@@ -169,6 +169,70 @@ class CredentialRecovery(RestartAuthority):
                 raise RuntimeError("rotation environment target did not change")
             time.sleep(0.1)
 
+    def observe_before_restoration(self, before, runtime, spec, boundary):
+        """Look for two advancing installed reports before resubmitting any intent."""
+        window = 15
+        started = time.monotonic()
+        previous = None
+        samples = 0
+        outcome = "not_confirmed_within_window"
+        while time.monotonic() - started < window:
+            status = self.current_status()
+            receipt = status.receipt
+            if (
+                not receipt.receipt_id
+                or receipt.kind != self.client.pb.PROVIDER_MUTATION_KIND_OBSERVE
+            ):
+                raise RuntimeError("current provider status lacks an observation receipt")
+            self.stable(runtime, spec)
+            if boundary_descriptor(self.identity, runtime) != boundary:
+                raise RuntimeError("replacement boundary descriptor changed")
+            installed = receipt_installed(
+                status, receipt, self.client.pb.PROVIDER_READINESS_STATE_READY
+            )
+            fresh = fresh_authority(before, status, None, boundary_session=boundary["session_id"])
+            advancing = False
+            if (
+                installed
+                and fresh
+                and previous is not None
+                and authority_identity(status) == authority_identity(previous)
+            ):
+                if status.observed.sequence < previous.observed.sequence:
+                    raise RuntimeError("replacement provider report sequence regressed")
+                advancing = (
+                    receipt.desired == previous.receipt.desired
+                    and status.observed.sequence > previous.observed.sequence
+                )
+            elapsed = time.monotonic() - started
+            self.record(
+                "pre_restoration_status",
+                {
+                    "elapsed_seconds": elapsed,
+                    "state": self.client.pb.ProviderReadinessState.Name(status.state),
+                    "reason": self.client.pb.ProviderReadinessReason.Name(status.reason),
+                    **protobuf_evidence(status, "status"),
+                    **protobuf_evidence(receipt.desired, "target"),
+                    "same_target_as_before_restart": receipt.desired == before.receipt.desired,
+                    "authority_identity": list(authority_identity(status)),
+                    "sequence": status.observed.sequence,
+                    "installed": installed,
+                    "fresh_replacement_report": fresh,
+                    "advancing": advancing,
+                },
+            )
+            if elapsed > window:
+                break
+            samples += 1
+            if advancing:
+                outcome = "confirmed"
+                break
+            previous = status if installed and fresh else None
+            time.sleep(min(1, window - elapsed))
+        if not samples:
+            raise RuntimeError("no provider status sampled within the pre-restoration window")
+        return {"outcome": outcome, "window_seconds": window, "samples_within_window": samples}
+
     def attest_current(self, target, before, runtime, spec, accepted, *, boundary):
         """Bracket traffic against one pinned reconstructed target and advancing runtime reports."""
         deadline = time.monotonic() + 30
@@ -271,6 +335,10 @@ class CredentialRecovery(RestartAuthority):
                 **protobuf_evidence(retained, "status"),
             },
         )
+        row["pre_restoration_readiness"] = self.observe_before_restoration(
+            before, after, expected.hex(), boundary
+        )
+        self.record("restarts", dict(row))
         request = self.client.pb.UpdateConfigRequest(
             sandbox=self.name,
             workspace_scope=self.client.scope,
@@ -298,6 +366,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
         "mutations": [],
         "barriers": [],
         "restarts": [],
+        "pre_restoration_status": [],
         "attestations": [],
         "references": {},
         "characterization_completed": False,
@@ -305,7 +374,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "continuous process or transport survival",
-            "automatic recovery without intent resubmission",
+            "credential use before explicit restoration",
             "crash, database loss and network partitions",
             "persistent/in-flight traffic",
             "refresh-token reauthorization and production identity",
