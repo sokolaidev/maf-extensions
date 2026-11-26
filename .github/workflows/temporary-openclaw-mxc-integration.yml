@@ -4,6 +4,9 @@ on:
     branches: [antsok-openclaw-mxc-integration-2104]
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   integration:
     runs-on: ubuntu-latest
@@ -33,7 +36,7 @@ jobs:
           git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
           git apply "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
           git add .
-          sha256sum "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/"* > "$RUNNER_TEMP/evidence/artifact-hashes.txt"
+          sha256sum "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/"* extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/artifact-hashes.txt"
           git diff --cached --stat > "$RUNNER_TEMP/evidence/scope.txt"
           npm install --global --ignore-scripts --no-audit --no-fund pnpm@12.15.0
       - name: Install frozen upstream workspace
@@ -68,6 +71,26 @@ jobs:
           set -euo pipefail
           mapfile -t changed < <(git diff --cached --name-only | grep -v '^pnpm-lock.yaml$')
           OPENCLAW_FORMAT_TOOL=oxfmt pnpm format:check "${changed[@]}" 2>&1 | tee "$RUNNER_TEMP/evidence/format.txt"
+      - name: Replay actual launcher with inert fixtures
+        id: replay
+        timeout-minutes: 5
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/replay.txt"
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs --cleanup-regression | tee "$RUNNER_TEMP/evidence/cleanup.txt"
+      - name: Classify lint against unchanged upstream base
+        if: always() && steps.install.outcome == 'success'
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          git diff HEAD --binary > "$RUNNER_TEMP/evidence/applied.patch"
+          git restore --source=HEAD --staged --worktree .
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/evidence/base-install.txt"
+          set +e
+          node scripts/run-oxlint.mjs --tsconfig extensions/tsconfig.json extensions/mxc 2>&1 | tee "$RUNNER_TEMP/evidence/base-lint.txt"
+          base_status=${PIPESTATUS[0]}
+          set -e
+          echo "Unchanged upstream lint exit: $base_status" | tee "$RUNNER_TEMP/evidence/base-lint-status.txt"
+          git apply "$RUNNER_TEMP/evidence/applied.patch"
       - name: Collect outcome
         if: always()
         env:
