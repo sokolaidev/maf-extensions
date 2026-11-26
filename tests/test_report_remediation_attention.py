@@ -150,8 +150,10 @@ def test_chrome_advisory_changes_notify_again_with_unchanged_versions(monkeypatc
             record = {"body": body["body"], "user": {"login": "github-actions[bot]"}}
             if tracker is None:
                 tracker = {**record, "number": 7}
-            else:
+            elif endpoint.endswith("/comments"):
                 comments.append(record)
+            else:
+                tracker.update(body)
             return "{}"
         return json.dumps([comments if "/comments?" in endpoint else [tracker] if tracker else []])
 
@@ -162,14 +164,18 @@ def test_chrome_advisory_changes_notify_again_with_unchanged_versions(monkeypatc
     }
     report.notify("chrome", source_run(), values, "example/repo", "123", "1")
     report.notify("chrome", source_run(), values, "example/repo", "124", "1")
-    assert len(writes) == 1
+    assert len(comments) == 0
     values["delivery-requirement.json"]["reason"] = "High finding CVE-second"
     report.notify("chrome", source_run(), values, "example/repo", "125", "1")
-    assert len(writes) == 2
+    assert len(comments) == 1
     assert "CVE-first" in writes[0]
-    assert "CVE-second" in writes[1]
+    assert "CVE-second" in comments[0]["body"]
     report.notify("chrome", source_run(), values, "example/repo", "126", "1")
-    assert len(writes) == 2
+    assert len(comments) == 1
+    values["delivery-requirement.json"]["reason"] = "Updated vendor advisory for CVE-second"
+    report.notify("chrome", source_run(), values, "example/repo", "127", "1")
+    report.notify("chrome", source_run(), values, "example/repo", "128", "1")
+    assert len(comments) == 1
 
 
 def test_chrome_authorized_security_update_without_pr_notifies():
@@ -229,6 +235,37 @@ def test_stale_or_inconsistent_scan_refuses_reporting():
     values["assessment.json"]["findings"] = []
     with pytest.raises(ValueError, match="differ"):
         report.scan_rows(values, "123", "2")
+
+
+def test_failed_scan_cannot_report_success_without_retained_findings(monkeypatch):
+    run = source_run(path=".github/workflows/image-security.yml")
+
+    def api(endpoint, *args):
+        if "/artifacts?" in endpoint:
+            return json.dumps([{"artifacts": []}])
+        if "/jobs?" in endpoint:
+            return json.dumps(
+                [
+                    {
+                        "jobs": [
+                            {
+                                "name": "Image security (antivirus)",
+                                "steps": [
+                                    {
+                                        "name": "Enforce image vulnerability applicability",
+                                        "conclusion": "failure",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            )
+        return json.dumps(run)
+
+    monkeypatch.setattr(report, "gh", api)
+    with pytest.raises(ValueError, match="no retained findings"):
+        report.collect("scan", "example/repo", "123", "2")
 
 
 def test_archive_reader_ignores_nested_evidence_and_traversal():
@@ -400,40 +437,46 @@ def test_notifications_create_or_update_only_the_owned_profile_tracker(monkeypat
 
     def gh(endpoint, *args, body=None):
         calls.append((endpoint, body))
-        return json.dumps(issues) if "?state=open" in endpoint else "{}"
+        return json.dumps(issues) if "?state=all" in endpoint else "{}"
 
     monkeypatch.setattr(report, "gh", gh)
-    monkeypatch.setattr(report, "unchanged", lambda *args: False)
     values = {"plan.json": {"findings": [finding()]}, "deferral.json": {"reason": "main advanced"}}
     report.notify("platform", source_run(), values, "example/repo", "123", "2")
     endpoint, body = calls[-1]
-    assert endpoint == (
-        "repos/example/repo/issues/7/comments" if existing else "repos/example/repo/issues"
-    )
+    assert endpoint == ("repos/example/repo/issues/7" if existing else "repos/example/repo/issues")
     assert "3.14.11" in body["body"] and "unsupported-component" in body["body"]
     assert "/runs/123/attempts/2" in body["body"] and "main advanced" in body["body"]
     assert "does not publish images" in body["body"]
 
 
 def test_identical_findings_across_runs_do_not_comment_again(monkeypatch):
-    tracker = {
+    issue = {
         "number": 7,
         "body": "<!-- image-remediation-attention:antivirus -->",
         "user": {"login": "github-actions[bot]"},
     }
-    monkeypatch.setattr(report, "gh", lambda *args, **kwargs: json.dumps([[tracker]]))
-    markers = []
-    monkeypatch.setattr(report, "unchanged", lambda *args: markers.append(args[-2]) or True)
+    comments = []
+
+    def api(endpoint, *args, body=None):
+        if body is None:
+            return json.dumps([comments if "/comments?" in endpoint else [issue]])
+        if endpoint.endswith("/comments"):
+            comments.append(body | {"user": {"login": "github-actions[bot]"}})
+        else:
+            issue.update(body)
+        return "{}"
+
+    monkeypatch.setattr(report, "gh", api)
     values = {"plan.json": {"findings": [finding()]}}
     report.notify("platform", source_run(), values, "example/repo", "123", "1")
-    values["plan.json"]["findings"][0]["fix"]["available"] = [
-        {"date": "2026-11-22", "kind": "first-observed", "version": "3.14.11"}
-    ]
     report.notify("platform", source_run(), values, "example/repo", "124", "1")
-    assert markers[0] == markers[1]
-    values["plan.json"]["findings"][0]["status"] = "no-compatible-fix"
+    assert not comments
+    assert "/runs/124/" in issue["body"]
+    values["plan.json"]["findings"][0]["fix"]["versions"] = ["3.14.12"]
     report.notify("platform", source_run(), values, "example/repo", "125", "1")
-    assert markers[2] != markers[1]
+    report.notify("platform", source_run(), values, "example/repo", "126", "1")
+    assert len(comments) == 1
+    assert "3.14.12" in comments[0]["body"]
 
 
 @pytest.mark.parametrize("kind,filename", report.WORKFLOWS.items())
@@ -459,32 +502,6 @@ def test_attention_runs_after_all_evidence_jobs_even_when_they_succeed(kind, fil
 def test_evidence_cannot_inject_mentions_or_table_markup():
     assert report.cell("@maintainer\n| <script>`") == "&#64;maintainer &#124; &lt;script&gt;&#96;"
     assert len(report.cell("<" * 400)) <= 240
-
-
-def test_shared_issue_deduplicates_each_workflow_independently(monkeypatch):
-    lane = "<!-- image-remediation-workflow:platform -->"
-    state = report.notification_marker("same findings")
-    tracker = {"number": 7, "body": lane + state}
-    comments = [
-        [
-            {
-                "body": "<!-- image-remediation-workflow:scan -->different findings",
-                "user": {"login": "github-actions[bot]"},
-            },
-            {"body": lane + "human text", "user": {"login": "maintainer"}},
-        ]
-    ]
-    monkeypatch.setattr(report, "gh", lambda *args: json.dumps(comments))
-    assert report.unchanged(tracker, "repos/example/repo/issues", state, lane)
-    comments.append(
-        [
-            {
-                "body": lane + report.notification_marker("changed findings"),
-                "user": {"login": "github-actions[bot]"},
-            }
-        ]
-    )
-    assert not report.unchanged(tracker, "repos/example/repo/issues", state, lane)
 
 
 def test_large_plans_fit_in_an_issue_and_point_to_complete_artifacts(monkeypatch):

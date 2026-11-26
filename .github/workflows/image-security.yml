@@ -366,12 +366,13 @@ jobs:
       group: image-security-tracker
       queue: max
       cancel-in-progress: false
-    needs: [select, python-packages, scan, check]
-    if: always() && (needs.select.result == 'failure' || needs.python-packages.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') && github.event_name != 'pull_request'
+    needs: [select, python-packages, scan, check, report-attention]
+    if: always() && (needs.select.result == 'failure' || needs.python-packages.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure' || needs.report-attention.result == 'failure') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -382,6 +383,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           python3 scripts/report_workflow_failure.py
+          --image-security
           --marker '<!-- image-security-failure-tracker -->'
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'

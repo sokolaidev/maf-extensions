@@ -83,9 +83,19 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
         )
     else:
         assert reporter["if"] == f"always() && {condition}"
-    assert reporter["permissions"] == {"contents": "read", "issues": "write"}
+    assert reporter["permissions"] == {
+        "contents": "read",
+        "issues": "write",
+        **(
+            {"actions": "read"}
+            if name in {"image-security.yml", "container-image-monitor.yml"}
+            else {}
+        ),
+    }
     assert all(
-        workflow["jobs"][source].get("permissions", {}).get("issues") is None for source in sources
+        workflow["jobs"][source].get("permissions", {}).get("issues") is None
+        for source in sources
+        if source != "report-attention"
     )
     assert "environment" not in reporter
     assert reporter["runs-on"] == "ubuntu-latest"
@@ -138,6 +148,7 @@ def actions_env(monkeypatch):
 @pytest.mark.parametrize("name", SCHEDULED)
 @pytest.mark.parametrize("existing", [False, True])
 def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypatch, name, existing):
+    monkeypatch.setattr(report, "scan_findings_only", lambda: False)
     argv = reporter_arguments(name)
     marker = argv[argv.index("--marker") + 1]
     pages = [[{"number": 1, "body": None}, {"number": 2, "body": "unrelated"}]]
@@ -415,3 +426,84 @@ def test_monitor_dedup_ignores_human_markers_and_reads_all_comment_pages(monkeyp
     monkeypatch.setattr(report, "gh", lambda *a: json.dumps(pages))
     assert not report.unchanged({"number": 1, "body": marker}, "issues", marker)
     assert report.unchanged({"number": 1, "body": marker}, "issues", previous)
+
+
+@pytest.mark.usefixtures("actions_env")
+@pytest.mark.parametrize("damage", [None, "build", "evidence", "reporter", "setup", "cancelled"])
+def test_scan_only_suppresses_delivered_vulnerability_failures(monkeypatch, damage):
+    jobs = [
+        {"name": "Select image security profiles", "conclusion": "success"},
+        {"name": "Prepare shared Python APKs", "conclusion": "skipped"},
+        {"name": "Report findings requiring maintainer action", "conclusion": "success"},
+        {
+            "name": "Image security (hyperlight-aks-probe)",
+            "conclusion": "failure",
+            "steps": [
+                {"name": "Scan the retained inventory", "conclusion": "success"},
+                {"name": "Enforce image vulnerability applicability", "conclusion": "failure"},
+            ],
+        },
+    ]
+    jobs.append(
+        {
+            "name": "Image security checks",
+            "conclusion": "failure",
+            "steps": [
+                {
+                    "name": "Require successful selection and selected scans",
+                    "conclusion": "failure",
+                },
+            ],
+        }
+    )
+    if damage == "build":
+        jobs[3]["steps"][0].update(name="Build the selected image", conclusion="failure")
+    elif damage == "evidence":
+        jobs[3]["steps"].append({"name": "Retain evidence", "conclusion": "failure"})
+    elif damage == "reporter":
+        jobs[2]["conclusion"] = "failure"
+    elif damage == "setup":
+        jobs[1]["conclusion"] = "failure"
+    elif damage == "cancelled":
+        jobs[3]["conclusion"] = "cancelled"
+    endpoints = []
+
+    def api(endpoint, *args):
+        endpoints.append(endpoint)
+        return json.dumps([{"jobs": jobs[:2]}, {"jobs": jobs[2:]}])
+
+    monkeypatch.setattr(report, "gh", api)
+    assert report.scan_findings_only() is (damage is None)
+    assert "/runs/123/attempts/2/jobs?" in endpoints[0]
+
+
+@pytest.mark.parametrize("operational", [False, True, None, "false"])
+@pytest.mark.parametrize("stage_failed", [False, True])
+def test_monitor_suppression_requires_explicit_operational_health(
+    monkeypatch, operational, stage_failed
+):
+    monitor_state(monkeypatch)
+    monkeypatch.setenv("MONITOR_VULNERABILITY_ONLY", "true")
+    monkeypatch.setattr(
+        report,
+        "attempt_jobs",
+        lambda: {
+            "result": {
+                "conclusion": "failure",
+                "steps": [
+                    {
+                        "name": "Require healthy current releases and complete monitoring delivery",
+                        "conclusion": "failure",
+                    }
+                ],
+            }
+        },
+    )
+    value = json.loads(report.os.environ["MONITOR_NOTIFICATION"])
+    value["operationalAttention"] = operational
+    monkeypatch.setenv("MONITOR_NOTIFICATION", json.dumps(value))
+    if stage_failed:
+        jobs = json.loads(report.os.environ["MONITOR_JOB_RESULTS"])
+        jobs["finish"] = "failure"
+        monkeypatch.setenv("MONITOR_JOB_RESULTS", json.dumps(jobs))
+    assert report.monitor_findings_only() is (operational is False and not stage_failed)

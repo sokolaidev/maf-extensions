@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import image_security_issue as image_issue
 from container_release import (
     REPOSITORY,
     ROOT,
@@ -620,15 +621,6 @@ def resolved_state(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def stable(state: dict[str, Any]) -> dict[str, Any]:
-    """Evidence URLs may advance without changing the actionable request."""
-    result = copy.deepcopy(state)
-    result.pop("candidateEvidence", None)
-    for reason in result["reasons"].values():
-        reason.pop("evidence", None)
-    return result
-
-
 def body(profile: str, state: dict[str, Any]) -> str:
     """Keep machine-owned request state reviewable and bounded by GitHub's issue limit."""
     reasons = state["reasons"]
@@ -711,56 +703,59 @@ def body(profile: str, state: dict[str, Any]) -> str:
 
 
 def reconcile(
-    client: GitHub, profile: str, state: dict[str, Any] | None, issue: dict[str, Any] | None
+    client: GitHub,
+    profile: str,
+    state: dict[str, Any] | None,
+    issue: dict[str, Any] | None,
+    related: list[dict] | None = None,
 ) -> None:
     """Use one issue mutation per change so retries do not duplicate notifications."""
     if state is None or (issue is None and state["resolved"]):
         return
     if not state["resolved"] and not required(state):
         raise ValueError("Release request has no security or package requirement")
-    if state["resolved"]:
-        title = f"Image release needed: {profile} (resolved at {state['currentVersion']})"
-    else:
-        title = f"Image release needed: {profile} (replace {state['currentVersion']})"
     endpoint = f"repos/{REPOSITORY}/issues"
     if issue:
         match = STATE.search(issue["body"])
-        if match is None:
+        if match is None and not image_issue.matches([issue], profile):
             raise ValueError("Release request has no recoverable state")
-        old = decode(match[1])
-        if issue["state"] == "closed" and not state["resolved"]:
-            reconcile(client, profile, state, None)
-            return
-        if (
-            stable(old) == stable(state)
-            and issue["state"] == ("closed" if state["resolved"] else "open")
-            and issue.get("title") == title
-        ):
-            return
-        payload = {
-            "title": title,
-            "body": body(profile, state),
-            "state": "closed" if state["resolved"] else "open",
-        }
-        if state["resolved"]:
-            payload["state_reason"] = (
-                "not_planned"
-                if state.get("resolution")
-                in {"source-reconciled", "route-reconciled", "policy-reconciled"}
-                else "completed"
-            )
-        client.request(f"{endpoint}/{issue['number']}", method="PATCH", payload=encode(payload))
-    else:
-        client.request(
-            endpoint,
-            method="POST",
-            payload=encode(
-                {
-                    "title": title,
-                    "body": body(profile, state),
-                }
-            ),
-        )
+        if match:
+            old = decode(match[1])
+            if not isinstance(old, dict):
+                raise ValueError("Release request has no recoverable state")
+    signals = image_issue.release_signals(state)
+    payload = image_issue.update(
+        issue,
+        profile,
+        "release",
+        body(profile, state),
+        signals,
+        active=not state["resolved"],
+        related=related,
+    )
+    if (
+        payload
+        and payload.get("state") == "closed"
+        and state.get("resolution")
+        in {"source-reconciled", "route-reconciled", "policy-reconciled"}
+    ):
+        payload["state_reason"] = "not_planned"
+    if issue:
+        message = image_issue.notice(issue, signals, lane="release")
+        if message:
+            comment_endpoint = f"{endpoint}/{issue['number']}/comments"
+            if not image_issue.already_notified(client.pages(comment_endpoint), message):
+                client.request(comment_endpoint, method="POST", payload=encode({"body": message}))
+        if payload is not None:
+            client.request(f"{endpoint}/{issue['number']}", method="PATCH", payload=encode(payload))
+        for previous in related or []:
+            retired = image_issue.retirement(previous, issue, profile)
+            if retired:
+                client.request(
+                    f"{endpoint}/{previous['number']}", method="PATCH", payload=encode(retired)
+                )
+    elif payload is not None:
+        client.request(endpoint, method="POST", payload=encode(payload))
 
 
 def main() -> None:
@@ -796,18 +791,16 @@ def main() -> None:
                 and i.get("user", {}).get("type") == "Bot"
                 and f"{MARKER}{profile} -->" in (i.get("body") or "")
             ]
-            active = [i for i in matches if i["state"] == "open"]
-            if len(active) > 1:
-                raise ValueError("Multiple open release requests for one profile")
-            issue = (
-                active[0]
-                if active
-                else (max(matches, key=lambda i: i["number"]) if matches else None)
+            issue = image_issue.select(issues, profile)
+            release_issue = (
+                issue
+                if issue and STATE.search(issue.get("body") or "")
+                else max(matches, key=lambda i: i["number"], default=None)
             )
             previous = None
             resolved_previous = None
-            if issue:
-                match = STATE.search(issue["body"])
+            if release_issue:
+                match = STATE.search(release_issue["body"])
                 if match is None:
                     raise ValueError("Release request has no recoverable state")
                 previous = decode(match[1])
@@ -848,7 +841,7 @@ def main() -> None:
             if args.dry_run:
                 print(json.dumps({"profile": profile, "state": state}, sort_keys=True))
             else:
-                reconcile(client, profile, state, issue)
+                reconcile(client, profile, state, issue, image_issue.matches(issues, profile))
 
 
 if __name__ == "__main__":

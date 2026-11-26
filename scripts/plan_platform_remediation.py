@@ -139,6 +139,7 @@ def plan(
                 "profile": profile,
                 "imageId": identity["imageId"],
                 "id": vulnerability["id"],
+                "severity": vulnerability["severity"],
                 "component": name,
                 "type": kind,
                 "installed": component["version"],

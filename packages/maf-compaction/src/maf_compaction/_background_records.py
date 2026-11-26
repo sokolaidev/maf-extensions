@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from agent_framework import Message
 from agent_framework._compaction import (
@@ -13,13 +13,15 @@ from agent_framework._compaction import (
     GROUP_ANNOTATION_KEY,
     GROUP_TOKEN_COUNT_BASIS_KEY,
     GROUP_TOKEN_COUNT_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
     TOKEN_COUNT_BASIS_VERSION,
     annotate_message_groups,
     group_messages,
     included_token_count,
 )
 
-from ._artifacts import is_marker
+from ._artifacts import is_marker, is_user_summary
 from ._media import MESSAGE_COUNTED, annotate_token_counts, structural_counter
 from ._record_replay import source_lineage, window_message_key
 from ._shed import durable_message_id
@@ -44,6 +46,21 @@ def has_records(messages: list[Message]) -> bool:
     )
 
 
+#: The annotation keys that link a note or a summary to what it stands for.
+_SOURCE_LINK_KEYS: Final = (SUMMARY_OF_MESSAGE_IDS_KEY, SUMMARY_OF_GROUP_IDS_KEY)
+
+
+def _left_out_of_gaps(message: Message) -> bool:
+    """A shed's note or a user summary, which a pass writes between records; never reasoning.
+
+    Reasoning keeps counting where it stands, as :func:`~._record_replay._is_pass_exclusion` and
+    the reasoning certificate read it, whatever message carries it.
+    """
+    return (is_marker(message) or is_user_summary(message)) and not any(
+        content.type == "text_reasoning" for content in message.contents
+    )
+
+
 def counted_history(
     history: list[Message], response: list[Message], tokenizer: TokenizerProtocol
 ) -> list[Message]:
@@ -63,12 +80,17 @@ def counted_history(
         owned = copy(message)
         owned.additional_properties = dict(message.additional_properties)
         owned.additional_properties.pop(GROUP_ANNOTATION_KEY, None)
+        # The counts are taken again, but a note's or a summary's source links are what make it
+        # one: the snapshot's gaps must read it as the applying pass does.
+        links = {key: annotation[key] for key in _SOURCE_LINK_KEYS if key in annotation}
+        if links:
+            owned.additional_properties[GROUP_ANNOTATION_KEY] = links
         messages[index] = owned
     # Assign positional ids in the original coordinate system.
     if any(not m.message_id for m in messages):
         group_messages(messages)
     for message in messages:
-        if GROUP_ANNOTATION_KEY not in message.additional_properties:
+        if GROUP_TOKEN_COUNT_KEY not in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}):
             annotate_token_counts([message], tokenizer=tokenizer)
     return messages
 
@@ -122,16 +144,17 @@ class BackgroundRecords:
             gap = hashlib.sha256()
             tokens = 0
             # A shed's note is not part of the gap, as it is not part of a batch's key: the list
-            # snapshotted after a pass's shed carries notes the next pass's copy does not yet.
+            # snapshotted after a pass's shed carries notes the next pass's copy does not yet. A
+            # user summary is not either: the next pass folds turns before it applies answers.
             hashed = 0
             for index in range(end - 1, last, -1):
                 message = history[index]
                 tokens += included_token_count([message])
-                if is_marker(message):
+                if _left_out_of_gaps(message):
                     continue
                 hashed += 1
                 if messages:
-                    gap.update(bytes.fromhex(window_message_key(message)))
+                    gap.update(bytes.fromhex(window_message_key(message, users=True)))
                 include_reasoning(message)
             if hashed:
                 messages.append(Message("system", [], message_id="gap-" + gap.hexdigest()))

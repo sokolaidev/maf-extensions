@@ -67,6 +67,24 @@ def _is_note_text(text: str) -> bool:
     return text in _NOTE_TEXTS or _RUN_TEXT.fullmatch(text) is not None
 
 
+#: The text a user summary opens with; see :mod:`~._usersummary`, which re-exports it.
+USER_SUMMARY_MARKER: Final[str] = "[earlier turns in this conversation, compacted]"
+
+#: The reasons the user phase excludes with: a turn it summarised, and a summary a fold
+#: superseded. Here so the record keys can read them without importing that phase.
+USER_SUMMARY_EXCLUDE_REASON: Final[str] = "user_turn_summarized"
+USER_FOLD_EXCLUDE_REASON: Final[str] = "user_summaries_folded"
+
+
+def is_user_summary(message: Message) -> bool:
+    """Recognize a user summary by its text marker and persisted source links."""
+    return (
+        message.role == "user"
+        and has_summary_links(message)
+        and (message.text or "").startswith(USER_SUMMARY_MARKER)
+    )
+
+
 def is_marker(message: Message) -> bool:
     """Return whether ``message`` is a note this strategy left in place of a dropped group.
 
