@@ -1117,3 +1117,24 @@ def test_post_request_confirmation_waits_only_for_timely_advances(
     monkeypatch.setattr(probe, "time", NS(monotonic=lambda: clock[0], sleep=sleep))
     assert probe.observe_session_after_request(None, None, None, before, after) == expected
     assert len(after) >= 2
+
+
+@pytest.mark.parametrize(
+    ("sequences", "expected"),
+    [
+        ([3, 4], "fresh_report_unconfirmed"),
+        ([10, 11, 11], "fresh_report_unconfirmed"),
+        ([3, 4, 10, 11, 12], "reconnected"),
+    ],
+)
+def test_post_request_advances_must_exceed_same_session_history(probe, sequences, expected):
+    before = [
+        sample_session("old", 99),
+        sample_session(
+            "", installed=False, reason="PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+        ),
+        sample_session("new", 10),
+        sample_session("new", 2),
+    ]
+    after = [sample_session("new", sequence) for sequence in sequences]
+    assert probe.session_outcome(before, after) == expected

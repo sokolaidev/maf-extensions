@@ -202,12 +202,13 @@ def session_outcome(before, after):
         return "installation_unconfirmed"
     if any(s[k] != first[k] for s in (last, *after) for k in ("process", "network")):
         return "runtime_identity_changed"
+    pre_request_max = max(s["sequence"] for s in before if s["session"] == last["session"])
     sequence = last["sequence"]
     advances = 0
     for report in after:
         if report["session"] != last["session"] or report["sequence"] < sequence:
             return "session_changed_around_guest_request"
-        if report["sequence"] > sequence:
+        if report["sequence"] > max(pre_request_max, sequence):
             advances += 1
         sequence = report["sequence"]
     disconnected = "PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
