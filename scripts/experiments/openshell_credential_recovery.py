@@ -10,6 +10,7 @@ import ssl
 import time
 import uuid
 
+from openshell_composition_probe import receipt_installed
 from openshell_credential_lifecycle import (
     HTTPSRefreshProfile,
     OriginJournal,
@@ -24,7 +25,12 @@ from openshell_https_probe import control_https
 from openshell_owned_probe import fixture_spec, snapshot
 from openshell_refresh_probe import TokenIssuer
 from openshell_replay_probe import wait_gateway
-from openshell_restart_probe import RestartAuthority, boundary_descriptor
+from openshell_restart_probe import (
+    RestartAuthority,
+    authority_identity,
+    boundary_descriptor,
+    fresh_authority,
+)
 from openshell_transition_probe import runtime_continuity
 
 
@@ -110,6 +116,81 @@ class CredentialRecovery(RestartAuthority):
             },
         )
         return response
+
+    def current_status(self):
+        self.current()
+        status = self.client.rpc(
+            "GetSandboxProviderStatus",
+            self.client.pb.GetSandboxProviderStatusRequest(
+                sandbox=self.name, provider=self.profile.provider, workspace_scope=self.client.scope
+            ),
+        ).status
+        if (status.receipt.workspace, status.receipt.provider) != (
+            self.client.scope.workspace,
+            self.profile.provider,
+        ) or (
+            status.receipt.desired.sandbox_id,
+            status.receipt.desired.sandbox,
+            status.receipt.desired.provider_id,
+        ) != (self.identity, self.name, self.profile.provider_id):
+            raise RuntimeError("current credential authority identity mismatch")
+        return status
+
+    def rotation_target(self, receipt):
+        """Pin the new environment target without treating the superseded receipt as installed."""
+        deadline = time.monotonic() + 30
+        while True:
+            status = self.current_status()
+            target, previous = status.receipt.desired, receipt.desired
+            unchanged = (
+                "sandbox_id",
+                "sandbox",
+                "provider_id",
+                "attachment_epoch",
+                "config_revision",
+                "policy_hash",
+            )
+            if any(getattr(target, field) != getattr(previous, field) for field in unchanged):
+                raise RuntimeError("rotation changed authority outside the provider environment")
+            if (
+                target.provider_env_revision
+                and target.provider_env_revision != previous.provider_env_revision
+            ):
+                self.record(
+                    "barriers",
+                    {
+                        "rotation_target": protobuf_evidence(target, "desired"),
+                        "previous_env_revision": previous.provider_env_revision,
+                        "current_env_revision": target.provider_env_revision,
+                    },
+                )
+                return target
+            if time.monotonic() >= deadline:
+                raise RuntimeError("rotation environment target did not change")
+            time.sleep(0.1)
+
+    def attest_current(self, target, before, runtime, spec, accepted, *, boundary):
+        """Bracket traffic against one pinned reconstructed target and advancing runtime reports."""
+        deadline = time.monotonic() + 30
+        while True:
+            status = self.current_status()
+            self.record("attestations", protobuf_evidence(status, "status"))
+            if status.receipt.desired != target:
+                raise RuntimeError("current credential target changed during observation")
+            self.stable(runtime, spec)
+            if boundary_descriptor(self.identity, runtime) != boundary:
+                raise RuntimeError("replacement boundary descriptor changed")
+            if authority_identity(status) != authority_identity(accepted):
+                raise RuntimeError("replacement authority identity changed")
+            if receipt_installed(
+                status, status.receipt, self.client.pb.PROVIDER_READINESS_STATE_READY
+            ) and fresh_authority(
+                before, status, accepted, boundary_session=boundary["session_id"]
+            ):
+                return status
+            if time.monotonic() >= deadline:
+                raise RuntimeError("current credential target installation unconfirmed")
+            time.sleep(0.1)
 
     def replace(self, gateway, receipt):
         before = self.wait_provider(receipt, True)
@@ -264,6 +345,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             cleanup = ProviderCleanup(sandbox, authority)
             receipt = await asyncio.to_thread(authority.provider, True)
             replacement = None
+            rotation_target = None
             attached = True
             prefix = "/sandbox/recovery-" + uuid.uuid4().hex
             paths = {}
@@ -312,16 +394,27 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                     await asyncio.to_thread(authority.current)
                 else:
                     before, runtime, spec, boundary, accepted = replacement
-                    replacement[-1] = await asyncio.to_thread(
-                        authority.attest,
-                        receipt,
-                        attached,
-                        before,
-                        runtime,
-                        spec,
-                        accepted,
-                        boundary=boundary,
-                    )
+                    if rotation_target is not None and attached:
+                        replacement[-1] = await asyncio.to_thread(
+                            authority.attest_current,
+                            rotation_target,
+                            before,
+                            runtime,
+                            spec,
+                            accepted,
+                            boundary=boundary,
+                        )
+                    else:
+                        replacement[-1] = await asyncio.to_thread(
+                            authority.attest,
+                            receipt,
+                            attached,
+                            before,
+                            runtime,
+                            spec,
+                            accepted,
+                            boundary=boundary,
+                        )
 
             async def check(label, slot, expected, *, path="/provider/ok", converge=False):
                 row = {"case": label, "attempts": [], "passed": False}
@@ -445,6 +538,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             await check("no_implicit_credential", None, ["anonymous"])
             await asyncio.to_thread(profile.rotate, fixture.client)
             rotated = await mint(recovered["generation"])
+            rotation_target = await asyncio.to_thread(authority.rotation_target, receipt)
             await check(
                 "rotation_after_recovery",
                 "replacement",
