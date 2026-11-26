@@ -23,23 +23,31 @@ jobs:
         with:
           node-version: 26.12.1
       - name: Prepare pinned upstream source and retained patch
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/openclaw" "$RUNNER_TEMP/evidence"
-          curl --fail --location --retry 2 https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -o "$RUNNER_TEMP/source.tar.gz"
-          tar --force-local -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
-          cd "$RUNNER_TEMP/openclaw"
+          $subject = Join-Path $env:RUNNER_TEMP 'openclaw'
+          $evidence = Join-Path $env:RUNNER_TEMP 'evidence'
+          $archive = Join-Path $env:RUNNER_TEMP 'source.tar.gz'
+          New-Item -ItemType Directory -Force -Path $subject, $evidence | Out-Null
+          Invoke-WebRequest 'https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b' -OutFile $archive
+          & "$env:SystemRoot/System32/tar.exe" -xzf $archive --strip-components=1 -C $subject
+          if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed' }
+          Set-Location $subject
           git init -q
           git config core.autocrlf false
+          git config core.longpaths true
           git add .
+          if ($LASTEXITCODE -ne 0) { throw 'Source staging failed' }
           git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
-          git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
-          git apply "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'scripts/experiments/openclaw_mxc_preflight/proposal.patch'
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch check failed' }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch application failed' }
           git add .
-          sha256sum "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/"* extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/artifact-hashes.txt"
-          git diff --cached --stat > "$RUNNER_TEMP/evidence/scope.txt"
+          Get-FileHash -Algorithm SHA256 $patch, 'extensions/mxc/src/mxc-spawn-launcher.mjs' | Format-List | Out-String | Tee-Object -FilePath (Join-Path $evidence 'artifact-hashes.txt')
           npm install --global --ignore-scripts --no-audit --no-fund pnpm@12.15.0
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm setup failed' }
       - name: Install frozen upstream workspace
         id: install
         timeout-minutes: 20
