@@ -13,14 +13,14 @@ import time
 import uuid
 from datetime import datetime
 
-from openshell_composition_probe import CompositionProfile
+from openshell_composition_probe import CompositionProfile, receipt_installed
 from openshell_credentials_probe import credential_observation
 from openshell_egress_probe import origin_get
 from openshell_https_probe import control_https
 from openshell_owned_probe import fixture_spec, snapshot
 from openshell_refresh_probe import RefreshProfile, TokenIssuer
 from openshell_sftp_probe import native_sftp
-from openshell_transition_probe import Transitions
+from openshell_transition_probe import Transitions, runtime_continuity
 
 
 def guest_program(directory, env_key):
@@ -149,6 +149,108 @@ def protobuf_evidence(message, label):
     """Retain payload identity and size without retaining serialized field values."""
     payload = message.SerializeToString()
     return {label + "_sha256": hashlib.sha256(payload).hexdigest(), label + "_size": len(payload)}
+
+
+def current_provider_status(client, name, identity, profile):
+    """Read the reconstructed provider target for exactly this owned sandbox and provider."""
+    status = client.rpc(
+        "GetSandboxProviderStatus",
+        client.pb.GetSandboxProviderStatusRequest(
+            sandbox=name, provider=profile.provider, workspace_scope=client.scope
+        ),
+    ).status
+    receipt = status.receipt
+    if (receipt.workspace, receipt.provider) != (client.scope.workspace, profile.provider) or (
+        receipt.desired.sandbox_id,
+        receipt.desired.sandbox,
+        receipt.desired.provider_id,
+    ) != (identity, name, profile.provider_id):
+        raise RuntimeError("current credential authority identity mismatch")
+    return status
+
+
+def session_sample(client, owner, profile):
+    """Record the gateway's connection identity and explicit reason for the owned provider."""
+    status = current_provider_status(client, owner["name"], owner["sandbox_id"], profile)
+    if (
+        not status.receipt.receipt_id
+        or status.receipt.kind != client.pb.PROVIDER_MUTATION_KIND_OBSERVE
+    ):
+        raise RuntimeError("missing supervisor session observation receipt")
+    return {
+        "time_unix_ns": time.time_ns(),
+        "session": status.observed.session_id,
+        "process": status.observed.process_instance_id,
+        "network": status.network_instance_id,
+        "sequence": status.observed.sequence,
+        "installed": receipt_installed(
+            status, status.receipt, client.pb.PROVIDER_READINESS_STATE_READY
+        ),
+        "reason": client.pb.ProviderReadinessReason.Name(status.reason),
+    }
+
+
+def session_outcome(before, after):
+    """Identify a disconnected session followed by fresh installation reports after guest traffic."""
+    first, last = before[0], before[-1]
+    if not all(
+        s["installed"]
+        and all(s[k] for k in ("session", "network", "process"))
+        and s["sequence"] > 0
+        for s in (first, last, *after)
+    ):
+        return "installation_unconfirmed"
+    if any(s[k] != first[k] for s in (last, *after) for k in ("process", "network")):
+        return "runtime_identity_changed"
+    pre_request_max = max(s["sequence"] for s in before if s["session"] == last["session"])
+    sequence = last["sequence"]
+    advances = 0
+    for report in after:
+        if report["session"] != last["session"] or report["sequence"] < sequence:
+            return "session_changed_around_guest_request"
+        if report["sequence"] > max(pre_request_max, sequence):
+            advances += 1
+        sequence = report["sequence"]
+    disconnected = "PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+    gap = [
+        i
+        for i, s in enumerate(before[1:-1], 1)
+        if s["reason"] == disconnected and not s["installed"]
+    ]
+    installed_sessions = {s["session"] for s in before if s["installed"]}
+    if first["session"] == last["session"]:
+        if len(installed_sessions) > 1:
+            return "multiple_sessions_observed"
+        return "disconnect_without_new_session" if gap else "no_disconnect_observed"
+    if not gap:
+        return "session_changed_without_observed_disconnect"
+    if (
+        any(s["installed"] and s["session"] != first["session"] for s in before[: gap[0]])
+        or any(s["installed"] for s in before[gap[0] : gap[-1]])
+        or any(s["installed"] and s["session"] != last["session"] for s in before[gap[-1] :])
+        or any(
+            s["installed"] and (s["network"], s["process"]) != (first["network"], first["process"])
+            for s in before
+        )
+    ):
+        return "multiple_sessions_observed"
+    # The first advance read after traffic may already have been cached when the request began.
+    return "reconnected" if advances >= 2 else "fresh_report_unconfirmed"
+
+
+def observe_session_after_request(client, owner, profile, before, after):
+    """Allow up to fifteen seconds for two new post-request reports on a reconnect candidate."""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        after.append(session_sample(client, owner, profile))
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            return "post_request_window_elapsed"
+        outcome = session_outcome(before, after)
+        if outcome != "fresh_report_unconfirmed":
+            return outcome
+        time.sleep(min(1, remaining))
+    return "fresh_report_unconfirmed"
 
 
 def propagation_observation(observed, events, request, minted):
@@ -560,9 +662,17 @@ async def measure_credentials(fixture, ip, ca_file):
             evidence["guest"] = await guest.start()
             fixture.save()
 
-            async def minted(after=0, budget=15):
+            async def minted(after=0, budget=15, *, sessions=None):
+                next_sample = time.monotonic()
                 deadline = time.monotonic() + budget
                 while time.monotonic() < deadline:
+                    if sessions is not None and time.monotonic() >= next_sample:
+                        sessions.append(
+                            await asyncio.to_thread(
+                                session_sample, fixture.client, sandbox.owner, profile
+                            )
+                        )
+                        next_sample = time.monotonic() + 1
                     latest = issuer.snapshot()
                     status = await asyncio.to_thread(profile.refresh_status, fixture.client)
                     expiration = status.expiration_time.seconds + status.expiration_time.nanos / 1e9
@@ -677,9 +787,37 @@ async def measure_credentials(fixture, ip, ca_file):
             await asyncio.to_thread(profile.rotate, fixture.client)
             short = await minted(initial["generation"])
             await check("forced_rotation_preserves_launch_reference", short, converge=True)
+            runtime = await asyncio.to_thread(snapshot, transitions.identity)
+            sessions = [
+                await asyncio.to_thread(session_sample, fixture.client, sandbox.owner, profile)
+            ]
+            window = evidence["worker_refresh_session_window"] = {
+                "samples": sessions,
+                "outcome": "incomplete",
+            }
+            fixture.save()
             issuer.configure(ttl=300)
-            worker = await minted(short["generation"], budget=85)
+            worker = await minted(short["generation"], budget=85, sessions=sessions)
+            sessions.append(
+                await asyncio.to_thread(session_sample, fixture.client, sandbox.owner, profile)
+            )
             await check("worker_refresh_preserves_launch_reference", worker, converge=True)
+            post_request = window["post_request_samples"] = []
+            outcome = await asyncio.to_thread(
+                observe_session_after_request,
+                fixture.client,
+                sandbox.owner,
+                profile,
+                sessions,
+                post_request,
+            )
+            current_runtime = await asyncio.to_thread(snapshot, transitions.identity)
+            same_runtime = await asyncio.to_thread(
+                runtime_continuity, transitions.identity, runtime, current_runtime
+            )
+            window["same_physical_runtime"] = same_runtime
+            window["outcome"] = outcome if same_runtime else "runtime_changed"
+            fixture.save()
 
             issuer.configure(mode="temporarily_unavailable")
             try:

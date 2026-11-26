@@ -139,6 +139,8 @@ def test_raw_authority_payloads_are_fingerprinted_recursively(probe):
         "original_descriptor",
         "descriptor",
         "status_read",
+        "intent_before_restore",
+        "boundary_before_restore",
         "policy",
         "receipt",
         "attest",
@@ -223,9 +225,10 @@ def test_restart_requires_physical_replacement_before_new_authority(probe, monke
         events.append("status-read")
         if failure == "status_read":
             raise RuntimeError("status unavailable")
-        return {"outcome": "not_confirmed_within_window"}
+        return {"outcome": "not_confirmed_within_window"}, None
 
     authority.observe_before_restoration = observe
+    authority.stable = lambda runtime, spec: None
 
     def submit(method, request):
         events.append("policy")
@@ -247,12 +250,22 @@ def test_restart_requires_physical_replacement_before_new_authority(probe, monke
         return "accepted"
 
     authority.attest = attest
+
+    def run():
+        previous, runtime, expected, boundary, accepted, row = authority.replace(gateway, receipt)
+        assert accepted is None and "policy" not in events
+        if failure == "intent_before_restore":
+            spec.policy = "changed"
+        elif failure == "boundary_before_restore":
+            monkeypatch.setattr(probe, "boundary_descriptor", lambda *args: {"session_id": "newer"})
+        return authority.restore(receipt, previous, runtime, expected, boundary, row)
+
     if failure:
         with pytest.raises(RuntimeError):
-            authority.replace(gateway, receipt)
+            run()
         assert not any(row.get("completed") for _, row in records)
     else:
-        result = authority.replace(gateway, receipt)
+        result = run()
         assert result[-1] == "accepted"
         assert events == [
             "stop",
@@ -278,6 +291,8 @@ def test_restart_requires_physical_replacement_before_new_authority(probe, monke
         "descriptor",
         "original_descriptor",
         "status_read",
+        "intent_before_restore",
+        "boundary_before_restore",
     ):
         assert "policy" not in events
     text = json.dumps(records)
@@ -315,6 +330,10 @@ def test_mutation_evidence_has_no_serialized_fields_even_on_rpc_failure(probe, f
     [
         None,
         "saved_retired",
+        "no_readiness",
+        "target_changed",
+        "no_launch_reference",
+        "launch_refused",
         "interruption",
         "reference_changed",
         "expired",
@@ -328,7 +347,7 @@ def test_mutation_evidence_has_no_serialized_fields_even_on_rpc_failure(probe, f
 def test_complete_matrix_preserves_reference_binding_and_cleanup(
     probe, monkeypatch, tmp_path, fault
 ):
-    state = {"epoch": 0, "attached": True, "replaced": False, "sequence": 0}
+    state = {"epoch": 0, "attached": True, "replaced": False, "restored": False, "sequence": 0}
     events, hits, mints, snapshots = [], [], [], []
     owner = {"name": "owned", "sandbox_id": "identity", "containers": ["launch-supervisor"]}
     fixture = NS(client=NS(image="image"), owners=[owner], report={})
@@ -407,8 +426,14 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
         url = urlsplit(request.full_url)
         reference = request.get_header("Authorization", "").removeprefix("Bearer ")
         refusal = None
+        if case["case"] == "launch_reference_before_restoration":
+            assert state["replaced"] and not state["restored"]
+            assert reference == "openshell:resolve:epoch-" + str(state["epoch"])
+            events.append("pre-restoration-request")
         if reference:
-            if not state["attached"] or reference != "openshell:resolve:epoch-" + str(
+            if fault == "launch_refused" and case["case"] == "launch_reference_before_restoration":
+                refusal = "credential_unavailable"
+            elif not state["attached"] or reference != "openshell:resolve:epoch-" + str(
                 state["epoch"]
             ):
                 refusal = "credential_unavailable"
@@ -491,7 +516,29 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
                     for role in ("sandbox", "supervisor")
                 ]
             }
-            return NS(receipt_id="new"), "before", runtime, "spec", "boundary", 0
+            before = NS(receipt=NS(desired="original-target"))
+            current = NS(
+                receipt=NS(desired="changed" if fault == "target_changed" else "original-target")
+            )
+            if fault == "no_launch_reference":
+                monkeypatch.delenv(Profile.env_key)
+            return (
+                before,
+                runtime,
+                "spec",
+                "boundary",
+                None if fault == "no_readiness" else current,
+                {},
+            )
+
+        def restore(self, *args):
+            events.append("restore")
+            state["restored"] = True
+            if fault == "no_launch_reference":
+                monkeypatch.setenv(
+                    Profile.env_key, "openshell:resolve:epoch-" + str(state["epoch"])
+                )
+            return NS(receipt_id="new"), "spec", state["sequence"]
 
         def attest(self, receipt, attached, before, runtime, spec, accepted, **kwargs):
             events.append("attest")
@@ -508,7 +555,12 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
             return "pinned-target"
 
         def attest_current(self, target, before, runtime, spec, accepted, **kwargs):
-            assert target == "pinned-target"
+            if state["restored"]:
+                assert target == "pinned-target"
+            else:
+                assert target == before.receipt.desired
+                if isinstance(accepted, NS):
+                    accepted = 0
             return self.attest(None, True, before, runtime, spec, accepted, **kwargs)
 
     def control(host, path, **kwargs):
@@ -545,7 +597,15 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
     monkeypatch.setattr(
         probe, "fixture_spec", lambda image: NS(policy=NS(network_policies=defaultdict(rule)))
     )
-    expected_failure = fault not in (None, "saved_retired", "interruption")
+    expected_failure = fault not in (
+        None,
+        "saved_retired",
+        "interruption",
+        "no_readiness",
+        "target_changed",
+        "no_launch_reference",
+        "launch_refused",
+    )
     if expected_failure:
         with pytest.raises(RuntimeError):
             asyncio.run(probe.measure_credential_recovery(fixture, "192.0.2.1", "ca.pem", object()))
@@ -564,7 +624,24 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
     if fault not in ("cleanup",):
         assert report["characterization_completed"] is (not expected_failure)
     if not expected_failure:
-        assert len(report["cases"]) == 12 and all(row["passed"] for row in report["cases"])
+        expected_outcome = {
+            None: "delivered",
+            "no_readiness": "readiness_unconfirmed",
+            "target_changed": "target_changed",
+            "no_launch_reference": "no_launch_reference",
+            "launch_refused": "credential_unavailable",
+        }.get(fault, "delivered")
+        assert report["pre_restoration_guest"]["outcome"] == expected_outcome
+        sent = expected_outcome in ("delivered", "credential_unavailable")
+        assert events.count("pre-restoration-request") == int(sent)
+        if sent:
+            assert (
+                events.index("replace")
+                < events.index("pre-restoration-request")
+                < events.index("restore")
+            )
+        assert len(report["cases"]) == 12 + int(sent)
+        assert all(row["passed"] for row in report["cases"])
         saved = next(
             row for row in report["cases"] if row["case"] == "saved_reference_after_restoration"
         )
@@ -575,7 +652,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
                 if row["case"] in interrupted_cases:
                     results = [attempt["result"] for attempt in row["attempts"]]
                     assert results == ["generation_interruption", "token-2"]
-        assert len(report["references"]) == 3
+        assert len(report["references"]) == 3 + int(sent)
     assert "openshell:resolve:" not in json.dumps(snapshots)
 
 
@@ -697,7 +774,8 @@ def test_pre_restoration_requires_two_timely_reports_for_one_installed_target(
         with pytest.raises(RuntimeError, match=expected):
             authority.observe_before_restoration(before, {}, "spec", boundary)
         return
-    result = authority.observe_before_restoration(before, {}, "spec", boundary)
+    result, accepted = authority.observe_before_restoration(before, {}, "spec", boundary)
+    assert (accepted is not None) is (expected == "confirmed")
     assert result["outcome"] == expected
     assert result["samples_within_window"] == sum(r["elapsed_seconds"] <= 15 for r in records)
     if expected == "confirmed":

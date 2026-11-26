@@ -15,6 +15,7 @@ from openshell_credential_lifecycle import (
     HTTPSRefreshProfile,
     OriginJournal,
     ProviderCleanup,
+    current_provider_status,
     generation_interruption,
     protobuf_evidence,
     unexpired,
@@ -34,7 +35,7 @@ from openshell_restart_probe import (
 from openshell_transition_probe import runtime_continuity
 
 
-def reference_program(key, path, *, capture=False, url=None):
+def reference_program(key, path, *, capture=False, url=None, allow_absent=False):
     """Persist only an opaque guest reference; emit its digest and a bounded HTTP result."""
     return f"""
 import hashlib, json, os, urllib.request, urllib.error
@@ -43,10 +44,13 @@ path = {path!r}
 url = {url!r}
 if {capture!r}:
     value = os.environ.get({key!r}, '')
-    if not value.startswith('openshell:resolve:'):
+    if value.startswith('openshell:resolve:'):
+        with open(path, 'x') as target:
+            target.write(value)
+    elif not value and {allow_absent!r}:
+        path = None
+    else:
         raise RuntimeError('missing opaque launch reference')
-    with open(path, 'x') as target:
-        target.write(value)
 value = Path(path).read_text() if path else ''
 if path and not value.startswith('openshell:resolve:'):
     raise RuntimeError('saved reference is not opaque')
@@ -119,22 +123,7 @@ class CredentialRecovery(RestartAuthority):
 
     def current_status(self):
         self.current()
-        status = self.client.rpc(
-            "GetSandboxProviderStatus",
-            self.client.pb.GetSandboxProviderStatusRequest(
-                sandbox=self.name, provider=self.profile.provider, workspace_scope=self.client.scope
-            ),
-        ).status
-        if (status.receipt.workspace, status.receipt.provider) != (
-            self.client.scope.workspace,
-            self.profile.provider,
-        ) or (
-            status.receipt.desired.sandbox_id,
-            status.receipt.desired.sandbox,
-            status.receipt.desired.provider_id,
-        ) != (self.identity, self.name, self.profile.provider_id):
-            raise RuntimeError("current credential authority identity mismatch")
-        return status
+        return current_provider_status(self.client, self.name, self.identity, self.profile)
 
     def rotation_target(self, receipt):
         """Pin the new environment target without treating the superseded receipt as installed."""
@@ -175,7 +164,7 @@ class CredentialRecovery(RestartAuthority):
         started = time.monotonic()
         previous = None
         samples = 0
-        outcome = "not_confirmed_within_window"
+        accepted = None
         while time.monotonic() - started < window:
             status = self.current_status()
             receipt = status.receipt
@@ -225,13 +214,17 @@ class CredentialRecovery(RestartAuthority):
                 break
             samples += 1
             if advancing:
-                outcome = "confirmed"
+                accepted = status
                 break
             previous = status if installed and fresh else None
             time.sleep(min(1, window - elapsed))
         if not samples:
             raise RuntimeError("no provider status sampled within the pre-restoration window")
-        return {"outcome": outcome, "window_seconds": window, "samples_within_window": samples}
+        return {
+            "outcome": "confirmed" if accepted is not None else "not_confirmed_within_window",
+            "window_seconds": window,
+            "samples_within_window": samples,
+        }, accepted
 
     def attest_current(self, target, before, runtime, spec, accepted, *, boundary):
         """Bracket traffic against one pinned reconstructed target and advancing runtime reports."""
@@ -335,26 +328,36 @@ class CredentialRecovery(RestartAuthority):
                 **protobuf_evidence(retained, "status"),
             },
         )
-        row["pre_restoration_readiness"] = self.observe_before_restoration(
+        row["pre_restoration_readiness"], accepted = self.observe_before_restoration(
             before, after, expected.hex(), boundary
         )
         self.record("restarts", dict(row))
+        return before, after, expected.hex(), boundary, accepted, row
+
+    def restore(self, receipt, before, runtime, spec, boundary, row):
+        """Restore intent only on the replacement whose pre-restoration window just ended."""
+        current = self.current()
+        if current.spec.SerializeToString(deterministic=True).hex() != spec:
+            raise RuntimeError("sandbox intent changed before explicit restoration")
+        self.stable(runtime, spec)
+        if boundary_descriptor(self.identity, runtime) != boundary:
+            raise RuntimeError("replacement boundary changed before explicit restoration")
         request = self.client.pb.UpdateConfigRequest(
             sandbox=self.name,
             workspace_scope=self.client.scope,
-            expected_resource_version=self.current().metadata.resource_version,
+            expected_resource_version=current.metadata.resource_version,
             request_id=str(uuid.uuid4()),
-            policy=spec.policy,
+            policy=current.spec.policy,
         )
         self.wait_policy(self.submit("UpdateConfig", request))
         restored = self.provider(True)
         if not restored.receipt_id or restored.receipt_id == receipt.receipt_id:
             raise RuntimeError("restoration requires a new provider receipt")
         restored_spec = self.current().spec.SerializeToString(deterministic=True).hex()
-        accepted = self.attest(restored, True, before, after, restored_spec, boundary=boundary)
+        accepted = self.attest(restored, True, before, runtime, restored_spec, boundary=boundary)
         row["completed"] = True
         self.record("restarts", dict(row))
-        return restored, before, after, restored_spec, boundary, accepted
+        return restored, restored_spec, accepted
 
 
 async def measure_credential_recovery(fixture, ip, ca_file, gateway):
@@ -367,6 +370,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
         "barriers": [],
         "restarts": [],
         "pre_restoration_status": [],
+        "pre_restoration_guest": {"outcome": "not_started"},
         "attestations": [],
         "references": {},
         "characterization_completed": False,
@@ -374,7 +378,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "continuous process or transport survival",
-            "credential use before explicit restoration",
+            "previously saved references before explicit restoration",
             "crash, database loss and network partitions",
             "persistent/in-flight traffic",
             "refresh-token reauthorization and production identity",
@@ -432,7 +436,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             interruption_owner = sandbox.owner
             receipt = await asyncio.to_thread(authority.provider, True)
             replacement = None
-            rotation_target = None
+            current_target = None
             attached = True
             prefix = "/sandbox/recovery-" + uuid.uuid4().hex
             paths = {}
@@ -446,11 +450,15 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                     raise RuntimeError("credential recovery guest observation failed")
                 return json.loads(result.stdout)
 
-            async def capture(slot):
+            async def capture(slot, *, allow_absent=False):
                 paths[slot] = prefix + "-" + slot
                 result = await execute(
-                    reference_program(profile.env_key, paths[slot], capture=True)
+                    reference_program(
+                        profile.env_key, paths[slot], capture=True, allow_absent=allow_absent
+                    )
                 )
+                if allow_absent and result == {"reference_sha256": hashlib.sha256(b"").hexdigest()}:
+                    return None
                 digest = result.get("reference_sha256", "")
                 if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
                     raise RuntimeError("invalid reference fingerprint")
@@ -481,10 +489,10 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                     await asyncio.to_thread(authority.current)
                 else:
                     before, runtime, spec, boundary, accepted = replacement
-                    if rotation_target is not None and attached:
+                    if current_target is not None and attached:
                         replacement[-1] = await asyncio.to_thread(
                             authority.attest_current,
-                            rotation_target,
+                            current_target,
                             before,
                             runtime,
                             spec,
@@ -598,10 +606,9 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                 converge=True,
             )
             receipt = await asyncio.to_thread(authority.provider, True)
-            receipt, before, runtime, spec, boundary, accepted = await asyncio.to_thread(
+            before, runtime, spec, boundary, accepted, restart = await asyncio.to_thread(
                 authority.replace, gateway, receipt
             )
-            replacement = [before, runtime, spec, boundary, accepted]
             interruption_owner = {
                 "sandbox_id": sandbox.owner["sandbox_id"],
                 "containers": [
@@ -610,6 +617,38 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                     if container["Labels"].get("openshell.ai/isolation-role") == "supervisor"
                 ],
             }
+            guest = evidence["pre_restoration_guest"]
+            if accepted is None:
+                guest["outcome"] = "readiness_unconfirmed"
+            elif accepted.receipt.desired != before.receipt.desired:
+                guest["outcome"] = "target_changed"
+            else:
+                replacement = [before, runtime, spec, boundary, accepted]
+                current_target = accepted.receipt.desired
+                await attest()
+                if await capture("pre_restoration", allow_absent=True) is None:
+                    await attest()
+                    guest["outcome"] = "no_launch_reference"
+                else:
+                    active = await mint()
+                    result = await check(
+                        "launch_reference_before_restoration",
+                        "pre_restoration",
+                        [
+                            active["authorization_sha256"],
+                            "credential_unavailable",
+                            "credential_endpoint_mismatch",
+                        ],
+                    )
+                    guest["outcome"] = (
+                        "delivered" if result == active["authorization_sha256"] else result
+                    )
+            fixture.save()
+            receipt, spec, accepted = await asyncio.to_thread(
+                authority.restore, receipt, before, runtime, spec, boundary, restart
+            )
+            replacement = [before, runtime, spec, boundary, accepted]
+            current_target = None
             recovered = await mint()
             await check(
                 "saved_reference_after_restoration",
@@ -635,7 +674,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             await check("no_implicit_credential", None, ["anonymous"])
             await asyncio.to_thread(profile.rotate, fixture.client)
             rotated = await mint(recovered["generation"])
-            rotation_target = await asyncio.to_thread(authority.rotation_target, receipt)
+            current_target = await asyncio.to_thread(authority.rotation_target, receipt)
             await check(
                 "rotation_after_recovery",
                 "replacement",

@@ -711,6 +711,11 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         )
 
     monkeypatch.setattr(probe, "generation_interruption", generation_interruption)
+    monkeypatch.setattr(probe, "snapshot", lambda identity: {"owned": identity})
+    monkeypatch.setattr(
+        probe, "runtime_continuity", lambda identity, before, after: before == after
+    )
+    monkeypatch.setattr(probe, "session_sample", lambda *args: sample_session("one"))
 
     def control(host, path, **kwargs):
         row = dict(
@@ -944,6 +949,10 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
         assert state.requests == (23 if fault == "generation" else 24)
         assert fixture.report["credentials"]["characterization_completed"]
+        assert (
+            fixture.report["credentials"]["worker_refresh_session_window"]["outcome"]
+            == "no_disconnect_observed"
+        )
         retained = json.dumps(fixture.report["credentials"])
         assert "synthetic-refresh-error-material" not in retained
         assert b"synthetic-refresh-error-material".hex() not in retained
@@ -1006,3 +1015,126 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         "profile",
     ]
     assert fixture.report["credentials"]["provider_and_profile_cleanup_verified"]
+
+
+def sample_session(session, sequence=1, *, reason="none", installed=True):
+    return dict(
+        session=session,
+        sequence=sequence,
+        network="network",
+        process="process",
+        reason=reason,
+        installed=installed,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        (None, "reconnected"),
+        ("same", "disconnect_without_new_session"),
+        ("no_gap", "session_changed_without_observed_disconnect"),
+        ("lease", "session_changed_without_observed_disconnect"),
+        ("before", "installation_unconfirmed"),
+        ("process", "runtime_identity_changed"),
+        ("request", "session_changed_around_guest_request"),
+        ("cached", "fresh_report_unconfirmed"),
+        ("old_after_gap", "multiple_sessions_observed"),
+        ("single_advance", "fresh_report_unconfirmed"),
+        ("repeated_advance", "fresh_report_unconfirmed"),
+        ("regression", "session_changed_around_guest_request"),
+        ("second_session", "session_changed_around_guest_request"),
+        ("second_runtime", "runtime_identity_changed"),
+        ("second_pending", "installation_unconfirmed"),
+    ],
+)
+def test_disconnect_requires_owned_runtime_and_observed_session_transition(probe, fault, expected):
+    first = sample_session("old")
+    gap = sample_session(
+        "", installed=False, reason="PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+    )
+    last = sample_session("old" if fault == "same" else "new", 2)
+    after = {**last, "sequence": 2 if fault == "cached" else 3}
+    if fault == "before":
+        first["installed"] = False
+    if fault == "process":
+        after["process"] = "replacement"
+    if fault == "request":
+        after["session"] = "another"
+    if fault == "lease":
+        gap["reason"] = "PROVIDER_READINESS_REASON_SUPERVISOR_LEASE_EXPIRED"
+    samples = [first, *([] if fault == "no_gap" else [gap])]
+    if fault == "old_after_gap":
+        samples.append(first)
+    samples.append(last)
+    post = [after]
+    if fault != "single_advance":
+        final = {**after, "sequence": after["sequence"] + 1}
+        if fault == "repeated_advance":
+            final["sequence"] = after["sequence"]
+        if fault == "regression":
+            final["sequence"] -= 2
+        if fault == "second_session":
+            final["session"] = "other"
+        if fault == "second_runtime":
+            final["network"] = "other"
+        if fault == "second_pending":
+            final["installed"] = False
+        post.append(final)
+    assert probe.session_outcome(samples, post) == expected
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        (None, "reconnected"),
+        ("late", "post_request_window_elapsed"),
+        ("cached", "fresh_report_unconfirmed"),
+    ],
+)
+def test_post_request_confirmation_waits_only_for_timely_advances(
+    probe, monkeypatch, fault, expected
+):
+    before = [
+        sample_session("old"),
+        sample_session(
+            "", installed=False, reason="PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+        ),
+        sample_session("new", 2),
+    ]
+    after = []
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    def read(*args):
+        if len(after) and fault == "late":
+            sleep(16)
+        return sample_session("new", 3 if not after or fault == "cached" else 4)
+
+    monkeypatch.setattr(probe, "session_sample", read)
+    monkeypatch.setattr(probe, "time", NS(monotonic=lambda: clock[0], sleep=sleep))
+    assert probe.observe_session_after_request(None, None, None, before, after) == expected
+    assert len(after) >= 2
+
+
+@pytest.mark.parametrize(
+    ("sequences", "expected"),
+    [
+        ([3, 4], "fresh_report_unconfirmed"),
+        ([10, 11, 11], "fresh_report_unconfirmed"),
+        ([3, 4, 10, 11, 12], "reconnected"),
+    ],
+)
+def test_post_request_advances_must_exceed_same_session_history(probe, sequences, expected):
+    before = [
+        sample_session("old", 99),
+        sample_session(
+            "", installed=False, reason="PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED"
+        ),
+        sample_session("new", 10),
+        sample_session("new", 2),
+    ]
+    after = [sample_session("new", sequence) for sequence in sequences]
+    assert probe.session_outcome(before, after) == expected
