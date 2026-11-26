@@ -28,9 +28,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/openclaw" "$RUNNER_TEMP/evidence"
           curl --fail --location --retry 2 https://codeload.github.com/openclaw/openclaw/tar.gz/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b -o "$RUNNER_TEMP/source.tar.gz"
-          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
+          tar --force-local -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/openclaw"
           cd "$RUNNER_TEMP/openclaw"
           git init -q
+          git config core.autocrlf false
           git add .
           git -c user.name=Proof -c user.email=proof@example.invalid commit -qm baseline
           git apply --check "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_preflight/proposal.patch"
