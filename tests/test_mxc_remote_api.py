@@ -379,6 +379,19 @@ config = json.loads(Path(sys.argv[1]).read_text())
 certs = Path(config['certificates'])
 remote_api.TIMEOUT = config['timeout']
 remote_api.TRANSFER_TIMEOUT = config['transfer_timeout']
+def revoke_owner():
+    with coordinator.authority() as authority:
+        owner = authority.acquire('session', sessions['session'].digest,
+            remote_authority.Resource('host-a', 'boot-a', 'guest'))
+        authority.request_fence(owner, 'stop')
+
+if config.get('download_damage') == 'result_revoked':
+    original_send_result = remote_api._send_result
+    def send_result(connection, result, deadline):
+        original_send_result(connection, result, deadline)
+        revoke_owner()
+    remote_api._send_result = send_result
+
 original_send = remote_api.transfer.send
 def send(root, entries, write):
     damage = config.get('download_damage')
@@ -390,10 +403,7 @@ def send(root, entries, write):
     else:
         original_send(root, entries, write)
         if damage == 'revoked':
-            with coordinator.authority() as authority:
-                owner = authority.acquire('session', sessions['session'].digest,
-                    remote_authority.Resource('host-a', 'boot-a', 'guest'))
-                authority.request_fence(owner, 'stop')
+            revoke_owner()
 remote_api.transfer.send = send
 def boundary(point):
     if point == config.get('crash'):
@@ -963,11 +973,28 @@ def test_streamed_file_result_replays_after_restart_and_fenced_takeover(tmp_path
             b.call_result("retry", *second, result_bytes=limit)
         assert b.call_result("begin", *second, result_bytes=limit) == {"result": None}
         (source / "index.json").write_bytes(b"second")
-        b.publish(*second, source, result, result_bytes=limit)
+        second_result = json.dumps(
+            {"stdout": "next", "artifact": encoded(b"y" * len(artifact))}
+        ).encode()
+        b.publish(*second, source, second_result, result_bytes=limit)
         assert b.call_result("retry", *first, result_bytes=limit)["result"] == result
-        assert b.call_result("retry", *second, result_bytes=limit)["result"] == result
+        assert b.call_result("retry", *second, result_bytes=limit)["result"] == second_result
         with pytest.raises(api.Refused, match="revoked"):
             client(certificates, address).call_result("retry", *args, result_bytes=limit)
+
+
+def test_client_refuses_replay_revoked_after_result_bytes(tmp_path, certificates):
+    with running(tmp_path / "runner", certificates, download_damage="result_revoked") as (
+        _,
+        address,
+    ):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.call("publish", "session", **publication(owner))
+        with pytest.raises(api.Refused, match="revoked"):
+            a.call_result(
+                "retry", "session", owner, "call", b"code", result_bytes=api.MAX_PAYLOAD + 1
+            )
 
 
 @pytest.mark.parametrize("damage", ["oversize", "digest", "partial"])
