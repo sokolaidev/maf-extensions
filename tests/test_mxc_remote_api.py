@@ -900,6 +900,106 @@ def stream_args(owner, **changes):
     )
 
 
+def test_file_session_result_budget_tracks_artifact_policy():
+    default = api.Session.for_files(PROFILE, LIMITS)
+    largest = api.Session.for_files(PROFILE, LIMITS, api.FileLimits(artifact_bytes=64 * 1024**2))
+    assert default.limits.result_bytes == 28 * 1024**2
+    assert largest.limits.result_bytes == api.MAX_SHARED_RESULT == 92 * 1024**2
+    assert default.digest != largest.digest
+    with pytest.raises(api.Refused):
+        replace(LIMITS, result_bytes=api.MAX_SHARED_RESULT + 1)
+
+
+def test_streamed_file_result_replays_after_restart_and_fenced_takeover(tmp_path, certificates):
+    config = api.Session.for_files(
+        PROFILE, replace(LIMITS, session_quota=90 << 20, store_quota=100 << 20)
+    )
+    limit = config.limits.result_bytes
+    artifact = b"x" * (7 << 20)
+    result = json.dumps({"stdout": "done", "artifact": encoded(artifact)}).encode()
+    assert len(result) > api.MAX_FRAME
+    root = tmp_path / "runner"
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "index.json").write_bytes(b"first")
+    with running(root, certificates, limits=config.limits, profile=config.profile) as (_, address):
+        a = client(certificates, address)
+        owner = a.call("acquire", "session", guest="guest-a", expected_profile=config.digest)[
+            "owner"
+        ]
+        args = ("session", owner, "first", b"code")
+        with pytest.raises(api.Refused, match="streaming result"):
+            a.call("begin", "session", owner=owner, call="first", request=encoded(b"code"))
+        assert a.call_result("begin", *args, result_bytes=limit) == {"result": None}
+        wire = dict(
+            owner=owner,
+            call="first",
+            request=encoded(b"code"),
+            files=[entry("index.json", b"first")],
+            result=api._result_info(result),
+        )
+        # Lose the acknowledgement after sending the complete publication.
+        with a._stream("publish", "session", wire, version=3) as (connection, deadline):
+            assert api._reply(connection, deadline) == {"ready": True}
+            connection.sendall(b"first")
+            api._send_result(connection, result, deadline)
+            api._send(connection, {"complete": True}, deadline)
+        assert a.call_result("begin", *args, result_bytes=limit)["result"] == result
+    with running(root, certificates, limits=config.limits, profile=config.profile) as (_, address):
+        with remote.Authority(root / "service/ownership", enabled=True) as authority:
+            authority.request_fence(authority._decode_owner(owner), "stop")
+            authority.confirm_fence("stop", lambda _: True)
+        b = client(certificates, address, "b")
+        replacement = b.call("acquire", "session", guest="guest-b", expected_profile=config.digest)[
+            "owner"
+        ]
+        assert b.restore("session", replacement, tmp_path / "restored") == "first"
+        assert (tmp_path / "restored/index.json").read_bytes() == b"first"
+        first = ("session", replacement, "first", b"code")
+        second = ("session", replacement, "second", b"next")
+        with pytest.raises(api.Refused, match="result exceeds"):
+            b.call_result("retry", *first, result_bytes=api.MAX_PAYLOAD + 1)
+        with pytest.raises(api.Refused, match="unknown call"):
+            b.call_result("retry", *second, result_bytes=limit)
+        assert b.call_result("begin", *second, result_bytes=limit) == {"result": None}
+        (source / "index.json").write_bytes(b"second")
+        b.publish(*second, source, result, result_bytes=limit)
+        assert b.call_result("retry", *first, result_bytes=limit)["result"] == result
+        assert b.call_result("retry", *second, result_bytes=limit)["result"] == result
+        with pytest.raises(api.Refused, match="revoked"):
+            client(certificates, address).call_result("retry", *args, result_bytes=limit)
+
+
+@pytest.mark.parametrize("damage", ["oversize", "digest", "partial"])
+def test_streamed_result_failure_preserves_checkpoint(tmp_path, certificates, damage):
+    root = tmp_path / "runner"
+    with running(root, certificates) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.call("publish", "session", **publication(owner))
+        a.call("begin", "session", owner=owner, call="next", request=encoded(b"code"))
+        info = api._result_info(b"saved")
+        if damage == "oversize":
+            info["size"] = LIMITS.result_bytes + 1
+        wire = stream_args(owner, call="next", result=info)
+        with a._stream("publish", "session", wire, version=3) as (connection, deadline):
+            if damage == "oversize":
+                with pytest.raises(api.Refused, match="result exceeds"):
+                    api._reply(connection, deadline)
+            else:
+                assert api._reply(connection, deadline) == {"ready": True}
+                connection.sendall(b"checkpoint")
+                if damage == "digest":
+                    connection.sendall(b"other")
+                    with pytest.raises(api.Refused, match="digest"):
+                        api._reply(connection, deadline)
+                else:
+                    connection.sendall(b"s")
+        assert a.restore("session", owner, tmp_path / "restored") == "call"
+        with pytest.raises(api.Refused, match="explicit recovery"):
+            a.call("retry", "session", owner=owner, call="next", request=encoded(b"code"))
+
+
 def test_streaming_nested_checkpoint_restart_and_native_size(
     tmp_path, certificates, record_property, monkeypatch
 ):
@@ -1183,7 +1283,8 @@ def test_stream_storage_failure_cleans_partial_bytes_without_refunding(
 
 @pytest.mark.parametrize("phase", ["inventory", "payload"])
 @pytest.mark.parametrize("target", ["session", "other"])
-def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target):
+@pytest.mark.parametrize("operation", ["restore", "retry"])
+def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target, operation):
     from concurrent.futures import ThreadPoolExecutor
 
     with coordinator(tmp_path / "db") as db:
@@ -1219,7 +1320,12 @@ def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target):
                     fenced.append(True)
 
         connection = PausedConnection()
-        wire = request("restore", owner=owner) | {"version": 2}
+        wire = (
+            request("restore", owner=owner) | {"version": 2}
+            if operation == "restore"
+            else request("retry", owner=owner, call="call", request=encoded(b"code"))
+            | {"version": 3}
+        )
         if target == "session":
             with pytest.raises(api.Refused, match="revoked"):
                 db.dispatch(FINGERPRINT, wire, connection)
@@ -1687,7 +1793,7 @@ class DirectNativeClient:
                 (destination / name).write_bytes(base64.b64decode(data))
         return value["call"]
 
-    def publish(self, session, owner, call, request, checkpoint, result):
+    def publish(self, session, owner, call, request, checkpoint, result, *, result_bytes):
         direct(
             self.db,
             "publish",
