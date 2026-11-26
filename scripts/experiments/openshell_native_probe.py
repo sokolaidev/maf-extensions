@@ -511,8 +511,11 @@ def main() -> int:
     parser.add_argument("--egress-transitions", action="store_true")
     parser.add_argument("--egress-restart", action="store_true")
     parser.add_argument("--credential-lifecycle", action="store_true")
+    parser.add_argument("--credential-recovery", action="store_true")
     args = parser.parse_args()
-    if args.credential_lifecycle and (
+    if args.credential_lifecycle and args.credential_recovery:
+        parser.error("select only one credential profile")
+    if (args.credential_lifecycle or args.credential_recovery) and (
         not args.https_ca
         or not args.egress_origin_ip
         or args.egress_restart
@@ -520,7 +523,7 @@ def main() -> int:
         or args.egress_composition
         or args.egress_routes
     ):
-        parser.error("--credential-lifecycle requires only --https-ca and --egress-origin-ip")
+        parser.error("credential profiles require only --https-ca and --egress-origin-ip")
     if args.egress_restart and (
         not args.egress_origin_ip
         or args.https_ca
@@ -554,7 +557,11 @@ def main() -> int:
         raise ValueError("requires the unprivileged pinned /sandbox workload recipe")
     report = {
         "format": 1,
-        "issue": 1835 if args.credential_lifecycle else 1834 if args.egress_origin_ip else 1833,
+        "issue": 1835
+        if args.credential_lifecycle or args.credential_recovery
+        else 1834
+        if args.egress_origin_ip
+        else 1833,
         "upstream_commit": PIN,
         "gateway_version": "0.1.7",
         "python": sys.version,
@@ -619,7 +626,7 @@ def main() -> int:
         created = False
         try:
             wait_gateway(client)
-            if args.credential_lifecycle:
+            if args.credential_lifecycle or args.credential_recovery:
                 setting = client.pb.UpdateConfigRequest(
                     **{"global": True, "setting_key": "ocsf_json_enabled"}
                 )
@@ -632,7 +639,15 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.credential_lifecycle:
+            if args.credential_recovery:
+                from openshell_credential_recovery import measure_credential_recovery
+
+                asyncio.run(
+                    measure_credential_recovery(
+                        fixture, args.egress_origin_ip, args.https_ca, control["gateway"]
+                    )
+                )
+            elif args.credential_lifecycle:
                 from openshell_credential_lifecycle import measure_credentials
 
                 asyncio.run(measure_credentials(fixture, args.egress_origin_ip, args.https_ca))

@@ -400,14 +400,22 @@ def test_workflow_retains_evidence_on_failure():
     assert "trust_image" not in https["run"]
     selection = workflow[True]["workflow_dispatch"]["inputs"]["profile"]
     assert selection["default"] == "all"
-    assert selection["options"] == ["all", "credentials"]
+    assert selection["options"] == ["all", "credentials", "credential-recovery"]
     credentials = next(s for s in job["steps"] if "--credential-lifecycle" in s.get("run", ""))
-    assert "inputs.profile" not in credentials["if"]
+    assert "inputs.profile != 'credential-recovery'" in credentials["if"]
     assert "steps.prepare.outcome == 'success'" in credentials["if"]
     assert "--record-authorization" in credentials["run"]
     assert "credentials.json" in credentials["run"]
     assert "trap cleanup_credentials EXIT" in credentials["run"]
+    recovery = next(s for s in job["steps"] if "--credential-recovery" in s.get("run", ""))
+    assert "inputs.profile != 'credentials'" in recovery["if"]
+    assert "!cancelled()" in recovery["if"]
+    assert "steps.prepare.outcome == 'success'" in recovery["if"]
+    assert "--record-authorization" in recovery["run"]
+    assert "credential-recovery.json" in recovery["run"]
+    assert "trap cleanup_credentials EXIT" in recovery["run"]
     for step in (measure, composition, https):
+        assert "inputs.profile != 'credential-recovery'" in step["if"]
         assert "inputs.profile != 'credentials'" in step["if"]
 
 
