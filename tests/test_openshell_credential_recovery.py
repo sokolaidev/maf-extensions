@@ -410,7 +410,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
             code = command[-1].replace("/sandbox/", tmp_path.as_posix() + "/")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                exec(code, {})
+                exec(code, {})  # nosec B102 - repository-generated fixture program only
             return NS(exit_code=0, stderr="", stdout=output.getvalue())
 
         async def dispose(self):
@@ -593,6 +593,7 @@ def test_current_target_requires_exact_installed_and_advancing_evidence(probe, m
     current.receipt = copy.deepcopy(receipt)
     if fault == "target":
         current.receipt.desired.provider_env_revision = 9
+        current.observed.provider_env_revision = 9
     elif fault == "receipt":
         current.observed.provider_env_revision = 1
     elif fault == "sequence":
@@ -628,7 +629,8 @@ def test_current_target_requires_exact_installed_and_advancing_evidence(probe, m
             authority.attest_current(target, before, {}, "spec", accepted, boundary=boundary)
             is current
         )
-    assert records and set(records[0]) == {"status_sha256", "status_size"}
+    assert records and "status_hex" not in records[0]
+    assert records[0]["accepted_sequence"] == 2
 
 
 @pytest.mark.parametrize(

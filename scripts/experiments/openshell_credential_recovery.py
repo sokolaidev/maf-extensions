@@ -174,7 +174,17 @@ class CredentialRecovery(RestartAuthority):
         deadline = time.monotonic() + 30
         while True:
             status = self.current_status()
-            self.record("attestations", protobuf_evidence(status, "status"))
+            self.record(
+                "attestations",
+                {
+                    **protobuf_evidence(status, "status"),
+                    "state": status.state,
+                    "authority_identity": list(authority_identity(status)),
+                    "accepted_identity": list(authority_identity(accepted)),
+                    "sequence": status.observed.sequence,
+                    "accepted_sequence": accepted.observed.sequence,
+                },
+            )
             if status.receipt.desired != target:
                 raise RuntimeError("current credential target changed during observation")
             self.stable(runtime, spec)
