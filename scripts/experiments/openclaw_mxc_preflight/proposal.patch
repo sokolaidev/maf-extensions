@@ -230,7 +230,7 @@ index 9d0f104..e6256a3 100644
      const spawned = options.pty
        ? await sdk.spawnWithPty(spawnRequest)
        : await sdk.spawn(spawnRequest);
-@@ -351,6 +362,151 @@ export function signalExitCode(signal) {
+@@ -351,6 +362,152 @@ export function signalExitCode(signal) {
    return 1;
  }
  
@@ -279,6 +279,7 @@ index 9d0f104..e6256a3 100644
 +      stdio: ["pipe", "pipe", "ignore"],
 +      windowsHide: true,
 +    });
++    /** @type {Error | undefined} */
 +    let failure;
 +    let size = 0;
 +    const chunks = [];
@@ -954,3 +955,63 @@ index 310eaa5..320d487 100644
      dependencies:
        koffi: 3.3.2
        node-pty: 1.1.0(supports-color@10.2.2)
+diff --git a/extensions/mxc/src/config.ts b/extensions/mxc/src/config.ts
+--- a/extensions/mxc/src/config.ts
++++ b/extensions/mxc/src/config.ts
+@@ -35,7 +35,7 @@
+ const MxcPluginConfigSchema = z.strictObject({
+   mxcBinaryPath: nonEmptyTrimmedString("mxcBinaryPath must be a non-empty string")
+     .describe(
+-      "Absolute path to an MXC 1.0 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk.",
++      "Absolute path to an MXC 1.1 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk.",
+     )
+     .optional(),
+   containment: z
+@@ -68,7 +68,7 @@
+     .optional(),
+   debug: z
+     .boolean({ error: "debug must be a boolean" })
+-    .describe("Write the resolved MXC native component paths and MXC SDK warnings to stderr.")
++    .describe("Write bounded preflight identities/counts and MXC SDK warnings to stderr.")
+     .optional(),
+   mxcPolicyPaths: z
+     .array(nonEmptyTrimmedString("mxcPolicyPaths must be an array of non-empty strings"), {
+diff --git a/extensions/mxc/openclaw.plugin.json b/extensions/mxc/openclaw.plugin.json
+--- a/extensions/mxc/openclaw.plugin.json
++++ b/extensions/mxc/openclaw.plugin.json
+@@ -34,7 +34,7 @@
+       "mxcBinaryPath": {
+         "type": "string",
+         "minLength": 1,
+-        "description": "Absolute path to an MXC 1.0 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk."
++        "description": "Absolute path to an MXC 1.1 executor in an architecture directory (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. When unset, both are taken from the installed @microsoft/mxc-sdk."
+       },
+       "containment": {
+         "type": "string",
+@@ -54,7 +54,7 @@
+       },
+       "debug": {
+         "type": "boolean",
+-        "description": "Write the resolved MXC native component paths and MXC SDK warnings to stderr."
++        "description": "Write bounded preflight identities/counts and MXC SDK warnings to stderr."
+       },
+       "mxcPolicyPaths": {
+         "type": "array",
+@@ -72,7 +72,7 @@
+   "uiHints": {
+     "mxcBinaryPath": {
+       "label": "MXC Executor Path",
+-      "help": "Optional absolute path to an MXC 1.0 executor (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. Leave unset to use the installed @microsoft/mxc-sdk.",
++      "help": "Optional absolute path to an MXC 1.1 executor (<dir>\\<x64|arm64>\\wxc-exec.exe) with mxc_ffi.dll from the same release beside it. Leave unset to use the installed @microsoft/mxc-sdk.",
+       "advanced": true
+     },
+     "containment": {
+@@ -90,7 +90,7 @@
+     },
+     "debug": {
+       "label": "Debug Logging",
+-      "help": "Write the resolved MXC native component paths and MXC SDK warnings to stderr.",
++      "help": "Write bounded preflight identities/counts and MXC SDK warnings to stderr.",
+       "advanced": true
+     },
+     "mxcPolicyPaths": {
