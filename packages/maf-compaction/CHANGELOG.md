@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.4...maf-compaction-v0.19.5) (2026-11-26)
+
+
+### Fixes
+
+* **compaction:** read past the user phase in a background snapshot's gaps ([#2986](https://github.com/sokolaidev/maf-extensions/issues/2986)) ([080eae0](https://github.com/sokolaidev/maf-extensions/commit/080eae0ce3fe092dc0dde80c0a3e8244d1a91e0d))
+
 ## [0.19.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.3...maf-compaction-v0.19.4) (2026-11-25)
 
 
