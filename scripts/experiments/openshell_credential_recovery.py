@@ -15,6 +15,7 @@ from openshell_credential_lifecycle import (
     HTTPSRefreshProfile,
     OriginJournal,
     ProviderCleanup,
+    current_provider_status,
     generation_interruption,
     protobuf_evidence,
     unexpired,
@@ -122,22 +123,7 @@ class CredentialRecovery(RestartAuthority):
 
     def current_status(self):
         self.current()
-        status = self.client.rpc(
-            "GetSandboxProviderStatus",
-            self.client.pb.GetSandboxProviderStatusRequest(
-                sandbox=self.name, provider=self.profile.provider, workspace_scope=self.client.scope
-            ),
-        ).status
-        if (status.receipt.workspace, status.receipt.provider) != (
-            self.client.scope.workspace,
-            self.profile.provider,
-        ) or (
-            status.receipt.desired.sandbox_id,
-            status.receipt.desired.sandbox,
-            status.receipt.desired.provider_id,
-        ) != (self.identity, self.name, self.profile.provider_id):
-            raise RuntimeError("current credential authority identity mismatch")
-        return status
+        return current_provider_status(self.client, self.name, self.identity, self.profile)
 
     def rotation_target(self, receipt):
         """Pin the new environment target without treating the superseded receipt as installed."""

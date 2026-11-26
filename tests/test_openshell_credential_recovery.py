@@ -625,6 +625,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
         assert report["characterization_completed"] is (not expected_failure)
     if not expected_failure:
         expected_outcome = {
+            None: "delivered",
             "no_readiness": "readiness_unconfirmed",
             "target_changed": "target_changed",
             "no_launch_reference": "no_launch_reference",
