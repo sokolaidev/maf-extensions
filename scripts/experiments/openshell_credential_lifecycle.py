@@ -125,7 +125,7 @@ class ProviderCleanup:
             self.detachment = asyncio.create_task(
                 asyncio.to_thread(self.transitions.provider, False)
             )
-        await asyncio.shield(self.detachment)
+        return await asyncio.shield(self.detachment)
 
     async def dispose(self):
         async def ordered():

@@ -360,6 +360,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             sandbox = await fixture.acquire(policy=policy)
             authority = CredentialRecovery(fixture, profile, ip, record)
             cleanup = ProviderCleanup(sandbox, authority)
+            interruption_owner = sandbox.owner
             receipt = await asyncio.to_thread(authority.provider, True)
             replacement = None
             rotation_target = None
@@ -485,7 +486,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                         ):
                             raise
                         closures = await asyncio.to_thread(
-                            generation_interruption, sandbox.owner, host, started, ended
+                            generation_interruption, interruption_owner, host, started, ended
                         )
                         attempt["generation_interruptions"] = closures
                         fixture.save()
@@ -530,6 +531,14 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
             receipt = await asyncio.to_thread(authority.provider, True)
             restored = await asyncio.to_thread(authority.replace, gateway, receipt)
             receipt, *replacement = restored
+            interruption_owner = {
+                "sandbox_id": sandbox.owner["sandbox_id"],
+                "containers": [
+                    container["Id"]
+                    for container in replacement[1]["containers"]
+                    if container["Labels"].get("openshell.ai/isolation-role") == "supervisor"
+                ],
+            }
             recovered = await mint()
             await check(
                 "saved_reference_after_restoration",
@@ -562,7 +571,7 @@ async def measure_credential_recovery(fixture, ip, ca_file, gateway):
                 [rotated["authorization_sha256"]],
                 converge=True,
             )
-            receipt = await asyncio.to_thread(authority.provider, False)
+            receipt = await cleanup.detach()
             attached = False
             replacement[2] = authority.current().spec.SerializeToString(deterministic=True).hex()
             await check("detached_saved_reference", "saved", ["credential_unavailable"])

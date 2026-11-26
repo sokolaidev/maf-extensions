@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import copy
 import hashlib
+import http.client
 import importlib
 import io
 import json
@@ -287,6 +288,7 @@ def test_mutation_evidence_has_no_serialized_fields_even_on_rpc_failure(probe, f
     [
         None,
         "saved_retired",
+        "interruption",
         "reference_changed",
         "expired",
         "origin",
@@ -301,9 +303,10 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
 ):
     state = {"epoch": 0, "attached": True, "replaced": False, "sequence": 0}
     events, hits, mints, snapshots = [], [], [], []
-    fixture = NS(
-        client=NS(image="image"), owners=[{"name": "owned", "sandbox_id": "identity"}], report={}
-    )
+    owner = {"name": "owned", "sandbox_id": "identity", "containers": ["launch-supervisor"]}
+    fixture = NS(client=NS(image="image"), owners=[owner], report={})
+    detach_receipt = NS(receipt_id="detached")
+    interrupted_cases = {"saved_reference_before_restart", "replacement_reference_reaches_origin"}
     fixture.save = lambda: snapshots.append(copy.deepcopy(fixture.report))
 
     class Issuer:
@@ -371,6 +374,9 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
             return json.dumps(self.hit).encode()
 
     def urlopen(request, **kwargs):
+        case = fixture.report["credential_recovery"]["cases"][-1]
+        if fault == "interruption" and case["case"] in interrupted_cases and not case["attempts"]:
+            raise http.client.RemoteDisconnected()
         url = urlsplit(request.full_url)
         reference = request.get_header("Authorization", "").removeprefix("Bearer ")
         refusal = None
@@ -414,6 +420,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
             return NS(exit_code=0, stderr="", stdout=output.getvalue())
 
         async def dispose(self):
+            assert self.owner["containers"] == ["launch-supervisor"]
             events.append("physical-cleanup")
 
     sandbox = Sandbox()
@@ -435,7 +442,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
             events.append("attach" if attached else "detach")
             if not attached and fault == "detach":
                 raise RuntimeError("detach failed")
-            return NS(receipt_id="receipt")
+            return NS(receipt_id="receipt") if attached else detach_receipt
 
         def replace(self, *args):
             events.append("replace")
@@ -451,10 +458,18 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
                 next(tmp_path.glob("*-saved")).write_text("openshell:resolve:foreign")
             if fault == "expired":
                 mints[-1]["expires_at"] = time.time() + 1
-            return NS(receipt_id="new"), "before", "runtime", "spec", "boundary", 0
+            runtime = {
+                "containers": [
+                    {"Id": role, "Labels": {"openshell.ai/isolation-role": role}}
+                    for role in ("sandbox", "supervisor")
+                ]
+            }
+            return NS(receipt_id="new"), "before", runtime, "spec", "boundary", 0
 
         def attest(self, receipt, attached, before, runtime, spec, accepted, **kwargs):
             events.append("attest")
+            if not attached:
+                assert receipt is detach_receipt
             assert accepted == state["sequence"]
             state["sequence"] += 1
             if fault == "attestation":
@@ -480,6 +495,13 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
         hits.append(hit)
         return hit
 
+    def interruption(observer, host, started, ended):
+        assert observer["sandbox_id"] == owner["sandbox_id"]
+        expected = "supervisor" if state["replaced"] else "launch-supervisor"
+        assert observer["containers"] == [expected]
+        return [{"signal": "relay_closed_for_policy_generation_change"}]
+
+    monkeypatch.setattr(probe, "generation_interruption", interruption)
     monkeypatch.setattr(probe, "TokenIssuer", Issuer)
     monkeypatch.setattr(probe, "HTTPSRefreshProfile", Profile)
     monkeypatch.setattr(probe, "CredentialRecovery", Authority)
@@ -496,7 +518,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
     monkeypatch.setattr(
         probe, "fixture_spec", lambda image: NS(policy=NS(network_policies=defaultdict(rule)))
     )
-    expected_failure = fault not in (None, "saved_retired")
+    expected_failure = fault not in (None, "saved_retired", "interruption")
     if expected_failure:
         with pytest.raises(RuntimeError):
             asyncio.run(probe.measure_credential_recovery(fixture, "192.0.2.1", "ca.pem", object()))
@@ -509,6 +531,7 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
         and "provider-cleanup" in events
         and events[-1] == "issuer-closed"
     )
+    assert events.count("detach") == events.count("physical-cleanup") == 1
     assert events.index("physical-cleanup") > events.index("detach")
     assert report["provider_and_profile_cleanup_verified"] is (fault != "cleanup")
     if fault not in ("cleanup",):
@@ -518,7 +541,13 @@ def test_complete_matrix_preserves_reference_binding_and_cleanup(
         saved = next(
             row for row in report["cases"] if row["case"] == "saved_reference_after_restoration"
         )
-        assert saved["attempts"][0]["result"] == ("credential_unavailable" if fault else "token-2")
+        expected_saved = "credential_unavailable" if fault == "saved_retired" else "token-2"
+        assert saved["attempts"][0]["result"] == expected_saved
+        if fault == "interruption":
+            for row in report["cases"]:
+                if row["case"] in interrupted_cases:
+                    results = [attempt["result"] for attempt in row["attempts"]]
+                    assert results == ["generation_interruption", "token-2"]
         assert len(report["references"]) == 3
     assert "openshell:resolve:" not in json.dumps(snapshots)
 
