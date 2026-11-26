@@ -62,6 +62,91 @@ jobs:
         run: |
           set -euo pipefail
           pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/evidence/install.txt"
+      - name: Format candidate and retain exact tested patch
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --cached --name-only | grep -v '^pnpm-lock.yaml        id: tests
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          pnpm test:extension mxc --maxWorkers=1 --exclude extensions/mxc/test/mxc-sdk-wire-contract.integration.test.ts 2>&1 | tee "$RUNNER_TEMP/evidence/plugin-tests.txt"
+      - name: Direct creation through unchanged launcher
+        id: replay
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          node "$GITHUB_WORKSPACE/scripts/experiments/openclaw_mxc_sdk11/verify.mjs" extensions/mxc/src/mxc-spawn-launcher.mjs | tee "$RUNNER_TEMP/evidence/direct-creation.txt"
+      - name: Extension production types
+        if: runner.os == 'Linux'
+        id: types
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          pnpm tsgo:extensions 2>&1 | tee "$RUNNER_TEMP/evidence/types.txt"
+      - name: MXC lint
+        if: runner.os == 'Linux'
+        id: lint
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          node scripts/run-oxlint.mjs --tsconfig extensions/tsconfig.json extensions/mxc 2>&1 | tee "$RUNNER_TEMP/evidence/lint.txt"
+      - name: Changed source format
+        if: runner.os == 'Linux'
+        id: format
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --cached --name-only | grep -v '^pnpm-lock.yaml$')
+          OPENCLAW_FORMAT_TOOL=oxfmt pnpm format:check "${changed[@]}" 2>&1 | tee "$RUNNER_TEMP/evidence/format.txt"
+      - name: Baseline rejects new startup expectations
+        if: runner.os == 'Linux'
+        id: baseline
+        working-directory: ${{ runner.temp }}/openclaw
+        run: |
+          set -euo pipefail
+          git restore --source=HEAD --worktree extensions/mxc/src/readiness.ts extensions/mxc/src/plugin.ts
+          set +e
+          pnpm test extensions/mxc/test/readiness.test.ts extensions/mxc/test/plugin.test.ts --maxWorkers=1 2>&1 | tee "$RUNNER_TEMP/evidence/baseline-startup.txt"
+          status=${PIPESTATUS[0]}
+          set -e
+          git checkout-index --force -- extensions/mxc/src/readiness.ts extensions/mxc/src/plugin.ts
+          test "$status" -ne 0
+          grep -q 'refuses the appcontainer-dacl fallback mode' "$RUNNER_TEMP/evidence/baseline-startup.txt"
+          grep -q 'does not register a backend for the retired appcontainer-dacl mode' "$RUNNER_TEMP/evidence/baseline-startup.txt"
+      - name: Collect outcomes
+        if: always()
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          TEST_RESULT: ${{ steps.tests.outcome }}
+          REPLAY_RESULT: ${{ steps.replay.outcome }}
+          TYPE_RESULT: ${{ steps.types.outcome }}
+          LINT_RESULT: ${{ steps.lint.outcome }}
+          FORMAT_RESULT: ${{ steps.format.outcome }}
+        run: |
+          printf 'Install: %s\nTests: %s\nDirect creation: %s\nTypes: %s\nLint: %s\nFormat: %s\n' "$INSTALL_RESULT" "$TEST_RESULT" "$REPLAY_RESULT" "$TYPE_RESULT" "$LINT_RESULT" "$FORMAT_RESULT" | tee "$RUNNER_TEMP/evidence/outcome.txt" >> "$GITHUB_STEP_SUMMARY"
+          test "$INSTALL_RESULT/$TEST_RESULT/$REPLAY_RESULT" = success/success/success
+          if [ "$RUNNER_OS" = Linux ]; then
+            test "$TYPE_RESULT/$LINT_RESULT/$FORMAT_RESULT" = success/success/success
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mxc-sdk11-${{ runner.os }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
+)
+          OPENCLAW_FORMAT_TOOL=oxfmt pnpm format "${changed[@]}"
+          git add .
+          git diff --cached --check
+          git diff --cached --binary > "$RUNNER_TEMP/evidence/tested.patch"
+          sha256sum "$RUNNER_TEMP/evidence/tested.patch" | tee "$RUNNER_TEMP/evidence/tested-patch-hash.txt"
+          node -e 'console.log("TESTED_PATCH_BASE64=" + require("fs").readFileSync(process.env.RUNNER_TEMP + "/evidence/tested.patch").toString("base64"))'
       - name: Full plugin lane without native workload
         id: tests
         continue-on-error: true
