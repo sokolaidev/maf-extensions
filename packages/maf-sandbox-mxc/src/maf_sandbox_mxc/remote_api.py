@@ -16,7 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -24,22 +24,25 @@ from maf_sandbox_mxc._records import is_record
 
 from . import freshness, remote_scratch
 from . import remote_transfer as transfer
-from .host_store import (  # pyright: ignore[reportPrivateUsage]
-    MAX_CHECKPOINT as MAX_CHECKPOINT,
-)
+from .files.request import FileLimits
+from .files.transport import file_result_limit
 from .host_store import (
+    CHUNK,
     MAX_FILES,
     _lock,  # pyright: ignore[reportPrivateUsage]
     _name,  # pyright: ignore[reportPrivateUsage]
     _relative,  # pyright: ignore[reportPrivateUsage]
+)
+from .host_store import (  # pyright: ignore[reportPrivateUsage]
+    MAX_CHECKPOINT as MAX_CHECKPOINT,
 )
 from .host_store import (
     Refused as Refused,
 )
 from .private_root import check_file, prepare
 from .remote_authority import Authority, Fence, Owner, Policy, Resource
+from .shared_store import MAX_SHARED_RESULT, SharedStore
 from .shared_store import Limits as Limits
-from .shared_store import SharedStore
 
 MAX_FRAME = 8 * 1024**2
 MAX_PAYLOAD = 4 * 1024**2
@@ -130,9 +133,16 @@ class Session:
             not self.profile
             or any(type(k) is not str or type(v) is not str for k, v in self.profile.items())
             or len(_json(dict(self.profile))) > 4096
-            or self.limits.result_bytes > MAX_PAYLOAD
         ):
             raise Refused("session exceeds the bounded API profile")
+
+    @classmethod
+    def for_files(
+        cls, profile: Mapping[str, str], limits: Limits, files: FileLimits = FileLimits()
+    ) -> Session:
+        """Size retained results for the file channel and bind its policy to ownership."""
+        bound_profile = {**profile, "file_limits": _json(asdict(files)).decode("ascii")}
+        return cls(bound_profile, replace(limits, result_bytes=file_result_limit(files)))
 
     @property
     def digest(self) -> str:
@@ -389,11 +399,14 @@ class Coordinator:
         if self.lock.closed:
             raise Refused("coordinator is closed")
         _fields(request, {"version", "operation", "session", "arguments"})
-        if type(request["version"]) is not int or request["version"] not in (1, 2):
+        if type(request["version"]) is not int or request["version"] not in (1, 2, 3):
             raise Refused("unsupported API version")
-        streaming = request["version"] == 2
+        version = request["version"]
+        streaming = version >= 2
         operation = _text(request["operation"])
-        if streaming and (connection is None or operation not in {"publish", "restore"}):
+        if version == 3 and (connection is None or operation not in {"publish", "begin", "retry"}):
+            raise Refused("version 3 requires streamed result publication or replay")
+        if version == 2 and (connection is None or operation not in {"publish", "restore"}):
             raise Refused("version 2 requires checkpoint streaming")
         deadline = time.monotonic() + TRANSFER_TIMEOUT
         session = _name(_text(request["session"]))
@@ -416,6 +429,12 @@ class Coordinator:
                 with authority.guard(owner):
                     self._store(owner)
                 return {"owner": authority._encode(owner)}  # pyright: ignore[reportPrivateUsage]
+            if (
+                version < 3
+                and operation in {"begin", "retry", "publish"}
+                and config.limits.result_bytes > MAX_PAYLOAD
+            ):
+                raise Refused("session requires streaming result transfer")
             expected = {"owner"}
             if operation in ("begin", "retry", "publish"):
                 expected |= {"call", "request"}
@@ -461,6 +480,16 @@ class Coordinator:
                 if scratch is not None:
                     self.boundary("after_remote_admission")
                     return {"result": None, "scratch": asdict(scratch)}
+                if result is not None and version == 3:
+                    assert connection is not None
+                    _send(
+                        connection,
+                        {"ok": True, "value": {"result": _result_info(result)}},
+                        deadline,
+                    )
+                    _send_result(connection, result, deadline)
+                    with authority.guard(owner):
+                        return {"complete": True}
                 return {"result": None if result is None else _encoded(result)}
             if operation == "publish":
                 call = _name(_text(args["call"]))
@@ -492,7 +521,12 @@ class Coordinator:
                     entries = transfer.inventory(
                         files, config.limits.checkpoint_bytes, config.limits.files
                     )
-                    result = _bytes(args["result"], config.limits.result_bytes)
+                    if version == 3:
+                        descriptor = _result_descriptor(args["result"], config.limits.result_bytes)
+                        result = b""
+                    else:
+                        descriptor = None
+                        result = _bytes(args["result"], config.limits.result_bytes)
                     with self._transfer() as path:
                         destination = path / "checkpoint"
                         _send(connection, {"ok": True, "value": {"ready": True}}, deadline)
@@ -501,6 +535,8 @@ class Coordinator:
                             entries,
                             lambda count: _receive(connection, count, deadline),
                         )
+                        if descriptor is not None:
+                            result = _receive_result(connection, descriptor, deadline)
                         complete = _read(connection, deadline)
                         if complete != {"complete": True} or type(complete["complete"]) is not bool:
                             raise Refused("incomplete checkpoint transfer")
@@ -603,6 +639,37 @@ def _receive(connection: ssl.SSLSocket, count: int, deadline: float) -> bytes:
             raise Refused("incomplete API frame")
         result.extend(block)
     return bytes(result)
+
+
+def _result_info(result: bytes) -> dict[str, Any]:
+    return {"size": len(result), "sha256": hashlib.sha256(result).hexdigest()}
+
+
+def _result_descriptor(value: object, limit: int) -> tuple[int, str]:
+    if not is_record(value):
+        raise Refused("invalid result descriptor")
+    _fields(value, {"size", "sha256"})
+    size, digest = value["size"], value["sha256"]
+    if type(size) is not int or not 0 <= size <= limit:
+        raise Refused("result exceeds transfer limit")
+    if type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise Refused("invalid result digest")
+    return size, digest
+
+
+def _receive_result(
+    connection: ssl.SSLSocket, descriptor: tuple[int, str], deadline: float
+) -> bytes:
+    size, digest = descriptor
+    result = _receive(connection, size, deadline)
+    if hashlib.sha256(result).hexdigest() != digest:
+        raise Refused("result digest differs")
+    return result
+
+
+def _send_result(connection: ssl.SSLSocket, result: bytes, deadline: float) -> None:
+    for offset in range(0, len(result), CHUNK):
+        _write(connection, result[offset : offset + CHUNK], deadline)
 
 
 def _read(connection: ssl.SSLSocket, deadline: float | None = None) -> dict[str, Any]:
@@ -745,7 +812,7 @@ class Client:
 
     @contextmanager
     def _stream(
-        self, operation: str, session: str, arguments: dict[str, Any]
+        self, operation: str, session: str, arguments: dict[str, Any], *, version: int = 2
     ) -> Generator[tuple[ssl.SSLSocket, float]]:
         try:
             deadline = time.monotonic() + TRANSFER_TIMEOUT
@@ -753,31 +820,86 @@ class Client:
                 with self.context.wrap_socket(raw, server_hostname=self.hostname) as connection:
                     _send(
                         connection,
-                        dict(version=2, operation=operation, session=session, arguments=arguments),
+                        dict(
+                            version=version,
+                            operation=operation,
+                            session=session,
+                            arguments=arguments,
+                        ),
                         deadline,
                     )
                     yield connection, deadline
         except (OSError, ValueError) as error:
             raise Refused("coordinator unavailable; resolve call identity") from error
 
+    def call_result(
+        self,
+        operation: str,
+        session: str,
+        owner: str,
+        call: str,
+        request: bytes,
+        *,
+        result_bytes: int,
+    ) -> dict[str, Any]:
+        """Begin or retry a call, returning verified result bytes or the admission receipt."""
+        if operation not in {"begin", "retry"} or len(request) > MAX_REQUEST:
+            raise Refused("invalid result request")
+        if type(result_bytes) is not int or not 0 < result_bytes <= MAX_SHARED_RESULT:
+            raise Refused("invalid result limit")
+        arguments = dict(owner=owner, call=call, request=_encoded(request))
+        if result_bytes <= MAX_PAYLOAD:
+            response = self.call(operation, session, **arguments)
+            if "result" not in response or (operation == "retry" and response["result"] is None):
+                raise Refused("missing result")
+            if response["result"] is not None:
+                response["result"] = _bytes(response["result"], result_bytes)
+            return response
+        with self._stream(operation, session, arguments, version=3) as (connection, deadline):
+            response = _reply(connection, deadline)
+            if "result" not in response or (operation == "retry" and response["result"] is None):
+                raise Refused("missing result")
+            if response["result"] is None:
+                return response
+            _fields(response, {"result"})
+            descriptor = _result_descriptor(response["result"], result_bytes)
+            result = _receive_result(connection, descriptor, deadline)
+            complete = _reply(connection, deadline)
+            if complete != {"complete": True} or complete["complete"] is not True:
+                raise Refused("incomplete result transfer")
+            return {"result": result}
+
     def publish(
-        self, session: str, owner: str, call: str, request: bytes, checkpoint: Path, result: bytes
+        self,
+        session: str,
+        owner: str,
+        call: str,
+        request: bytes,
+        checkpoint: Path,
+        result: bytes,
+        *,
+        result_bytes: int = MAX_PAYLOAD,
     ) -> None:
         """Stream a stable checkpoint after begin; do not retry ambiguous publication."""
-        if len(request) > MAX_REQUEST or len(result) > MAX_PAYLOAD:
+        if type(result_bytes) is not int or not 0 < result_bytes <= MAX_SHARED_RESULT:
+            raise Refused("invalid result limit")
+        if len(request) > MAX_REQUEST or len(result) > result_bytes:
             raise Refused("payload exceeds limit")
+        version = 3 if result_bytes > MAX_PAYLOAD else 2
         entries = transfer.describe(checkpoint, MAX_CHECKPOINT, MAX_FILES)
         arguments = dict(
             owner=owner,
             call=call,
             request=_encoded(request),
             files=entries,
-            result=_encoded(result),
+            result=_result_info(result) if version == 3 else _encoded(result),
         )
-        with self._stream("publish", session, arguments) as (connection, deadline):
+        with self._stream("publish", session, arguments, version=version) as (connection, deadline):
             if _reply(connection, deadline) != {"ready": True}:
                 raise Refused("invalid coordinator readiness")
             transfer.send(checkpoint, entries, lambda block: _write(connection, block, deadline))
+            if version == 3:
+                _send_result(connection, result, deadline)
             _send(connection, {"complete": True}, deadline)
             if _reply(connection, deadline) != {"committed": True}:
                 raise Refused("invalid publication acknowledgment")

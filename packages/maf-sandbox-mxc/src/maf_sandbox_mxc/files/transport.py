@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from maf_sandbox_mxc._records import is_record, is_sequence
-from maf_sandbox_mxc.files.request import Request
+from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.files.request import name as portable_name
 from maf_sandbox_mxc.host_store import (
     CHUNK,
@@ -42,7 +42,12 @@ class GuestProgramError(Refused):
 
 def result_limit(request: Request) -> int:
     """Reserve base64 payloads and bounded names without borrowing checkpoint capacity."""
-    return 4 * ((2 * STREAM_LIMIT + request.limits.artifact_bytes + 2) // 3) + 4 * CHUNK
+    return file_result_limit(request.limits)
+
+
+def file_result_limit(limits: FileLimits) -> int:
+    """Maximum encoded result for the configured file channel, including metadata."""
+    return 4 * ((2 * STREAM_LIMIT + limits.artifact_bytes + 2) // 3) + 4 * CHUNK
 
 
 def prepare(work: Path, request: Request, restoring: bool, base: Path, timeout: float = 90) -> None:

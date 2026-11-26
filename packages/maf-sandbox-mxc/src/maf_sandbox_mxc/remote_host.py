@@ -16,7 +16,7 @@ from .host_store import CHUNK as CHUNK
 from .host_store import Refused, _name  # pyright: ignore[reportPrivateUsage]
 from .native_journal import NativeJournal, audit_root
 from .process_identity import Identity, terminate
-from .remote_api import Client, Session, _bytes, _encoded  # pyright: ignore[reportPrivateUsage]
+from .remote_api import Client, Session
 from .remote_authority import Authority, Fence, Owner
 from .shared_store import PATH_BYTES as PATH_BYTES
 from .shared_store import ScratchLimits, SharedStore
@@ -111,11 +111,11 @@ class Host:
     ) -> bytes:
         """Return committed results; leave both charges for explicit trusted reconciliation."""
         self._bounds(code, output_limit)
-        admitted = client.call(
-            "begin", self.session, owner=owner, call=call, request=_encoded(code)
+        admitted = client.call_result(
+            "begin", self.session, owner, call, code, result_bytes=self.config.limits.result_bytes
         )
-        if admitted.get("result") is not None:
-            return _bytes(admitted["result"], self.config.limits.result_bytes)
+        if isinstance(admitted["result"], bytes):
+            return admitted["result"]
         try:
             receipt = remote_scratch.Receipt(**admitted["scratch"])
         except (KeyError, TypeError) as error:
@@ -175,7 +175,13 @@ class Host:
                 checkpoint_limits=(limits.checkpoint_bytes, limits.files),
             )
             client.publish(
-                self.session, receipt.owner, receipt.call, code, work / "candidate", result
+                self.session,
+                receipt.owner,
+                receipt.call,
+                code,
+                work / "candidate",
+                result,
+                result_bytes=limits.result_bytes,
             )
             boundary("after_remote_publication")
             return result

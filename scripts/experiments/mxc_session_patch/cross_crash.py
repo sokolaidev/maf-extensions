@@ -122,7 +122,15 @@ class PausedClient(api.Client):
     ready: Path
 
     def publish(
-        self, session: str, owner: str, call: str, request: bytes, checkpoint: Path, result: bytes
+        self,
+        session: str,
+        owner: str,
+        call: str,
+        request: bytes,
+        checkpoint: Path,
+        result: bytes,
+        *,
+        result_bytes: int = api.MAX_PAYLOAD,
     ) -> None:
         if call != "crash" or request != CODE or not checkpoint.is_dir():
             raise api.Refused("unexpected crash worker publication")
