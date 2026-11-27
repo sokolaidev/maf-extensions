@@ -299,6 +299,8 @@ PASS_MODE_SAVED: Final[str] = "saved view"
 PASS_MODE_RESTORED: Final[str] = "restored"
 PASS_MODE_CONTINUED: Final[str] = "continued"
 PASS_MODE_FULL: Final[str] = "full"
+#: A pass that stopped before choosing what to start from.
+PASS_MODE_UNDECIDED: Final[str] = "undecided"
 
 
 def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
@@ -1357,6 +1359,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Merge events sent since the last summary line, by name and reason code.
         self._merge_event_counts: Counter[str] = Counter()
         self._merge_event_lock = threading.Lock()
+        self._pass_mode = PASS_MODE_UNDECIDED
         # Only source-bound decisions may replay across retained reasoning.
         self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
@@ -2150,7 +2153,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return available - overhead
 
     async def compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
-        """Compact outgoing messages, optionally starting a turn from a previously saved view."""
+        """Compact outgoing messages, optionally starting a turn from a previously saved view.
+
+        Every pass logs its summary line, a pass that fails or is cancelled included: one that
+        stops before choosing what to start from is logged as undecided.
+        """
+        self._pass_mode = PASS_MODE_UNDECIDED
+        try:
+            return await self._compact_before(messages, options=options)
+        finally:
+            self._log_merge_events("Compaction pass", mode=self._pass_mode)
+
+    async def _compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
         saved_view, self._saved_view = self._saved_view, None
         try:
             budget = self.sending_budget(options)
@@ -2172,8 +2186,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         mode = _pass_mode(
             carried=carried is not None, saved=saved_view is not None, resumed=resumed
         )
-        with self._merge_event_lock:
-            self._merge_event_counts.clear()
+        self._pass_mode = mode
         # Handed back as the last pass left it, the list is no account of the stored messages.
         continuing = carried if resumed is not None and not resumed.restored else None
         self._settled = False
@@ -2202,7 +2215,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise
         finally:
             self._request_budget.reset(token)
-            self._log_merge_events("Compaction pass", mode=mode)
         if changed or resumed is not None:
             self._carried = await off_loop(CarriedView, handed, messages, continuing=continuing)
             if len(self._carried.view) == len(messages):

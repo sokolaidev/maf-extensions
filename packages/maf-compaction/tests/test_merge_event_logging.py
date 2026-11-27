@@ -7,7 +7,9 @@ import logging
 import pytest
 from test_background_record_merges import prepared, running, tool_reply
 from test_call_carryover import _budget, _compact, _Rebuilding, _transcript
-from test_record_budget import _strategy, _Summarizer
+from test_record_budget import _history, _strategy, _Summarizer
+
+from maf_compaction import CompactionBudgetExceeded
 
 pytestmark = pytest.mark.anyio
 
@@ -63,3 +65,32 @@ async def test_each_pass_says_how_it_came_by_its_list(caplog: pytest.LogCaptureF
     assert first.startswith("Compaction pass: mode=full (nothing carried or saved); merge events:")
     assert second.startswith("Compaction pass: mode=carried view restored; merge events:")
     assert strategy.calls_resumed == 1
+
+
+async def test_an_event_sent_between_passes_reaches_the_next_pass_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    strategy._merge_event("worker_started", phase="background")
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await strategy.compact_before(_history(2), options={})
+
+    (line,) = _lines(caplog, "Compaction pass: mode=")
+    assert "worker_started=1" in line
+
+
+async def test_a_pass_that_fails_before_choosing_its_view_still_logs(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = _strategy(_Summarizer(), budget=100_000)
+
+    def over(options: object) -> int:
+        raise CompactionBudgetExceeded(10, 1)
+
+    monkeypatch.setattr(strategy, "sending_budget", over)
+    with caplog.at_level(logging.INFO, logger=_LOGGER), pytest.raises(CompactionBudgetExceeded):
+        await strategy.compact_before(_history(2), options={})
+
+    (line,) = _lines(caplog, "Compaction pass: mode=")
+    assert line.startswith("Compaction pass: mode=undecided; merge events:")
