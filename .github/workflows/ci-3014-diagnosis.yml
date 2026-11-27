@@ -4,6 +4,8 @@ on:
     branches: [antsok-proof-ci-3014-compaction]
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 jobs:
   verify:
     runs-on: ubuntu-26.04
@@ -11,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scope: [gate]
+        scope: [trackers]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,3 +53,10 @@ jobs:
           assert "2 failed" in result.stdout
           assert "assert accepted_batches == prepared_batches" in result.stdout
           PY
+      - if: matrix.scope == 'trackers'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run python scripts/check_doc_trackers.py
