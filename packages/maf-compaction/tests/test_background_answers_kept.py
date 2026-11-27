@@ -21,8 +21,8 @@ from test_session import Model, build_stack
 
 from maf_compaction import (
     SessionCompactionRegistry,
-    observe_record_merges,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    observe_record_merges,
 )
 
 pytestmark = pytest.mark.anyio
@@ -195,13 +195,15 @@ async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundt
 
     agent = background_harness(registry, _LoopModel(finish_background), lookup)
     events = []
-    with observe_record_merges(lambda phase, event, details: events.append((phase, event, details))):
+    with observe_record_merges(
+        lambda phase, event, details: events.append((phase, event, details))
+    ):
         for run in range(RUNS):
             release.clear()
             await asyncio.wait_for(agent.run(f"Continue {run}.", session=session), timeout=10)
             if roundtrip:
                 session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
-    
+
     assert ready_at_final, "the premise: answers were ready before a final reply"
     prepared_batches = Counter(d["batch"] for _, e, d in events if e == "answer_prepared")
     accepted_batches = Counter(
