@@ -151,9 +151,30 @@ class _LoopModel(Model):
 
 
 @pytest.mark.parametrize("roundtrip", [False, True], ids=["same session", "saved and loaded"])
-async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundtrip):
+async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundtrip, monkeypatch):
     """Each run's last background answer used to be thrown away by its final reply, so the next
     run asked the same batch again; it is now applied by the end-of-run pass."""
+    from maf_compaction import _composed
+    snapshots = {}
+    source = _composed.source_key
+    find_batch = _composed._background_batch_with_sources
+
+    def snapshot(messages, groups):
+        return {"groups": groups, "messages": [m.to_dict(exclude={"raw_representation"}) for m in messages]}
+
+    def key(messages, groups):
+        result = source(messages, groups)
+        snapshots.setdefault(result, snapshot(messages, groups))
+        return result
+
+    def find(messages, count, sources, **kwargs):
+        result = find_batch(messages, count, sources, **kwargs)
+        if result is None:
+            print("MISMATCH " + json.dumps({"sources": sources, "expected": snapshots.get(sources), "known": snapshots, "history": snapshot(messages, [])}, default=str))
+        return result
+
+    monkeypatch.setattr(_composed, "source_key", key)
+    monkeypatch.setattr(_composed, "_background_batch_with_sources", find)
     summarizer = _Summarizer()
 
     def build():
