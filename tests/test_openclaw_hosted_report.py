@@ -22,7 +22,7 @@ def test_collector_identifies_numbered_launcher_without_replacing_harness(
     monkeypatch.chdir(root)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setattr(report, "command", lambda *args: "{}" if args[0] == "docker" else "version")
-    monkeypatch.setattr(report, "collect", lambda *args: ({}, True))
+    monkeypatch.setattr(report, "collect", lambda *args, **kwargs: ({}, True))
     assert report.main() == 0
     evidence = json.loads(output.read_text().split("```json\n")[1].split("\n```")[0])
     assert evidence["sample_sha256"] == report.digest(
@@ -215,3 +215,4 @@ def test_model_profile_refuses_incomplete_turns(field, value):
     result = model_sample()
     result["turns"][1][field] = value
     assert not report.observations(result, "model")[1]
+
