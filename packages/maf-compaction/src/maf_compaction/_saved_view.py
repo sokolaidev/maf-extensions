@@ -128,6 +128,21 @@ def _insertable(message: Message) -> bool:
 
 def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any] | None:
     """Detach a cache from its messages and bind it to the decisions that produced it."""
+    data = _layout_data(carried)
+    if data is None:
+        return None
+    try:
+        # JSON detaches the layout from live annotations and lets a store carry it opaquely.
+        layout = canonical_json(data)
+        return {"version": _VERSION, "layout": layout, "digest": _layout_digest(decisions, layout)}
+    except (TypeError, ValueError, RecursionError):
+        # A value JSON refuses (a non-finite number in a record's metadata): no layout, as for
+        # anything else the layout cannot represent.
+        return None
+
+
+def _layout_data(carried: CarriedView) -> dict[str, Any] | None:
+    """The layout a cache leaves, as a mapping not yet serialized, or None when it cannot."""
     if not carried.portable or not carried.matches_completed_view():
         return None
     positions = {id(m): i for i, m in enumerate(carried.standing) if m is not None}
@@ -191,9 +206,7 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
                 order.append(
                     {"source": position, "id": message.message_id, "overlay": _overlay(message)}
                 )
-        # JSON detaches the layout from live annotations and lets a store carry it opaquely.
-        layout = canonical_json({"sources": sources, "order": order, "required": required})
-        return {"version": _VERSION, "layout": layout, "digest": _layout_digest(decisions, layout)}
+        return {"sources": sources, "order": order, "required": required}
     except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
         return None
 

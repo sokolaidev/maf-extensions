@@ -71,7 +71,14 @@ class ViewWriteConflict(Exception):
 
 
 class CompactedViewStore(Protocol):
-    """Storage for persisted view parts, supplied by the host."""
+    """Storage for persisted view parts, supplied by the host.
+
+    **Trusted storage.** A stored part holds record, summary and note text that a resumed pass
+    sends to the model, and nothing here authenticates it. Its trust boundary is the session
+    state's, which holds the same layouts under ``saved_view_key``: keep the store where only
+    the host writes, and grant it no writer you would not let write session state or the
+    stored history.
+    """
 
     async def read(self, key: ViewKey) -> StoredView | None:
         """Return the stored part, or None when there is none."""
@@ -132,6 +139,11 @@ def _parse_layout(layout: str) -> tuple[list[list[Any]], list[dict[str, Any]], i
         data = json.loads(layout)
     except (TypeError, ValueError):
         return None
+    return _checked_layout(data)
+
+
+def _checked_layout(data: Any) -> tuple[list[list[Any]], list[dict[str, Any]], int] | None:
+    """:func:`_parse_layout` for a layout already parsed, or built and not yet serialized."""
     if not isinstance(data, dict):
         return None
     data = cast(dict[str, Any], data)
@@ -261,6 +273,39 @@ def turn_boundary(messages: list[Message]) -> int:
     return 0
 
 
+def join_layouts(earlier: str, current: str) -> str | None:
+    """The one layout :func:`split_saved_layout` cut into ``earlier`` and ``current``.
+
+    The current part's source positions are counted from the boundary again. Returns None when
+    either part is malformed.
+    """
+    first, second = _parse_layout(earlier), _parse_layout(current)
+    if first is None or second is None:
+        return None
+    sources, order, required = first
+    later_sources, later_order, later_required = second
+    shift = len(sources)
+    joined_order = [
+        *order,
+        *(
+            {**entry, "source": int(entry["source"]) + shift} if "source" in entry else entry
+            for entry in later_order
+        ),
+    ]
+    joined_required = shift + later_required if later_required else required
+    return canonical_json(
+        {"sources": [*sources, *later_sources], "order": joined_order, "required": joined_required}
+    )
+
+
+def source_turn_boundary(states: list[tuple[Any, ...]]) -> int:
+    """:func:`turn_boundary` over a carried view's source states, whose first field is the role."""
+    for index in range(len(states) - 1, -1, -1):
+        if str(states[index][0]) == _USER_ROLE:
+            return index
+    return 0
+
+
 def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> list[int] | None:
     """The source positions an inserted summary or note names as what it stands for.
 
@@ -299,6 +344,27 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
     parsed = _parse_layout(layout)
     if parsed is None:
         return None
+    parts = _split_checked(parsed, boundary)
+    if parts is None:
+        return None
+    return canonical_json(parts[0]), canonical_json(parts[1])
+
+
+def split_layout_data(
+    data: dict[str, Any], boundary: int
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """:func:`split_saved_layout` on a layout mapping, without serializing the whole of it.
+
+    A pass's layout is several MiB on a long conversation; serializing it to split it and
+    serializing each part again held three copies at once.
+    """
+    parsed = _checked_layout(data)
+    return None if parsed is None else _split_checked(parsed, boundary)
+
+
+def _split_checked(
+    parsed: tuple[list[list[Any]], list[dict[str, Any]], int], boundary: int
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
     sources, order, required = parsed
     if not 0 <= boundary <= len(sources):
         return None
@@ -338,7 +404,7 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
         "order": current_order,
         "required": max(required - boundary, 0),
     }
-    return canonical_json(earlier), canonical_json(current)
+    return earlier, current
 
 
 __all__ = [
@@ -351,6 +417,9 @@ __all__ = [
     "ViewKey",
     "ViewPart",
     "ViewWriteConflict",
+    "join_layouts",
+    "source_turn_boundary",
+    "split_layout_data",
     "split_saved_layout",
     "turn_boundary",
 ]

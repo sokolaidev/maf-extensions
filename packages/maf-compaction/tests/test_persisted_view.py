@@ -224,3 +224,17 @@ def test_a_part_with_impossible_bounds_is_out_of_range_without_raising(
     part = PersistedViewPart(ViewPart.CURRENT, start, end, layout, "cfg")
 
     assert part.misfit(messages, "cfg") is MisfitReason.RANGE
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"sources": [["d", [], [[False, None]], []]], "order": [{"source": 0}], "required": 1},
+        {"b": [1, 2.5, "ü", None, True], "a": {"nested": ["x"]}},
+        [],
+    ],
+)
+def test_a_streamed_layout_digest_equals_the_digest_of_its_stored_text(value: object) -> None:
+    from maf_compaction._view_digest import layout_text_digest, streamed_layout_digest
+
+    assert streamed_layout_digest(value) == layout_text_digest(canonical_json(value))
