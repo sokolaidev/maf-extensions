@@ -30,7 +30,7 @@ from _evidence import INVALID, check_turn, require
 from _provider import Provider
 from _windows_job import Job
 
-OPENCLAW = "2026.9.7"
+OPENCLAW = "2026.11.10"
 WORKER_REQUIREMENTS = (
     "maf-sandbox==0.53.1",
     "maf-sandbox-bicep==0.25.1",
@@ -329,7 +329,6 @@ def configuration(
                 "workspace": str(root / "workspace"),
                 "skipBootstrap": True,
                 "model": {"primary": "sample/sample"},
-                "heartbeat": {"every": "0m"},
             }
         },
         "mcp": {

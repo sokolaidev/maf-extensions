@@ -30,7 +30,22 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                 self.send_error(400)
                 return
             body = json.loads(self.rfile.read(size))
-            messages = body["messages"]
+            messages = []
+            for message in body["messages"]:
+                content = message.get("content")
+                if (
+                    message.get("role") == "user"
+                    and isinstance(content, str)
+                    and content.startswith("OpenClaw runtime context:\n")
+                ):
+                    if (
+                        not content.endswith("\nEnd OpenClaw runtime context.")
+                        or "qualification" in content
+                    ):
+                        self.send_error(400, "Invalid runtime context envelope")
+                        return
+                    continue
+                messages.append(message)
             user = next(item for item in reversed(messages) if item["role"] == "user")
             match = re.search(
                 r"qualification (valid|invalid|incomplete|cancel|denied|helper)",
@@ -71,6 +86,11 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                         ]
                     },
                 }
+                offered = record["advertised_tools"]
+                dispatcher = "dispatch_action" if "dispatch_action" in offered else "tool_call"
+                if dispatcher not in offered:
+                    self.send_error(400, "Expected an advertised MCP dispatcher")
+                    return
                 delta = {
                     "role": "assistant",
                     "tool_calls": [
@@ -78,7 +98,7 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                             "index": 0,
                             "id": "call_" + (turn[1] if turn else "qualification"),
                             "type": "function",
-                            "function": {"name": "tool_call", "arguments": json.dumps(arguments)},
+                            "function": {"name": dispatcher, "arguments": json.dumps(arguments)},
                         }
                     ],
                 }
