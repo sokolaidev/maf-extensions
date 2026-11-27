@@ -63,6 +63,7 @@ class Provider:
         self.response_models: set[str] = set()
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
+        self.diagnostic_shapes: list[dict[str, Any]] = []
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -118,6 +119,20 @@ class Provider:
             self.server.server_close()
 
     def observe(self, body: dict[str, Any]) -> tuple[str, bool]:
+        self.diagnostic_shapes.append({
+            "offered_tools": [
+                item.get("function", {}).get("name")
+                for item in body.get("tools", [])
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,99}", item.get("function", {}).get("name", ""))
+            ],
+            "messages": [
+                {"role": item.get("role"), "calls": [
+                    call.get("function", {}).get("name")
+                    for call in item.get("tool_calls", [])
+                ], "content_type": type(item.get("content")).__name__}
+                for item in body["messages"]
+            ],
+        })
         messages = conversation_messages(body["messages"])
         user = next(message for message in reversed(messages) if message["role"] == "user")
         text = str(user["content"])
