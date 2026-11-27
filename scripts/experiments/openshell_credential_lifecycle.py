@@ -651,7 +651,10 @@ class HTTPSRefreshProfile(RefreshProfile):
             )
         winner = next(i for i, o in enumerate(outcomes) if o["status"] == "OK")
         response = results[winner][0]
-        if outcomes[1 - winner].get("conflicting_revision") != response.profile.resource_version:
+        if (
+            response is None
+            or outcomes[1 - winner].get("conflicting_revision") != response.profile.resource_version
+        ):
             raise RuntimeError("profile conflict did not identify the winning revision")
         self.confirm_path_edit(client, query, before, requests[winner], response, record)
         return outcomes[winner]["ended_ns"]
@@ -1042,7 +1045,7 @@ async def measure_credentials(fixture, ip, ca_file):
             acknowledged = await asyncio.to_thread(
                 profile.competing_path_edits, fixture.client, record
             )
-            prior_references = {current, edited, guest.ready["reference_sha256"]}
+            prior_references = {fresh, current, edited, guest.ready["reference_sha256"]}
             deadline = time.monotonic() + 30
             while True:
                 unexpired(reconfigured)

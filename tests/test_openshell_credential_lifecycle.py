@@ -136,6 +136,7 @@ def test_generation_capture_requires_owned_supervisor_and_redacts_failures(
         "wrong_conflict",
         "other_abort",
         "unknown_outcome",
+        "no_overlap",
         "wrong_winner_readback",
     ],
 )
@@ -165,9 +166,20 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkey
         "wrong_conflict",
         "other_abort",
         "unknown_outcome",
+        "no_overlap",
         "wrong_winner_readback",
     }
     barrier = threading.Barrier(2, timeout=5)
+    if fault == "no_overlap":
+        intervals = iter(((10, 11), (20, 21)))
+        clock = threading.local()
+
+        def timestamp():
+            if not hasattr(clock, "times"):
+                clock.times = iter(next(intervals))
+            return next(clock.times)
+
+        monkeypatch.setattr(probe.time, "monotonic_ns", timestamp)
     winner = probe.PROFILE_EDIT_PATHS[1] if fault == "second_wins" else probe.PROFILE_EDIT_PATHS[0]
 
     class RpcError(Exception):
@@ -244,6 +256,7 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkey
             "Client",
             lambda *args: NS(rpc=rpc, grpc=NS(RpcError=RpcError), close=lambda: None),
         )
+        acknowledged = None
         if fault in ("first_wins", "second_wins"):
             acknowledged = profile.competing_path_edits(client, record)
             assert profile.endpoint_path == winner
@@ -259,7 +272,7 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkey
             probe.PROFILE_EDIT_PATHS
         )
         measured = state.records[1][1]
-        assert measured["rpc_overlap_ns"] > 0
+        assert (measured["rpc_overlap_ns"] > 0) == (fault != "no_overlap")
         outcomes = measured["profile_edit_outcomes"]
         assert len(outcomes) == 2
         if fault in ("first_wins", "second_wins"):
@@ -757,6 +770,7 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         attaches=0,
         epoch=1,
         requests=0,
+        winner_captures=0,
         path="/provider/**",
         pending=False,
         restoring=False,
@@ -922,10 +936,14 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         async def capture_current(self, slot="current"):
             if state.path in probe.PROFILE_EDIT_PATHS:
                 if fault == "winner_old_reference":
-                    state.clock += 31
-                    return "current"
+                    state.winner_captures += 1
+                    if state.winner_captures == 2:
+                        state.clock += 31
+                    return "before-reattach"
                 return "winning-reference"
-            return "current" if fault == "profile_same_reference" else slot
+            if fault == "profile_same_reference":
+                return "current"
+            return "before-reattach" if state.attaches == 1 else slot
 
         async def request(self, url, source):
             state.requests += 1
@@ -1100,6 +1118,12 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
             assert state.requests == 11
         elif fault == "expiry_after":
             assert state.requests == 12
+        elif fault == "winner_old_reference":
+            assert state.winner_captures == 2
+            assert not any(
+                row["case"] == "winning_profile_reference_reaches_owned_origin"
+                for row in fixture.report["credentials"]["cases"]
+            )
     assert cleanup[-3:] == ["detach", "sandbox", "profile"] or cleanup[-4:] == [
         "detach",
         "guest",
