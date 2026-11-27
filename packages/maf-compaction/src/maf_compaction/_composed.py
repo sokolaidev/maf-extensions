@@ -128,6 +128,7 @@ from ._toolsummary import (
     consolidatable_record_groups,
     covered_tools,
     find_record_index,
+    identify_record,
     record_anchor_position,
     record_bodies,
     reshape_payloads,
@@ -2973,6 +2974,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     replacement = build_record_message(later.text)
                     identity = (LINEAGE_KEY, later.sources.split(":")[1])
                     replacement.additional_properties[LINEAGE_KEY] = identity[1]
+                    identify_record(replacement)
                     affected.add(identity)
                     fingerprints.add(ReplayView([replacement]).message_key(0))
                 required_outputs.update(
@@ -3144,6 +3146,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if edit.text is not None and edit.sources.startswith("v2:"):
                 replacement = build_record_message(edit.text)
                 replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+                identify_record(replacement)
                 identity = replacement_identity(replacement)
                 assert identity is not None
                 merges[identity] = (index, replacement)
@@ -3218,6 +3221,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return reshape_replacements(view.messages, groups)
         replacement = build_record_message(edit.text)
         replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+        identify_record(replacement)
         return [(groups[-1], replacement)]
 
     @staticmethod
@@ -4803,6 +4807,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             # Only the foreground journals an edit against the authoritative history.
             replacement = build_record_message(text)
             replacement.additional_properties[LINEAGE_KEY] = source_lineage(messages, groups)
+            identify_record(replacement)
             for group in groups:
                 set_excluded(messages[int(group["end_index"])], excluded=True)
             messages.insert(int(groups[-1]["end_index"]) + 1, replacement)

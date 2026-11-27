@@ -25,6 +25,7 @@ See ``docs/compaction/strategies.md`` for defaults, wiring and design rationale.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -71,6 +72,8 @@ from agent_framework.exceptions import ChatClientException
 
 from ._anchored import AnchoredCompactionStrategy
 from ._artifacts import (
+    RECORD_ID_DIGEST_CHARS,
+    RECORD_ID_PREFIX,
     RECORD_MARKER,
     RECORD_PREAMBLE,
     WRITTEN_RECORD_KEY,
@@ -1385,7 +1388,8 @@ def build_record_message(text: str) -> Message:
         text: The record's own text, without marker or preamble.
 
     Returns:
-        The message, with no id: nothing reads one, and the framework assigns it on grouping.
+        The message, with no id yet: :func:`identify_record` gives it one once its source link
+        is set.
     """
     return _record_message(text)
 
@@ -1404,16 +1408,36 @@ def _exclude_record(messages: list[Message], group: dict[str, Any]) -> None:
         set_excluded(message, excluded=True, reason=CONSOLIDATE_EXCLUDE_REASON)
 
 
+def identify_record(message: Message) -> Message:
+    """Give a written record a durable id derived from what it stands for and what it says.
+
+    Without one the framework gives it a positional ``msg_<n>`` id on grouping, which
+    :func:`~._shed.durable_message_id` rejects and which changes from pass to pass, so nothing
+    could key or match the record. The id is a digest of the record's source link (its lineage,
+    or the identity of the record it reshapes) and its text, so a pass that derives the same
+    record again, or a background worker that writes the same answer, gives it the same id.
+    An id already set is kept.
+    """
+    if message.message_id:
+        return message
+    properties = message.additional_properties
+    anchor = properties.get(LINEAGE_KEY) or properties.get(STANDS_IN_KEY) or ""
+    digest = hashlib.sha256(f"{anchor}\n{message.text}".encode()).hexdigest()
+    message.message_id = f"{RECORD_ID_PREFIX}{digest[:RECORD_ID_DIGEST_CHARS]}"
+    return message
+
+
 def _record_message(text: str, *, stands_in_for: str | None = None) -> Message:
     """Build a written record, carrying the identity of the one record it reshapes if any."""
     properties: dict[str, Any] = {WRITTEN_RECORD_KEY: True}
     if stands_in_for:
         properties[STANDS_IN_KEY] = stands_in_for
-    return Message(
+    message = Message(
         role="assistant",
         contents=[f"{WRITTEN_RECORD_PREFIX}\n{text}"],
         additional_properties=properties,
     )
+    return identify_record(message) if stands_in_for else message
 
 
 def reshape_replacements(
@@ -2522,6 +2546,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         replacement = build_record_message(text)
         if lineage is not None:
             replacement.additional_properties[LINEAGE_KEY] = lineage
+        identify_record(replacement)
         if tools:
             replacement.additional_properties[RECORD_TOOLS_KEY] = tools
         messages.insert(insertion_index, replacement)
