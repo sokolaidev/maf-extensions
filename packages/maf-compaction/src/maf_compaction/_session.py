@@ -142,7 +142,8 @@ class SessionCompactionRegistry:
     Set ``view_store`` to persist the view after every per-call pass instead, in an
     earlier-turns part and a current-turn part, and to resume a session from it when this
     process holds no carried view of it (#2995). ``view_agent`` keys this registry's views
-    apart from other agents' views of the same conversation.
+    apart from other agents' views of the same conversation. The store must be trusted
+    storage, as session state is: see :class:`CompactedViewStore`.
     """
 
     def __init__(

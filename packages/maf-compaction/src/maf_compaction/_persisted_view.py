@@ -71,7 +71,14 @@ class ViewWriteConflict(Exception):
 
 
 class CompactedViewStore(Protocol):
-    """Storage for persisted view parts, supplied by the host."""
+    """Storage for persisted view parts, supplied by the host.
+
+    **Trusted storage.** A stored part holds record, summary and note text that a resumed pass
+    sends to the model, and nothing here authenticates it. Its trust boundary is the session
+    state's, which holds the same layouts under ``saved_view_key``: keep the store where only
+    the host writes, and grant it no writer you would not let write session state or the
+    stored history.
+    """
 
     async def read(self, key: ViewKey) -> StoredView | None:
         """Return the stored part, or None when there is none."""
