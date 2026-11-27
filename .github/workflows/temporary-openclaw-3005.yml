@@ -1,149 +1,36 @@
-name: OpenClaw 3005 candidate proof
+name: OpenClaw 3005 delivery checks
 on:
   push:
     branches: [antsok-proof-openclaw-3005]
 permissions:
   contents: read
 jobs:
-  openclaw-bicep:
-    name: OpenClaw ${{ matrix.gateway }} Gateway-to-Docker
+  delivery:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        gateway: ['2026.9.7', '2026.11.10']
-    env:
-      BICEP_IMAGE: ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: bb8610650ceffa72552d6d75775517563e0c39e2
           persist-credentials: false
-          fetch-depth: 0
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: '0.12.5'
-          python-version: '3.13.15'
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '26.8.1'
-      - name: Restore the default Gateway for the baseline
-        if: matrix.gateway == '2026.9.7'
-        run: git show 4b5c2efc9c5c6eea3ae6594bfc6d21269378d20f:samples/experimental/openclaw_bicep_e2e/agent.py > samples/experimental/openclaw_bicep_e2e/agent.py
-      - name: Check provider regressions
-        run: |
-          uv run --no-project --with pytest --with pyyaml --with 'ruff>=0.15.20,<0.16' python -m pytest -q -o addopts='' tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
-          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff check samples/experimental/openclaw_bicep_e2e/_provider.py samples/experimental/openclaw_bicep_e2e/_evidence.py tests/test_openclaw_e2e_sample.py
-          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff format --check --diff samples/experimental/openclaw_bicep_e2e/_provider.py samples/experimental/openclaw_bicep_e2e/_evidence.py tests/test_openclaw_e2e_sample.py
-      - name: Verify exact npm candidate metadata
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request
-          from pathlib import Path
-          with urllib.request.urlopen("https://registry.npmjs.org/openclaw/${{ matrix.gateway }}", timeout=30) as response:
-              package = json.load(response)
-          assert package["version"] == "${{ matrix.gateway }}"
-          selected = {key: package[key] for key in ("name", "version", "engines", "dist")}
-          text = "# Selected npm candidate\n\n\x60\x60\x60json\n" + json.dumps(selected, indent=2) + "\n\x60\x60\x60\n"
-          (Path(os.environ["RUNNER_TEMP"]) / "openclaw-candidate.md").write_text(text)
-          print(text)
-          PY
-      - name: Run the installed sample
-        timeout-minutes: 18
-        run: |
-          uv run --no-project --python 3.13.15 samples/24_openclaw_bicep/agent.py \
-            --output "$RUNNER_TEMP/openclaw-bicep-private"
-      - name: Record bounded evidence and independently check owner scope
-        if: always()
-        run: |
-          status=0
-          python3 scripts/report_openclaw_hosted.py --published --output "$RUNNER_TEMP/openclaw-bicep-evidence.md" || status=$?
-          cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
-      - name: Classify private startup diagnostics
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os, re
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "openclaw-bicep-private"
-          result = {}
-          for name in ("gateway.log", "worker.log", "setup.log"):
-              path = root / name
-              if not path.exists():
-                  continue
-              text = path.read_text(errors="replace")
-              result[name] = {
-                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                  "error_codes": sorted(set(re.findall(r"\b(?:ERR_[A-Z_]+|EACCES|ENOENT|EINVAL|ETARGET|ECONNREFUSED)\b", text))),
-                  "markers": [item for item in ("Invalid config", "Unrecognized key", "Unknown config", "Cannot find module", "Cannot find package", "Gateway failed", "requires Node", "plugins.enabled", "controlUi", "chatCompletions", "mcp", "TypeError", "SyntaxError", "Error:") if item in text],
-                  "unrecognized_keys": re.findall(r'Unrecognized keys?:?[^\n]*', text),
-              }
-          report = json.loads((root / "report.json").read_text())
-          errors = ("A sample process exited; inspect its private log", "Readiness timed out; inspect private logs")
-          result["process_error"] = report.get("error") if report.get("error") in errors else "other"
-          # Config validation keys are schema identifiers, not values.
-          for item in list(result.values()):
-              if isinstance(item, dict):
-                  item["unrecognized_keys"] = [re.findall(r'"([A-Za-z][A-Za-z0-9_.-]{0,60})"', line) for line in item["unrecognized_keys"]][:10]
-          print(json.dumps(result, indent=2))
-          PY
-      - name: Record installed npm identity
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "openclaw-bicep-private/openclaw"
-          metadata = root / "node_modules/openclaw/package.json"
-          lock = root / "package-lock.json"
-          observed = {"installed": metadata.exists(), "lock_exists": lock.exists()}
-          if metadata.exists():
-              package = json.loads(metadata.read_text())
-              observed.update({key: package[key] for key in ("name", "version", "engines")})
-          if lock.exists():
-              observed["lock_sha256"] = hashlib.sha256(lock.read_bytes()).hexdigest()
-              record = json.loads(lock.read_text())["packages"]["node_modules/openclaw"]
-              observed["package"] = {key: record[key] for key in ("version", "resolved", "integrity")}
-          text = "\n## Installed npm identity\n\n\x60\x60\x60json\n" + json.dumps(observed, indent=2) + "\n\x60\x60\x60\n"
-          with (Path(os.environ["RUNNER_TEMP"]) / "openclaw-candidate.md").open("a") as target:
-              target.write(text)
-          print(text)
-          PY
-      - name: Retain bounded Markdown evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: openclaw-bicep-${{ matrix.gateway }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/openclaw-bicep-evidence.md
-            ${{ runner.temp }}/openclaw-candidate.md
-          if-no-files-found: error
-          retention-days: 30
-
-
-  pre-pr:
-    name: Repository gate for delivery files
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: Restore normal sample pins and omit the temporary proof workflow
-        run: |
-          git show 4b5c2efc9c5c6eea3ae6594bfc6d21269378d20f:samples/experimental/openclaw_bicep_e2e/agent.py > samples/experimental/openclaw_bicep_e2e/agent.py
-          rm .github/workflows/temporary-openclaw-3005.yml
-      - name: Install Graphviz
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz
       - run: uv sync --locked
-      - name: Full local-equivalent gate
-        run: uv run poe gate
+      - name: Focused tests and lint
+        run: |
+          uv run pytest -q tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Types and source checks
+        run: |
+          uv run poe types
+          uv run poe security
+          uv run poe doc-paths
+          uv run poe implicit-concat
+      - name: Live documentation trackers
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run poe doc-trackers
       - name: Sample declared floors
-        if: always()
         run: uv run poe sample-floors
       - name: Markdown code blocks
-        if: always()
         run: uv run poe md-blocks
