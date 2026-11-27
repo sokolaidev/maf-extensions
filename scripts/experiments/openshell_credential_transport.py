@@ -45,8 +45,15 @@ class GuestHTTPS:
             raise ValueError("unknown transport operation")
         try:
             connection.request("GET", target.path + "?" + target.query, headers=headers)
-            response = connection.getresponse()
-            result = {"status": response.status, "body": response.read(4096).decode()}
+            with connection.getresponse() as response:
+                expected = response.length
+                body = response.read(4097)
+                if len(body) > 4096:
+                    connection.close()
+                    raise ValueError("transport response exceeds 4096 bytes")
+                if expected is not None and len(body) < expected:
+                    raise http.client.IncompleteRead(body, expected - len(body))
+                result = {"status": response.status, "body": body.decode()}
             if operation == "prime":
                 result["kept_open"] = (
                     connection.sock is self.idle_socket and self.idle_socket is not None
@@ -54,6 +61,7 @@ class GuestHTTPS:
             return result
         except (
             http.client.RemoteDisconnected,
+            http.client.IncompleteRead,
             ConnectionResetError,
             BrokenPipeError,
             ssl.SSLEOFError,
@@ -90,6 +98,7 @@ def transport_outcome(observed, event, *, followup):
         return "socket_closed_before_request"
     if observed.get("closed_during_request") in (
         "RemoteDisconnected",
+        "IncompleteRead",
         "ConnectionResetError",
         "BrokenPipeError",
         "SSLEOFError",

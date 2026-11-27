@@ -6,8 +6,11 @@ import asyncio
 import importlib
 import json
 import socket
+import ssl
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace as NS
 from urllib.parse import parse_qs, urlsplit
@@ -21,15 +24,11 @@ def probe(monkeypatch):
     return importlib.import_module("openshell_credential_transport")
 
 
-def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
-    probe, monkeypatch, tmp_path
-):
+@pytest.fixture
+def tls_origin(probe, monkeypatch, tmp_path):
     https = importlib.import_module("openshell_https_probe")
     tls_dir = tmp_path / "tls"
     https.prepare_native_tls(tls_dir, "10.23.45.67")
-    gate = https.HeldTLSResponse()
-    servers, events = https.native_tls_servers(tls_dir, ports=(0, 0, 0, 0), held_response=gate)
-    port = servers[0].server_port
     host = "allowed.10.23.45.67.nip.io"
     original = socket.getaddrinfo
     monkeypatch.setattr(
@@ -38,6 +37,14 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
         lambda name, *args: original("127.0.0.1" if name == host else name, *args),
     )
     monkeypatch.setenv("SSL_CERT_FILE", str(tls_dir / "ca.pem"))
+    return https, tls_dir, host
+
+
+def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(probe, tls_origin):
+    https, tls_dir, host = tls_origin
+    gate = https.HeldTLSResponse()
+    servers, events = https.native_tls_servers(tls_dir, ports=(0, 0, 0, 0), held_response=gate)
+    port = servers[0].server_port
     transport = probe.GuestHTTPS()
     get = transport.get
     marker = "a" * 32
@@ -52,8 +59,11 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
                 while len(events) < 2 and not pending.done() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert len(events) == 2
-                assert not pending.done()
                 assert not gate.release("wrong")
+                # Keep the idle TLS connection unused beyond the handshake timeout.
+                with pytest.raises(TimeoutError):
+                    pending.result(timeout=https.NATIVE_TLS_SOCKET_TIMEOUT + 0.5)
+                assert not pending.done()
             finally:
                 gate.release(marker)
             assert json.loads(pending.result(timeout=5)["body"]) == events[1]
@@ -66,6 +76,85 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+@pytest.mark.parametrize("mode", ["announced_close", "idle_eof", "truncated", "oversize"])
+def test_real_guest_connection_faults(probe, tls_origin, mode):
+    _, tls_dir, host = tls_origin
+    requests = []
+    accepted = []
+    closed = threading.Event()
+
+    class Server(HTTPServer):
+        def get_request(self):
+            sock, address = super().get_request()
+            accepted.append(address)
+            return sock, address
+
+        def shutdown_request(self, request):
+            super().shutdown_request(request)
+            closed.set()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            requests.append(self.path)
+            followup = len(requests) == 2
+            truncated = followup and mode == "truncated"
+            body = b"x" * 4097 if followup and mode == "oversize" else b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body) + int(truncated)))
+            if mode == "announced_close":
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = mode in ("announced_close", "idle_eof") or followup
+
+        def log_message(self, format, *args):
+            pass
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tls_dir / "valid.pem", tls_dir / "valid.key")
+    transport = probe.GuestHTTPS()
+    with Server(("127.0.0.1", 0), Handler) as server:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"https://{host}:{server.server_port}/provider/first"
+        try:
+            first = transport.get("prime", url + "?prime", {})
+            assert first == {"status": 200, "body": "{}", "kept_open": mode != "announced_close"}
+            if mode in ("announced_close", "idle_eof"):
+                assert closed.wait(5)
+            if mode == "oversize":
+                with pytest.raises(ValueError, match="4096"):
+                    transport.get("reuse", url + "?reuse", {})
+            else:
+                result = transport.get("reuse", url + "?reuse", {})
+                if mode == "announced_close":
+                    assert result == {"closed_before_request": True}
+                elif mode == "idle_eof":
+                    assert (
+                        probe.transport_outcome(result, None, followup=True)
+                        == "closed_without_origin_receipt"
+                    )
+                else:
+                    assert result == {"closed_during_request": "IncompleteRead"}
+                    assert (
+                        probe.transport_outcome(result, {"path": requests[-1]}, followup=True)
+                        == "closed_after_origin_receipt"
+                    )
+        finally:
+            if transport.idle_connection is not None:
+                transport.idle_connection.close()
+            server.shutdown()
+            thread.join(5)
+    assert len(accepted) == 1
+    expected = ["/provider/first?prime"]
+    if mode in ("truncated", "oversize"):
+        expected.append("/provider/first?reuse")
+    assert requests == expected
 
 
 @pytest.mark.parametrize(
