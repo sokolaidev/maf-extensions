@@ -162,8 +162,8 @@ async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundt
     def snapshot(messages, groups):
         return {"groups": groups, "messages": [m.to_dict(exclude={"raw_representation"}) for m in messages]}
 
-    def key(messages, groups):
-        result = source(messages, groups)
+    def key(messages, groups, **kwargs):
+        result = source(messages, groups, **kwargs)
         snapshots.setdefault(result, snapshot(messages, groups))
         return result
 
