@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from math import ceil, isfinite
 from time import monotonic
+from types import CodeType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import Message
@@ -309,6 +310,56 @@ PASS_MODE_SAVED: Final[str] = "saved view"
 PASS_MODE_PERSISTED: Final[str] = "persisted view"
 #: Where a persisted view's binding carries the configuration fingerprint.
 _VIEW_CONFIGURATION_KEY: Final[str] = "configuration"
+
+
+def _code_shape(code: CodeType) -> list[Any]:
+    """A code object's instructions, names and constants, stable across processes.
+
+    Nested code objects are taken apart the same way, since their repr holds an address; a
+    frozenset's members are sorted, since their order follows string hash randomization. The
+    file name and line numbers are left out, so moving a function does not change it.
+    """
+
+    def constant(value: Any) -> Any:
+        if isinstance(value, CodeType):
+            return _code_shape(value)
+        if isinstance(value, frozenset):
+            return sorted(repr(member) for member in cast(frozenset[Any], value))
+        if isinstance(value, tuple):
+            return [constant(member) for member in cast(tuple[Any, ...], value)]
+        return repr(value)
+
+    return [code.co_code.hex(), list(code.co_names), [constant(c) for c in code.co_consts]]
+
+
+def _callable_fingerprint(value: Any) -> Any:
+    """A callable setting by qualified name and, for a Python function, its code and captures.
+
+    Two lambdas share the name ``<lambda>``, so the name alone would let a view written under
+    one prompt rewriter resume under another. A function's defaults and the plain values its
+    closure captures count too; a captured object counts by its type.
+    """
+    name = f"{value.__module__}.{value.__qualname__}"
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    if not isinstance(code, CodeType):
+        return name
+
+    def captured(item: Any) -> Any:
+        if item is None or isinstance(item, (str, int, float, bool)):
+            return item
+        return f"{type(item).__module__}.{type(item).__qualname__}"
+
+    cells = cast(tuple[Any, ...] | None, getattr(function, "__closure__", None)) or ()
+    defaults = cast(tuple[Any, ...] | None, getattr(function, "__defaults__", None)) or ()
+    return {
+        "name": name,
+        "code": _code_shape(code),
+        "defaults": [captured(item) for item in defaults],
+        "closure": [captured(cell.cell_contents) for cell in cells],
+    }
+
+
 PASS_MODE_RESTORED: Final[str] = "restored"
 PASS_MODE_CONTINUED: Final[str] = "continued"
 PASS_MODE_FULL: Final[str] = "full"
@@ -2204,7 +2255,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         Every public setting of this strategy, its two halves and the tool-result half's
         fallback that is a plain value, a mapping or a sequence (nested values included), the
-        qualified name of a callable one, and the fallback's type; clients and tokenizers are not
+        qualified name and code of a callable one (:func:`_callable_fingerprint`), and the
+        fallback's type; clients and tokenizers are not
         settings of a view. None when a setting holds a value JSON cannot represent: such a
         strategy neither writes nor accepts a persisted view, rather than bind it to settings
         that were left out. Decisions are snapshots of what was done, so a process configured
@@ -2228,7 +2280,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 elif isinstance(value, (list, tuple)):
                     found[name] = list(cast(list[Any], value))
                 elif callable(value) and hasattr(value, "__qualname__"):
-                    found[name] = f"{value.__module__}.{value.__qualname__}"
+                    found[name] = _callable_fingerprint(value)
             return found
 
         fallback = self.tool_results.fallback

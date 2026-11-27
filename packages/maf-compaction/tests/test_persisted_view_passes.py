@@ -509,3 +509,39 @@ async def test_a_stored_view_is_parsed_and_joined_off_the_event_loop(
         assert strategy.has_saved_view
 
     assert threads and all(thread != loop_thread for thread in threads)
+
+
+# Module-level lambdas all share the qualified name ``<lambda>``: only their code differs.
+_REWRITERS = (
+    lambda attempt: f"Rewrite tighter, attempt {attempt}.",
+    lambda attempt: f"Rewrite tighter, attempt {attempt}.",
+    lambda attempt: f"Rewrite looser, attempt {attempt}.",
+)
+
+
+@pytest.mark.parametrize(
+    ("resuming", "offered"),
+    [
+        pytest.param(_REWRITERS[1], True, id="same-code"),
+        pytest.param(_REWRITERS[2], False, id="other-code"),
+    ],
+)
+async def test_a_callable_setting_is_bound_by_its_code_not_only_its_name(
+    resuming: Any, offered: bool
+) -> None:
+    assert resuming.__qualname__ == _REWRITERS[0].__qualname__
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="callable")
+    writer = _registry(budget, [], view_store=store)
+    with writer.activate(session) as stack:
+        cast(_Composed, stack.strategy).rewrite_prompt = _REWRITERS[0]
+    await _pass(writer, session, _Rebuilding(transcript).hand())
+
+    reader = _registry(budget, [], view_store=store)
+    with reader.activate(session) as stack:
+        strategy = cast(_Composed, stack.strategy)
+        strategy.rewrite_prompt = resuming
+        await reader._load_view("callable", strategy)
+        assert strategy.has_saved_view is offered
