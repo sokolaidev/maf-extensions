@@ -17,6 +17,7 @@ from datetime import datetime
 
 from openshell_allocation_probe import Client
 from openshell_composition_probe import CompositionProfile, receipt_installed
+from openshell_credential_transport import GUEST_HTTPS, measure_transport
 from openshell_credentials_probe import credential_observation
 from openshell_egress_probe import origin_get
 from openshell_https_probe import control_https
@@ -31,8 +32,9 @@ PROFILE_EDIT_PATHS = ("/provider/first", "/provider/second")
 def guest_program(directory, env_key):
     """Keep the launch reference in memory; control files contain only bounded probe commands."""
     return f"""
-import hashlib, json, os, time, uuid, urllib.request, urllib.error
+import hashlib, json, os, ssl, time, uuid, urllib.request, urllib.error
 from pathlib import Path
+{GUEST_HTTPS}
 directory = Path({directory!r})
 directory.mkdir(exist_ok=True)
 original = os.environ.get({env_key!r}, '')
@@ -66,8 +68,11 @@ while sequence <= 256 and time.monotonic() < deadline:
         raise RuntimeError('expected opaque credential reference')
     headers = {{'Authorization': 'Bearer ' + token}} if token else {{}}
     try:
-        with urllib.request.urlopen(urllib.request.Request(command['url'], headers=headers), timeout=5) as response:
-            observed = {{'status': response.status, 'body': response.read(4096).decode()}}
+        if command['operation'] in ('prime', 'hold', 'reuse'):
+            observed = transport_get(command['operation'], command['url'], headers)
+        else:
+            with urllib.request.urlopen(urllib.request.Request(command['url'], headers=headers), timeout=5) as response:
+                observed = {{'status': response.status, 'body': response.read(4096).decode()}}
     except urllib.error.HTTPError as exc:
         observed = {{'status': exc.code, 'body': exc.read(4096).decode()}}
     except Exception as exc:
@@ -445,6 +450,10 @@ class ContinuousGuest:
     async def request(self, url, source="original"):
         if source not in ("original", "current", "edited", "none"):
             raise ValueError("unknown credential reference source")
+        await self.command(operation="request", url=url, source=source)
+        return await self.request_result(source)
+
+    async def request_result(self, source):
         reference = (
             self.ready["reference_sha256"]
             if source == "original"
@@ -452,7 +461,6 @@ class ContinuousGuest:
             if source in ("current", "edited")
             else hashlib.sha256(b"").hexdigest()
         )
-        await self.command(operation="request", url=url, source=source)
         result = await self.read(f"result-{self.sequence}.json")
         if not continuous_result(self.ready, result, self.sequence, reference):
             raise RuntimeError("continuous process/reference identity mismatch")
@@ -553,6 +561,15 @@ class HTTPSRefreshProfile(RefreshProfile):
         """Persist a conditional path edit and verify it against the catalogue."""
         query, before = self.edit_baseline(client)
         request = self.path_edit_request(client, before, path)
+        self.store_edit(client, query, before, request, record)
+
+    def update_description(self, client, record):
+        query, before = self.edit_baseline(client)
+        request = self.path_edit_request(client, before, self.endpoint_path)
+        request.profile.profile.description = before.description + " (transport observation)"
+        self.store_edit(client, query, before, request, record)
+
+    def store_edit(self, client, query, before, request, record):
         row = {
             "method": "UpdateProviderProfiles",
             **protobuf_evidence(request, "request"),
@@ -576,11 +593,11 @@ class HTTPSRefreshProfile(RefreshProfile):
         edited.CopyFrom(request.profile.profile)
         edited.resource_version = response.profile.resource_version
         if response.profile != edited:
-            raise RuntimeError("profile update response differs from the exact path edit")
+            raise RuntimeError("profile update response differs from the exact profile edit")
         edited.source, edited.scope = before.source, before.scope
         current = client.rpc("GetProviderProfile", query).profile
         if current != edited:
-            raise RuntimeError("stored profile differs from the exact path edit")
+            raise RuntimeError("stored profile differs from the exact profile edit")
         self.endpoint_path = current.endpoints[0].path
         record(
             "barriers",
@@ -663,7 +680,8 @@ class HTTPSRefreshProfile(RefreshProfile):
 async def measure_credentials(fixture, ip, ca_file):
     """Retain propagation attempts and exact detach barriers without declaring attached identity."""
     evidence = fixture.report["credentials"] = {
-        "scope": "one synthetic OAuth client-credentials provider; continuous guest, fresh HTTPS connections",
+        "scope": "one synthetic OAuth provider; fresh HTTPS requests and a held response across a description edit",
+        "transport": [],
         "cases": [],
         "barriers": [],
         "mutations": [],
@@ -674,7 +692,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "qualification_passed": False,
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
-            "persistent connections and in-flight mutations",
+            "persistent connections and in-flight traffic across changes to credential authority",
             "profile credential declarations, refresh settings, methods and hosts",
             "additional controllers and concurrent edits beyond two conditional path updates",
             "gateway/supervisor disconnect and restart",
@@ -1081,6 +1099,11 @@ async def measure_credentials(fixture, ip, ca_file):
                     "ack_to_observation_ns": observed - acknowledged,
                 },
             )
+            unexpired(reconfigured)
+            await measure_transport(
+                guest, profile, fixture.client, reconfigured, ip, host, reconcile, record
+            )
+            unexpired(reconfigured)
             await guest.close()
             guest = None
             await reconcile(expected=[])

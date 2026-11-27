@@ -17,6 +17,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
@@ -289,8 +290,45 @@ def prepare_native_tls(directory, ip):
         (directory / (label + ".key")).chmod(0o600)
 
 
+class HeldTLSResponse:
+    """Hold one tagged origin response until the fixture controller releases it."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.marker = None
+        self.deadline = 0.0
+        self.event = threading.Event()
+
+    def arm(self, marker):
+        with self.lock:
+            if self.marker is not None:
+                raise RuntimeError("TLS response already held")
+            self.marker = marker
+            self.event.clear()
+            self.deadline = time.monotonic() + 25
+
+    def release(self, marker):
+        with self.lock:
+            if self.marker != marker or time.monotonic() >= self.deadline:
+                return False
+            self.event.set()
+            return True
+
+    def wait(self):
+        try:
+            return self.event.wait(max(0, self.deadline - time.monotonic()))
+        finally:
+            with self.lock:
+                self.marker = None
+
+
 def native_tls_servers(
-    directory, *, bind="127.0.0.1", ports=(8443, 8444, 8445, 8446), record_authorization=False
+    directory,
+    *,
+    bind="127.0.0.1",
+    ports=(8443, 8444, 8445, 8446),
+    record_authorization=False,
+    held_response=None,
 ):
     """Serve four independently identified TLS endpoints with one bounded journal."""
     events = []
@@ -303,7 +341,25 @@ def native_tls_servers(
             events.append(event)
 
     class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            self.origin_connection = uuid.uuid4().hex
+
         def do_GET(self):
+            transport = (
+                re.fullmatch(
+                    r"/provider/(?:first|second)\?case=([0-9a-f]{32})&transport=(prime|held|reuse)",
+                    self.path,
+                )
+                if held_response is not None and self.command == "GET"
+                else None
+            )
+            self.protocol_version = "HTTP/1.1" if transport else "HTTP/1.0"
+            self.close_connection = not (
+                transport
+                and self.request_version == "HTTP/1.1"
+                and self.headers.get("Connection", "").lower() != "close"
+            )
             row = {
                 "method": self.command,
                 "path": self.path,
@@ -317,10 +373,19 @@ def native_tls_servers(
                     if authorization is not None
                     else None
                 )
+            if transport:
+                row["origin_connection"] = self.origin_connection
+                if transport[2] == "held":
+                    held_response.arm(transport[1])
             record(row)
+            if transport and transport[2] == "held" and not held_response.wait():
+                self.send_error(504, "TLS response hold expired")
+                return
             body = json.dumps(row).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
+            if transport and self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
@@ -586,13 +651,15 @@ def main():
         prepare_native_tls(args.prepare_native_tls, args.origin_ip)
         return 0
     if args.serve_native_tls:
+        held = HeldTLSResponse() if args.record_authorization else None
         servers, events = native_tls_servers(
             args.serve_native_tls,
             bind="0.0.0.0",  # nosec B104 - isolated Docker origin network
             record_authorization=args.record_authorization,
+            held_response=held,
         )
         try:
-            serve_origin(tls_events=events)
+            serve_origin(tls_events=events, release_tls=held.release if held else None)
         finally:
             for server in servers:
                 server.shutdown()
