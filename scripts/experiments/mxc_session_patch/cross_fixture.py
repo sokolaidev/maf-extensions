@@ -1,4 +1,4 @@
-"""Build one pinned Linux helper/startup fixture for all cross-runner participants."""
+"""Build one pinned native helper/startup fixture for all cross-runner participants."""
 
 from __future__ import annotations
 
@@ -59,7 +59,9 @@ def build(root: Path, file_kernel: Path | None = None) -> None:
     )
     bundle = root / "bundle"
     bundle.mkdir()
-    shutil.copy2(native.helper(root), bundle / "helper")
+    shutil.copy2(
+        native.helper(root), cross_compat.helper_path(bundle, cross_compat.platform.system())
+    )
     shutil.copytree(root / "images/agent/snapshot", bundle / "startup")
     if file_kernel is None:
         cross_compat.record_fixture(bundle, producer_vendor)

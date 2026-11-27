@@ -535,6 +535,10 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     }
     participants = workflow["jobs"]["participants"]
     assert participants["needs"] == "fixture"
+    assert workflow[True]["workflow_dispatch"]["inputs"]["execution_os"]["default"] == "linux"
+    assert "windows-latest" in workflow["jobs"]["fixture"]["runs-on"]
+    assert "matrix.role != 'coordinator'" in participants["runs-on"]
+    assert "windows-latest" in participants["runs-on"]
     assert workflow[True]["workflow_dispatch"]["inputs"]["worker_crash"]["default"] is False
     assert workflow[True]["workflow_dispatch"]["inputs"]["active_guest_crash"]["default"] is False
     assert participants["env"]["ACTIVE_GUEST_CRASH"] == "${{ inputs.active_guest_crash }}"
@@ -621,6 +625,7 @@ sudo() {
         cwd=tmp_path,
         env={
             **os.environ,
+            "RUNNER_OS": "Linux",
             "SET_STATUS": str(set_status),
             "PREFS": json.dumps({"RouteAll": route_all, "CorpDNS": corp_dns}),
         },
@@ -824,12 +829,49 @@ def test_fixture_build_records_producer_after_native_controls(participants, monk
         assert "bundle/fixture.json" in archive.getnames()
 
 
-@pytest.mark.parametrize(("system", "machine"), [("Windows", "AMD64"), ("Linux", "aarch64")])
+@pytest.mark.parametrize(("system", "machine"), [("Windows", "ARM64"), ("Linux", "aarch64")])
 def test_cpu_probe_refuses_unsupported_platform(monkeypatch, system, machine):
     monkeypatch.setattr(cross.platform, "system", lambda: system)
     monkeypatch.setattr(cross.platform, "machine", lambda: machine)
-    with pytest.raises(RuntimeError, match="requires Linux x86_64"):
+    with pytest.raises(RuntimeError, match="unsupported execution platform"):
         cross.cross_compat.cpu_vendor()
+
+
+@pytest.mark.parametrize("vendors", [[], [""], ["unknown"], ["GenuineIntel", "AuthenticAMD"]])
+def test_windows_refuses_ambiguous_processor_evidence(monkeypatch, vendors):
+    compat = cross.cross_compat
+    monkeypatch.setattr(compat.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(compat.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(compat, "windows_cpu_vendors", lambda: vendors)
+    with pytest.raises(RuntimeError, match="CPU vendors"):
+        compat.cpu_vendor()
+
+
+@pytest.mark.parametrize("vendor", cross.cross_compat.VENDORS)
+def test_windows_admits_matching_processor_packages(monkeypatch, vendor):
+    compat = cross.cross_compat
+    monkeypatch.setattr(compat.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(compat.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(compat, "windows_cpu_vendors", lambda: [vendor, vendor])
+    assert compat.cpu_vendor() == vendor
+
+
+def test_windows_file_fixture_requires_matching_execution_platform(participants, monkeypatch):
+    _, bundle, peers = participants
+    compat = cross.cross_compat
+    monkeypatch.setattr(compat.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(compat.platform, "machine", lambda: "AMD64")
+    (bundle / "helper").rename(bundle / "helper.exe")
+    compat.record_fixture(bundle, "GenuineIntel", file_router=True)
+    for peer in peers.values():
+        peer["profile"] = compat.load_fixture(bundle)
+    cross.validate_peers(peers, cross._binding())
+    cross.validate_local(bundle, "a", peers["a"])
+    monkeypatch.setattr(compat.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(compat.platform, "machine", lambda: "x86_64")
+    cross.validate_local(bundle, "coordinator", peers["coordinator"])
+    with pytest.raises(RuntimeError, match="execution platform"):
+        cross.validate_local(bundle, "b", peers["b"])
 
 
 def test_fixture_producer_vendor_cannot_change_during_build(participants, monkeypatch):
