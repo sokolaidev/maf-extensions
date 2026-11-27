@@ -101,7 +101,23 @@ def observations(
         )
     recovery = report.get("recovery")
     if worker_restart:
-        public["recovery"] = recovery
+        if isinstance(recovery, dict):
+            public["recovery"] = {
+                key: recovery.get(key)
+                for key in ("profile", "attempts", "failed_attempts", "same_turn_retry")
+            }
+            public["recovery"]["containers"] = {
+                key: recovery.get("containers", {}).get(key) for key in ("created", "destroyed")
+            }
+            public["recovery"]["events"] = [
+                {
+                    key: event.get(key)
+                    for key in ("event", "time_ns", "call", "turn", "message_sha256")
+                    if key in event
+                }
+                for event in recovery.get("events", [])
+                if isinstance(event, dict)
+            ]
         accepted = accepted and mode == "model" and recovery_accepted(recovery)
         accepted = accepted and [turn["calls"] for turn in turns] == [1, 1]
     else:

@@ -7,9 +7,10 @@ import json
 from typing import Any
 
 import pytest
+from test_openclaw_e2e_sample import CONFIG, IMAGE, TURN, agent, messages, record
+from test_openclaw_hosted_report import report
 
-from scripts.report_openclaw_hosted import recovery_accepted
-from tests.test_openclaw_e2e_sample import CONFIG, IMAGE, TURN, agent, messages, record
+recovery_accepted = report.recovery_accepted
 
 module = agent.WorkerRestart.__init__.__globals__
 TOOL = "bicep__bicep_validate"
