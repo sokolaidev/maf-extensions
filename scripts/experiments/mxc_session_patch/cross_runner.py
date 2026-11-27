@@ -425,6 +425,8 @@ class Service:
                 and request.get("operation") == "publish"
                 and request["arguments"]["call"] == "seed"
             ):
+                if connection is None:
+                    raise RuntimeError("lost acknowledgment requires a live connection")
                 self.drop_file_ack = False
                 connection.shutdown(socket.SHUT_RDWR)
             return result

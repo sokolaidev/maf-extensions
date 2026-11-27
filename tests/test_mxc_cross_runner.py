@@ -385,6 +385,7 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
 def test_workflow_requires_oidc_and_overlapping_roles():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
     workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
     assert set(workflow[True]) == {"workflow_dispatch"}
     file_mode = workflow[True]["workflow_dispatch"]["inputs"]["file_router"]
     assert file_mode["type"] == "boolean" and file_mode["default"] is False
@@ -461,7 +462,9 @@ def test_route_guard_refuses_failed_or_unapplied_preferences(
     tmp_path, set_status, route_all, corp_dns, succeeds
 ):
     path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
-    steps = yaml.safe_load(path.read_text("utf-8-sig"))["jobs"]["participants"]["steps"]
+    workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
+    steps = workflow["jobs"]["participants"]["steps"]
     guard = next(
         s
         for s in steps
@@ -947,6 +950,7 @@ def test_cli_refuses_combined_crash_modes(monkeypatch, tmp_path):
 def test_hosted_ownership_matrix_exercises_cross_runner_controls():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-remote.yml"
     workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
     paths = workflow[True]["pull_request"]["paths"]
     assert "tests/test_mxc_cross_runner.py" in paths
     assert ".github/workflows/mxc-cross-runner.yml" in paths

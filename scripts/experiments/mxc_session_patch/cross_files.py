@@ -82,7 +82,10 @@ async def exercise(worker, operation: str, host) -> dict:
             )
             if result.exit_code or result.stderr_bytes:
                 raise RuntimeError("file program failed")
-            evidence = {"stdout": result.stdout_bytes.decode(), "fresh": sandbox.freshly_created}
+            evidence = {
+                "stdout": result.stdout_bytes.decode(),
+                "fresh": getattr(sandbox, "freshly_created", None),
+            }
             if call_id == "seed":
                 data = await sandbox.read_file(
                     "proof.bin", working_directory="/workspace/calls/seed", max_bytes=SIZE
