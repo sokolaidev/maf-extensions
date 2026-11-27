@@ -156,7 +156,7 @@ from ._usersummary import (
 from ._usersummary import (
     _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
 )
-from ._view_digest import canonical_json, streamed_layout_digest
+from ._view_digest import canonical_json, json_digest, streamed_layout_digest
 
 if TYPE_CHECKING:
     from agent_framework import ChatResponse, TokenizerProtocol
@@ -307,6 +307,8 @@ PASS_MODE_CARRIED: Final[str] = "carried view"
 PASS_MODE_SAVED: Final[str] = "saved view"
 #: A view read back from the host's view store (#2995).
 PASS_MODE_PERSISTED: Final[str] = "persisted view"
+#: Where a persisted view's binding carries the configuration fingerprint.
+_VIEW_CONFIGURATION_KEY: Final[str] = "configuration"
 PASS_MODE_RESTORED: Final[str] = "restored"
 PASS_MODE_CONTINUED: Final[str] = "continued"
 PASS_MODE_FULL: Final[str] = "full"
@@ -2176,12 +2178,53 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         del data
         if parts is None:
             return None
-        earlier_digest = streamed_layout_digest(parts[0])
-        earlier = None if earlier_digest == unchanged_earlier else canonical_json(parts[0])
-        current = canonical_json(parts[1])
+        try:
+            earlier_digest = streamed_layout_digest(parts[0])
+            earlier = None if earlier_digest == unchanged_earlier else canonical_json(parts[0])
+            current = canonical_json(parts[1])
+        except (TypeError, ValueError, RecursionError):
+            return None
         del parts
-        binding = _layout_digest(decisions, f"{earlier_digest}\n{current}")
-        return earlier, earlier_digest, current, binding
+        return (
+            earlier,
+            earlier_digest,
+            current,
+            self._view_binding(decisions, earlier_digest, current),
+        )
+
+    def _view_binding(self, decisions: dict[str, Any], earlier_digest: str, current: str) -> str:
+        bound = {**decisions, _VIEW_CONFIGURATION_KEY: self.configuration_fingerprint()}
+        return _layout_digest(bound, f"{earlier_digest}\n{current}")
+
+    def configuration_fingerprint(self) -> str:
+        """A digest of the settings and prompts that shape a view, for binding a persisted one.
+
+        Every public setting of this strategy and its two halves that is a plain value, and the
+        qualified name of a callable one; clients and tokenizers are not settings of a view.
+        Decisions are snapshots of what was done, so a process configured differently can
+        restore the same decisions: the fingerprint is what refuses a view written under other
+        prompts or limits.
+        """
+
+        def settings(part: Any) -> dict[str, Any]:
+            found: dict[str, Any] = {}
+            attributes = cast(dict[str, Any], vars(part))
+            for name, value in attributes.items():
+                if name.startswith("_"):
+                    continue
+                if value is None or isinstance(value, (str, int, float, bool)):
+                    found[name] = value
+                elif callable(value) and hasattr(value, "__qualname__"):
+                    found[name] = f"{value.__module__}.{value.__qualname__}"
+            return found
+
+        return json_digest(
+            {
+                "composed": settings(self),
+                "tool_results": settings(self.tool_results),
+                "user_turns": settings(self.user_turns),
+            }
+        )
 
     def persisted_view_binding(self, earlier_digest: str, current: str) -> str:
         """What binds a current-turn part to these decisions and to its earlier-turns part.
@@ -2189,7 +2232,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Every decision is bound, as the saved view binds them, but only through the current part,
         which is rewritten after every pass anyway; the earlier part is named by its digest.
         """
-        return _layout_digest(self.session_state(), f"{earlier_digest}\n{current}")
+        return self._view_binding(self.session_state(), earlier_digest, current)
 
     def persisted_view_offer(self, earlier: str, current: str) -> dict[str, Any] | None:
         """The two parts joined into one saved layout, bound to these decisions, or None."""

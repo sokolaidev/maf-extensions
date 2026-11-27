@@ -131,9 +131,14 @@ def save_view(carried: CarriedView, decisions: dict[str, Any]) -> dict[str, Any]
     data = _layout_data(carried)
     if data is None:
         return None
-    # JSON detaches the layout from live annotations and lets a store carry it opaquely.
-    layout = canonical_json(data)
-    return {"version": _VERSION, "layout": layout, "digest": _layout_digest(decisions, layout)}
+    try:
+        # JSON detaches the layout from live annotations and lets a store carry it opaquely.
+        layout = canonical_json(data)
+        return {"version": _VERSION, "layout": layout, "digest": _layout_digest(decisions, layout)}
+    except (TypeError, ValueError, RecursionError):
+        # A value JSON refuses (a non-finite number in a record's metadata): no layout, as for
+        # anything else the layout cannot represent.
+        return None
 
 
 def _layout_data(carried: CarriedView) -> dict[str, Any] | None:

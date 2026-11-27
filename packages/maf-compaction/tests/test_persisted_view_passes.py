@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import Counter
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from agent_framework import AgentSession, Message
@@ -192,3 +193,123 @@ def test_a_linked_record_gets_the_same_durable_id_each_time_and_an_unlinked_one_
     assert str(first.message_id).startswith(RECORD_ID_PREFIX)
     assert other.message_id != first.message_id
     assert unlinked.message_id is None
+
+
+async def test_a_view_published_during_a_pass_makes_its_write_conflict_and_drop_its_view(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    slow, fast = _registry(budget, [], view_store=store), _registry(budget, [], view_store=store)
+    session, other = AgentSession(session_id="race"), AgentSession(session_id="race")
+
+    with slow.activate(session) as stack:
+        strategy: _Composed = stack.strategy
+        await slow._load_view("race", strategy)  # observes nothing stored
+        await _pass(fast, other, _Rebuilding(transcript).hand())  # publishes meanwhile
+        published = await store.read(ViewKey("race", "agent", ViewPart.CURRENT))
+        await apply_compaction(_Rebuilding(transcript).hand(), strategy=_compactor(strategy))
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await slow._persist_view("race", strategy)
+        assert not strategy.carries_view
+
+    kept = await store.read(ViewKey("race", "agent", ViewPart.CURRENT))
+    assert published is not None and kept is not None and kept.etag == published.etag
+    assert any("another writer's is newer" in r.getMessage() for r in caplog.records)
+    assert "race" not in slow._views
+
+
+def _compactor(strategy: _Composed) -> Any:
+    async def compact(messages: list[Message]) -> bool:
+        try:
+            return await strategy.compact_before(messages, options={})
+        except CompactionBudgetExceeded:
+            return True
+
+    return compact
+
+
+async def test_a_view_written_under_other_settings_is_not_offered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="settings")
+    await _pass(_registry(budget, [], view_store=store), session, _Rebuilding(transcript).hand())
+    reconfigured = _registry(budget, [], view_store=store)
+
+    with reconfigured.activate(session) as stack:
+        stack.strategy.user_turns.prompt = "Summarize differently."
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await reconfigured._load_view("settings", stack.strategy)
+        assert not stack.strategy.has_saved_view
+
+    assert any("other decisions or settings" in r.getMessage() for r in caplog.records)
+
+
+def test_a_layout_json_refuses_is_no_saved_view_rather_than_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maf_compaction import _saved_view
+
+    monkeypatch.setattr(
+        _saved_view,
+        "_layout_data",
+        lambda carried: {"sources": [], "order": [{"insert": {"v": float("nan")}}], "required": 0},
+    )
+
+    assert _saved_view.save_view(cast(Any, object()), {}) is None
+
+
+async def test_release_and_eviction_drop_what_was_known_of_a_sessions_view() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(
+        _budget(transcript, 0.6), [], view_store=InMemoryViewStore(), max_cached_sessions=1
+    )
+    first, second = AgentSession(session_id="first"), AgentSession(session_id="second")
+    await _pass(registry, first, _Rebuilding(transcript).hand())
+    assert "first" in registry._views
+
+    await _pass(registry, second, _Rebuilding(transcript).hand())
+    assert "first" not in registry._views
+    registry.release("second")
+    assert registry._views == {}
+
+
+async def test_the_layout_is_built_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    transcript = _transcript(14, 10, 6)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    original = _Composed.persisted_view_parts
+
+    def recorded(self: _Composed, **kwargs: Any) -> Any:
+        threads.append(threading.get_ident())
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(_Composed, "persisted_view_parts", recorded)
+    registry = _registry(_budget(transcript, 0.6), [], view_store=InMemoryViewStore())
+    await _pass(registry, AgentSession(session_id="off"), _Rebuilding(transcript).hand())
+
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+async def test_after_invalidation_the_next_pass_rebuilds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="rebuilt")
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+    host = _Rebuilding(transcript)
+    await _pass(registry, session, host.hand())
+    host.answered(1)
+
+    await registry.invalidate_view("rebuilt")
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await _pass(registry, session, host.hand())
+
+    assert _modes(caplog) == ["full (nothing carried or saved)"]
+    with registry.activate(session), pytest.raises(RuntimeError, match="active compaction phase"):
+        await registry.invalidate_view("rebuilt")
