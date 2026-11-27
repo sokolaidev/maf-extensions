@@ -24,6 +24,8 @@ from maf_sandbox_mxc.remote_api import Client
 from maf_sandbox_mxc.remote_authority import Authority
 from maf_sandbox_mxc.shared_store import ScratchLimits
 
+from .cross_compat import helper_path
+
 KEY = SandboxKey("qualification", "handoff", "agent")
 PROGRAM = ProgramRequirements(max_program_bytes=65536)
 SPEC = SandboxSpec(
@@ -82,7 +84,7 @@ class NextCallClient(Client):
 def config(root: Path, bundle: Path, profile: dict, limits, scratch) -> MxcSandboxConfig:
     """Bind producer-verified file assets to the worker's generation root."""
     return MxcSandboxConfig(
-        bundle / "helper",
+        helper_path(bundle, profile["platform"]),
         bundle / "startup",
         root,
         "cross-runner-files",

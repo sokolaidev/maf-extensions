@@ -2226,7 +2226,7 @@ The removal-denied case used the existing private TLS daemon image `sha256:98175
 
 These selected hosted results support promoting the shared sample and Linux recovery assertion to 2026.11.10. The numbered sample inherits that pin. Historical Windows conformance, credential delegation, native MXC, additional workload tools, model retries after faults, unattended recovery and production operation gain no new qualification. Only bounded Markdown artifacts are retained; private JSON, logs, tokens and sessions remain outside the checkout. Temporary proof workflows are excluded from the delivery.
 
-## Real-model worker restart — 2026-11-28
+## Real-model worker restart 2026-11-28
 
 [#3024](https://github.com/sokolaidev/maf-extensions/issues/3024) combines the real-model path with one controlled pre-admission worker outage. The harness stops the installed worker after observing the model's first Bicep selection but before releasing that response to Gateway. It restarts only after receiving Gateway's explicit failed tool result, then forwards that unchanged result to the model. The original prompt, Gateway process and user session remain unchanged. A same-turn retry must use the identical source; the second turn still repairs and validates the greeting declaration.
 

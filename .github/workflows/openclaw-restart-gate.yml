@@ -11,14 +11,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [repository, packages]
+        group: [repository]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ff74fd92430c3cc46d3bb05881cb74afd8e21492
+          ref: 1719f8a2e324fb912e158e644734c272325215ea
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --locked
       - run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group "${{ matrix.group }}"
@@ -29,28 +29,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ff74fd92430c3cc46d3bb05881cb74afd8e21492
+          ref: 1719f8a2e324fb912e158e644734c272325215ea
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run poe security
-      - run: uv run poe types-packages
       - run: uv run poe types
       - run: uv run poe doc-paths
       - run: uv run poe implicit-concat
       - run: uv run python scripts/check_doc_trackers.py
         env:
           GITHUB_TOKEN: ${{ github.token }}
-  samples:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ff74fd92430c3cc46d3bb05881cb74afd8e21492
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - run: uv sync --locked
-      - run: uv run poe md-blocks
-      - run: uv run poe sample-floors

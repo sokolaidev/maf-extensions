@@ -17,6 +17,14 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def replay_id(value: str) -> str:
+    """Match the pinned Gateway's strict custom-provider replay ID normalization."""
+    require(re.fullmatch(r"[A-Za-z0-9_-]+", value), "Unsupported model tool-call identity")
+    result = re.sub(r"[^A-Za-z0-9]", "", value)[:40]
+    require(bool(result), "Empty replay identity")
+    return result
+
+
 def selected_calls(payload: bytes) -> list[dict[str, Any]]:
     """Reassemble streamed function calls before releasing the response to Gateway."""
     calls: dict[int, dict[str, str]] = {}
@@ -80,7 +88,7 @@ class WorkerRestart:
         for call in selected_calls(payload):
             require(len(self.attempts) < 3, "Bicep recovery attempt budget exhausted")
             require(
-                all(item["id"] != call["id"] for item in self.attempts),
+                all(replay_id(item["id"]) != replay_id(call["id"]) for item in self.attempts),
                 "Model reused a tool-call identity",
             )
             turn = self.turn_identity(body)
@@ -113,7 +121,8 @@ class WorkerRestart:
         found = [
             message
             for message in messages
-            if message.get("role") == "tool" and message.get("tool_call_id") == self.failed_id
+            if message.get("role") == "tool"
+            and message.get("tool_call_id") == replay_id(self.failed_id)
         ]
         if not found:
             return
@@ -137,7 +146,7 @@ class WorkerRestart:
         self.event("failure_observed", **self.failure)
         self.restart()
         self.event("worker_ready")
-        self.ignored_calls.add(self.failed_id)
+        self.ignored_calls.add(replay_id(self.failed_id))
 
     def result(self) -> dict[str, Any]:
         require(len(self.attempts) == 3 and self.failure is not None, "Incomplete model recovery")
