@@ -6,8 +6,12 @@ permissions:
   contents: read
 jobs:
   diagnosis:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: [focused, packages]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -15,6 +19,11 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.12.5'
-          python-version: '3.14.4'
       - run: uv sync --locked
-      - run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages --log-level=INFO
+      - if: matrix.scope == 'packages'
+        run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages --log-level=INFO
+      - if: matrix.scope == 'focused'
+        run: |
+          for attempt in {1..10}; do
+            uv run pytest packages/maf-compaction/tests/test_background_answers_kept.py -q --log-level=INFO
+          done
