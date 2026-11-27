@@ -9,10 +9,13 @@ import re
 import socket
 import ssl
 import subprocess
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from openshell_allocation_probe import Client
 from openshell_composition_probe import CompositionProfile, receipt_installed
 from openshell_credentials_probe import credential_observation
 from openshell_egress_probe import origin_get
@@ -21,6 +24,8 @@ from openshell_owned_probe import fixture_spec, snapshot
 from openshell_refresh_probe import RefreshProfile, TokenIssuer
 from openshell_sftp_probe import native_sftp
 from openshell_transition_probe import Transitions, runtime_continuity
+
+PROFILE_EDIT_PATHS = ("/provider/first", "/provider/second")
 
 
 def guest_program(directory, env_key):
@@ -512,8 +517,7 @@ class HTTPSRefreshProfile(RefreshProfile):
         self.configure_refresh(client)
         self.rotate(client)
 
-    def update_path(self, client, path, record):
-        """Persist one conditional path edit; read-back proves storage, not guest enforcement."""
+    def edit_baseline(self, client):
         query = client.pb.GetProviderProfileRequest(
             workspace_scope=client.scope, id=self.profile_id
         )
@@ -528,19 +532,27 @@ class HTTPSRefreshProfile(RefreshProfile):
             or before.endpoints[0].rules[0].allow.path != self.endpoint_path
         ):
             raise RuntimeError("profile edit baseline mismatch")
+        return query, before
+
+    def path_edit_request(self, client, before, path):
         edited = type(before)()
         edited.CopyFrom(before)
         # Catalogue attribution is read-only and absent from mutation responses.
         edited.source = edited.scope = ""
         edited.endpoints[0].path = path
         edited.endpoints[0].rules[0].allow.path = path
-        request = client.pb.UpdateProviderProfilesRequest(
+        return client.pb.UpdateProviderProfilesRequest(
             workspace_scope=client.scope,
             id=self.profile_id,
             expected_resource_version=before.resource_version,
             profile=client.pb.ProviderProfileImportItem(profile=edited),
             request_id=str(uuid.uuid4()),
         )
+
+    def update_path(self, client, path, record):
+        """Persist a conditional path edit and verify it against the catalogue."""
+        query, before = self.edit_baseline(client)
+        request = self.path_edit_request(client, before, path)
         row = {
             "method": "UpdateProviderProfiles",
             **protobuf_evidence(request, "request"),
@@ -555,8 +567,13 @@ class HTTPSRefreshProfile(RefreshProfile):
             **protobuf_evidence(response, "response"),
         )
         record("barriers", {"profile_update_acknowledged": dict(row)})
+        self.confirm_path_edit(client, query, before, request, response, record)
+
+    def confirm_path_edit(self, client, query, before, request, response, record):
         if not response.updated or response.profile.resource_version <= before.resource_version:
             raise RuntimeError("profile edit was not stored at a newer revision")
+        edited = type(before)()
+        edited.CopyFrom(request.profile.profile)
         edited.resource_version = response.profile.resource_version
         if response.profile != edited:
             raise RuntimeError("profile update response differs from the exact path edit")
@@ -564,7 +581,7 @@ class HTTPSRefreshProfile(RefreshProfile):
         current = client.rpc("GetProviderProfile", query).profile
         if current != edited:
             raise RuntimeError("stored profile differs from the exact path edit")
-        self.endpoint_path = path
+        self.endpoint_path = current.endpoints[0].path
         record(
             "barriers",
             {
@@ -573,6 +590,71 @@ class HTTPSRefreshProfile(RefreshProfile):
                 "guest_installation_confirmed": False,
             },
         )
+
+    def competing_path_edits(self, client, record):
+        """Submit both fixture edits once and verify the committed winner."""
+        query, before = self.edit_baseline(client)
+        requests = [self.path_edit_request(client, before, path) for path in PROFILE_EDIT_PATHS]
+        row = {
+            "method": "UpdateProviderProfiles",
+            "expected_resource_version": before.resource_version,
+            "candidates": [
+                {"path": path, **protobuf_evidence(request, "request")}
+                for path, request in zip(PROFILE_EDIT_PATHS, requests, strict=True)
+            ],
+        }
+        record("mutations", row)
+        barrier = threading.Barrier(2, timeout=10)
+
+        def submit(request):
+            peer = Client(client.scope.workspace, client.token, client.image)
+            try:
+                barrier.wait()
+                started = time.monotonic_ns()
+                try:
+                    response = peer.rpc("UpdateProviderProfiles", request)
+                except peer.grpc.RpcError as exc:
+                    outcome = {
+                        "started_ns": started,
+                        "ended_ns": time.monotonic_ns(),
+                        "status": exc.code().name,
+                    }
+                    if outcome["status"] == "ABORTED":
+                        match = re.fullmatch(
+                            r"(?:provider profile was modified concurrently|update provider profile "
+                            r"failed due to concurrent modification) \(current resource_version: (\d+)\)",
+                            exc.details() or "",
+                        )
+                        if match:
+                            outcome["conflicting_revision"] = int(match[1])
+                    return None, outcome
+                return response, {
+                    "started_ns": started,
+                    "ended_ns": time.monotonic_ns(),
+                    "status": "OK",
+                    **protobuf_evidence(response, "response"),
+                }
+            finally:
+                peer.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(submit, requests))
+        outcomes = [
+            {"path": path, **outcome}
+            for path, (_, outcome) in zip(PROFILE_EDIT_PATHS, results, strict=True)
+        ]
+        overlap = min(o["ended_ns"] for o in outcomes) - max(o["started_ns"] for o in outcomes)
+        record("barriers", {"profile_edit_outcomes": outcomes, "rpc_overlap_ns": overlap})
+        if overlap <= 0 or sorted(o["status"] for o in outcomes) != ["ABORTED", "OK"]:
+            raise RuntimeError(
+                "expected overlapping profile edits with one success and one conflict"
+            )
+        winner = next(i for i, o in enumerate(outcomes) if o["status"] == "OK")
+        response = results[winner][0]
+        if outcomes[1 - winner].get("conflicting_revision") != response.profile.resource_version:
+            raise RuntimeError("profile conflict did not identify the winning revision")
+        self.confirm_path_edit(client, query, before, requests[winner], response, record)
+        return outcomes[winner]["ended_ns"]
 
 
 async def measure_credentials(fixture, ip, ca_file):
@@ -591,7 +673,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "unqualified": [
             "persistent connections and in-flight mutations",
             "profile credential declarations, refresh settings, methods and hosts",
-            "concurrent controllers",
+            "additional controllers and concurrent edits beyond two conditional path updates",
             "gateway/supervisor disconnect and restart",
             "refresh-token reauthorization",
             "co-minted credentials and non-bearer rewrites",
@@ -613,7 +695,7 @@ async def measure_credentials(fixture, ip, ca_file):
         return origin.advance(snapshot, expected=expected)
 
     await reconcile(expected=[])
-    for path in ("/provider/ok", "/provider/other", "/outside"):
+    for path in ("/provider/ok", "/provider/other", "/outside", *PROFILE_EDIT_PATHS):
         row = await asyncio.to_thread(control_https, host, path, port=8443, context=context)
         if row != {
             "method": "GET",
@@ -757,7 +839,7 @@ async def measure_credentials(fixture, ip, ca_file):
                     if not timely:
                         raise RuntimeError("unexpected continuous credential observation: " + label)
                     if passed:
-                        return
+                        return row["attempts"][-1]["ended_ns"]
                     if not (
                         propagation_observation(
                             observed["guest"], events, request, issuer.journal()
@@ -955,6 +1037,46 @@ async def measure_credentials(fixture, ip, ca_file):
                 "profile_restoration_does_not_revive_original_epoch",
                 expected="credential_unavailable",
                 revoked=recovered,
+            )
+            unexpired(reconfigured)
+            acknowledged = await asyncio.to_thread(
+                profile.competing_path_edits, fixture.client, record
+            )
+            prior_references = {current, edited, guest.ready["reference_sha256"]}
+            deadline = time.monotonic() + 30
+            while True:
+                unexpired(reconfigured)
+                reference = await guest.capture_current("edited")
+                record(
+                    "barriers",
+                    {
+                        "profile_edit_launch_reference": reference,
+                        "observed_ns": time.monotonic_ns(),
+                    },
+                )
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "winning profile did not supply a new launch reference in time"
+                    )
+                if reference not in prior_references:
+                    break
+                await asyncio.sleep(0.2)
+            observed = await check(
+                "winning_profile_reference_reaches_owned_origin",
+                reconfigured,
+                source="edited",
+                path=profile.endpoint_path,
+                converge=True,
+                revoked=reconfigured,
+            )
+            record(
+                "barriers",
+                {
+                    "winning_path": profile.endpoint_path,
+                    "acknowledged_ns": acknowledged,
+                    "guest_and_origin_observed_ns": observed,
+                    "ack_to_observation_ns": observed - acknowledged,
+                },
             )
             await guest.close()
             guest = None

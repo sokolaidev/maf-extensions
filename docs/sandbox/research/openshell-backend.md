@@ -2,6 +2,12 @@
 
 > Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access, filesystem policy, native SFTP and bounded HTTP/HTTPS egress matrices, anonymous provider composition, serial policy revisions, synthetic credential binding, multi-provider static updates, elapsed credential expiry and bounded gateway-managed OAuth refresh were characterized on 2026-10-11. The spike concludes with a defer decision; the current adoption boundary is recorded in the [backend index](../backends/README.md#openshell-evaluation). No suite adapter or runtime is qualified.
 
+## Concurrent conditional provider profile edits
+
+Two controllers submit distinct edits to the fixture’s provider profile using the same stored revision. Each edit selects one GET path on the owned HTTPS origin. The measurement requires overlapping client RPC intervals, one successful update, and one explicit resource-version conflict identifying the accepted revision. It compares the full mutation response and stored profile with the winning edit.
+
+After readback, a fresh launch supplies an opaque reference with a digest distinct from the references observed under the earlier profiles. The original guest uses it for the winning path. The report records the elapsed time from acknowledgement to a guest response matched to the owned origin and synthetic issuer. That interval bounds the first observed use. The requests use fresh HTTPS connections.
+
 ## Guest credential use before explicit restoration — 2026-11-26
 
 After the gateway restarts and the physical runtime is replaced, the credential recovery experiment waits for two advancing READY reports for the original provider target. It launches a guest process to obtain the reference supplied by the replacement and uses that reference for one HTTPS request to the owned provider endpoint. The issuer generation, origin journal, guest response and advancing reports around the request identify delivery or explicit refusal. Missing readiness, changed intent and an absent launch reference have separate outcomes. Explicit restoration and its existing cases follow this observation.

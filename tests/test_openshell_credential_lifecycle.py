@@ -130,9 +130,16 @@ def test_generation_capture_requires_owned_supervisor_and_redacts_failures(
         "readback",
         "readback_scope",
         "lost_ack",
+        "first_wins",
+        "second_wins",
+        "both_ok",
+        "wrong_conflict",
+        "other_abort",
+        "unknown_outcome",
+        "wrong_winner_readback",
     ],
 )
-def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault):
+def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkeypatch, fault):
     from copy import deepcopy
 
     class Message(NS):
@@ -151,6 +158,30 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
         endpoints=[NS(path="/provider/**", rules=[NS(allow=NS(path="/provider/**"))])],
         credentials=[NS(name="synthetic", auth_style="bearer")],
     )
+    concurrent = fault in {
+        "first_wins",
+        "second_wins",
+        "both_ok",
+        "wrong_conflict",
+        "other_abort",
+        "unknown_outcome",
+        "wrong_winner_readback",
+    }
+    barrier = threading.Barrier(2, timeout=5)
+    winner = probe.PROFILE_EDIT_PATHS[1] if fault == "second_wins" else probe.PROFILE_EDIT_PATHS[0]
+
+    class RpcError(Exception):
+        def code(self):
+            return NS(name="UNAVAILABLE" if fault == "unknown_outcome" else "ABORTED")
+
+        def details(self):
+            if fault == "other_abort":
+                return "unrelated abort"
+            version = 9 if fault == "wrong_conflict" else 8
+            return (
+                f"provider profile was modified concurrently (current resource_version: {version})"
+            )
+
     state = NS(stored=deepcopy(before), calls=[], records=[])
     if fault == "baseline":
         state.stored.endpoints[0].path = "/replacement"
@@ -165,6 +196,8 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
             result.scope = "platform" if fault == "scope" else "workspace"
             if fault == "readback" and len(state.calls) > 1:
                 result.resource_version += 1
+            if fault == "wrong_winner_readback" and len(state.calls) > 1:
+                result.endpoints[0].path = "/provider/second"
             if fault == "readback_scope" and len(state.calls) > 1:
                 result.scope = "platform"
             return NS(profile=result)
@@ -172,7 +205,13 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
         assert request.expected_resource_version == 7
         assert request.id == request.profile.profile.id == "profile"
         assert request.request_id
-        assert request.workspace_scope == "owned"
+        assert request.workspace_scope.workspace == "owned"
+        if concurrent:
+            barrier.wait()
+            if request.profile.profile.endpoints[0].path != winner and fault != "both_ok":
+                raise RpcError()
+            if fault == "both_ok":
+                return Message(updated=True, profile=deepcopy(request.profile.profile))
         assert request.profile.profile.source == request.profile.profile.scope == ""
         state.stored = deepcopy(request.profile.profile)
         state.stored.resource_version = 7 if fault == "version" else 8
@@ -188,14 +227,46 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
             UpdateProviderProfilesRequest=Message,
             ProviderProfileImportItem=Message,
         ),
-        scope="owned",
+        scope=NS(workspace="owned"),
         rpc=rpc,
+        image="fixture",
+        token="fixture",
     )
     profile = object.__new__(probe.HTTPSRefreshProfile)
     profile.profile_id, profile.endpoint_path = "profile", "/provider/**"
 
     def record(kind, row):
         state.records.append((kind, deepcopy(row)))
+
+    if concurrent:
+        monkeypatch.setattr(
+            probe,
+            "Client",
+            lambda *args: NS(rpc=rpc, grpc=NS(RpcError=RpcError), close=lambda: None),
+        )
+        if fault in ("first_wins", "second_wins"):
+            acknowledged = profile.competing_path_edits(client, record)
+            assert profile.endpoint_path == winner
+            assert state.records[-1][1]["stored_profile_revision"] == 8
+        else:
+            with pytest.raises(RuntimeError):
+                profile.competing_path_edits(client, record)
+            assert profile.endpoint_path == "/provider/**"
+            assert not any("stored_profile_revision" in row for _, row in state.records)
+        requests = [r for method, r in state.calls if method == "UpdateProviderProfiles"]
+        assert len(requests) == len({r.request_id for r in requests}) == 2
+        assert {r.profile.profile.endpoints[0].path for r in requests} == set(
+            probe.PROFILE_EDIT_PATHS
+        )
+        measured = state.records[1][1]
+        assert measured["rpc_overlap_ns"] > 0
+        outcomes = measured["profile_edit_outcomes"]
+        assert len(outcomes) == 2
+        if fault in ("first_wins", "second_wins"):
+            assert next(o for o in outcomes if o["path"] == winner)["ended_ns"] == acknowledged
+        assert "synthetic-secret-material" not in json.dumps(state.records)
+        assert "_hex" not in json.dumps(state.records)
+        return
 
     if fault is None:
         profile.update_path(client, "/provider/other", record)
@@ -659,6 +730,8 @@ def test_persistent_control_session_requires_finite_budget(probe, seconds):
         "profile_expiry_after",
         "profile_retained_old_reference",
         "profile_same_reference",
+        "winner_old_reference",
+        "winner_wrong_origin",
         "restore_no_revive",
         "restore_narrowed_reference",
         "generation",
@@ -818,6 +891,11 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
             if fault == "profile_expiry_before":
                 state.now = state.issuer.latest["expires_at"] - 34
 
+        def competing_path_edits(self, client, record):
+            self.endpoint_path = state.path = probe.PROFILE_EDIT_PATHS[0]
+            state.restoring = False
+            return probe.time.monotonic_ns()
+
     class Transition:
         def __init__(self, *args):
             self.identity = "sandbox"
@@ -842,6 +920,11 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
             return self.ready
 
         async def capture_current(self, slot="current"):
+            if state.path in probe.PROFILE_EDIT_PATHS:
+                if fault == "winner_old_reference":
+                    state.clock += 31
+                    return "current"
+                return "winning-reference"
             return "current" if fault == "profile_same_reference" else slot
 
         async def request(self, url, source):
@@ -907,7 +990,11 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                     if source == "none"
                     else state.issuer.latest["authorization_sha256"],
                 )
-                origin.append(row)
+                origin.append(
+                    {**row, "path": "/unexpected"}
+                    if fault == "winner_wrong_origin" and state.path in probe.PROFILE_EDIT_PATHS
+                    else row
+                )
                 response = dict(status=200, body=json.dumps(row))
             return dict(guest=response)
 
@@ -947,7 +1034,10 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     )
     if fault is None or fault == "generation":
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
-        assert state.requests == (23 if fault == "generation" else 24)
+        assert state.requests == (24 if fault == "generation" else 25)
+        result = fixture.report["credentials"]["barriers"][-1]
+        assert result["winning_path"] == probe.PROFILE_EDIT_PATHS[0]
+        assert result["ack_to_observation_ns"] > 0
         assert fixture.report["credentials"]["characterization_completed"]
         assert (
             fixture.report["credentials"]["worker_refresh_session_window"]["outcome"]
@@ -987,6 +1077,8 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         match = (
             "expiry"
             if "expiry" in fault
+            else "new launch reference"
+            if fault == "winner_old_reference"
             else "did not change the reference"
             if fault == "profile_same_reference"
             else "unexpected continuous"
