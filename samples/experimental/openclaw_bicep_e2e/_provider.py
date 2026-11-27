@@ -43,6 +43,7 @@ class Provider:
         self.response_models: set[str] = set()
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
+        self.diagnostic_reasons: list[str] = []
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -74,6 +75,13 @@ class Provider:
                     self.wfile.write(payload)
                 except Exception as exc:
                     provider.errors.append(type(exc).__name__)
+                    allowed = {
+                        "Unknown provider route", "Provider authorization failed",
+                        "Provider request exceeds bounds", "Incomplete provider request",
+                        "Model request budget exhausted", "Missing turn identity",
+                        "Tool identity was reused", "Tool call has no turn identity",
+                    }
+                    provider.diagnostic_reasons.append(str(exc) if str(exc) in allowed else type(exc).__name__)
                     self.send_error(502, "Sample provider failed; no acceptance recorded")
 
             def log_message(self, format: str, *args: Any) -> None:

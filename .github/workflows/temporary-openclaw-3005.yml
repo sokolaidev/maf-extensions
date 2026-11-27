@@ -73,7 +73,7 @@ jobs:
           for item in list(result.values()):
               if isinstance(item, dict):
                   item["unrecognized_keys"] = [re.findall(r'"([A-Za-z][A-Za-z0-9_.-]{0,60})"', line) for line in item["unrecognized_keys"]][:10]
-          config = json.loads((root / "openclaw.json").read_text()) if (root / "openclaw.json").exists() else {}
+          config = json.loads((root / "state/openclaw.json").read_text()) if (root / "state/openclaw.json").exists() else {}
           secret_values = []
           def secrets(value):
               if isinstance(value, dict):
@@ -98,6 +98,8 @@ jobs:
               line = re.sub(r"\b[0-9a-f]{32,}\b", "<id>", line)
               errors.append(line[:300])
           result["gateway_error_summaries"] = errors[:4]
+          result["provider"] = {key: report.get("provider", {}).get(key) for key in ("requests", "error_count", "function_calls", "observed_bicep_results")}
+          result["provider_diagnostic_reasons"] = report.get("provider_diagnostic_reasons", [])[:8]
           print(json.dumps(result, indent=2))
           PY
       - name: Record installed npm identity
