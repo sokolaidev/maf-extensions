@@ -4,8 +4,6 @@ on:
     branches: [antsok-proof-ci-3014-compaction]
 permissions:
   contents: read
-  issues: read
-  pull-requests: read
 jobs:
   verify:
     runs-on: ubuntu-26.04
@@ -13,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scope: [trackers]
+        scope: [gate]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,7 +33,15 @@ jobs:
             uv run pytest packages/maf-compaction/tests/test_background_answers_kept.py -q
           done
       - if: matrix.scope == 'gate'
-        run: uv run poe gate
+        run: |
+          uv run python -m pytest -q -n auto
+          uv run poe lint
+          uv run poe format
+          uv run poe security
+          uv run poe types-packages
+          uv run poe types
+          uv run poe doc-paths
+          uv run poe implicit-concat
       - if: matrix.scope == 'mutation'
         run: |
           uv run python - <<'PY'
@@ -53,10 +59,3 @@ jobs:
           assert "2 failed" in result.stdout
           assert "assert accepted_batches == prepared_batches" in result.stdout
           PY
-      - if: matrix.scope == 'trackers'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run python scripts/check_doc_trackers.py
