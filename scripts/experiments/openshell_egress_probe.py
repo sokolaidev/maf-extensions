@@ -30,7 +30,9 @@ from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
 
 
-def serve_origin(*, tls_events=None, record_authorization=False, revocation_controls=False):
+def serve_origin(
+    *, tls_events=None, record_authorization=False, revocation_controls=False, release_tls=None
+):
     """Expose only fixture responses and a bounded request journal on the private Docker network."""
     events = []
     lock = threading.Lock()
@@ -56,6 +58,12 @@ def serve_origin(*, tls_events=None, record_authorization=False, revocation_cont
                     return
                 release.set()
                 body, status = b'{"released":true}', 200
+            elif (
+                release_tls is not None
+                and self.command == "POST"
+                and parsed.path == "/__release_tls"
+            ):
+                body, status = json.dumps({"released": release_tls(marker)}).encode(), 200
             elif self.path == "/__tls_events" and tls_events is not None:
                 body = json.dumps(tls_events).encode()
                 status = 200
