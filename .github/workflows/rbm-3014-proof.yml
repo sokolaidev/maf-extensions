@@ -1,0 +1,63 @@
+name: Verify PR 3014 rebase
+on:
+  push:
+    branches: [antsok-proof-rbm-3014-r2]
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+jobs:
+  verify:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify independent rebase, tree equality and range-diff
+        env:
+          OLD_HEAD: e04973a26a0f71985e77e8673ce11c2cb52d2114
+          NEW_MAIN: 42ca87d9382dda8117b87119c71308b8512e6865
+          OLD_BASE: 64c2254234026ba41abc0158003e1f11e16376c5
+          CANDIDATE: b7defff5b62c7bc8803d779d5f64764ea9c5ad3e
+        run: |
+          git config user.name 'GitHub Actions'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          expected=$(git merge-tree --write-tree "$NEW_MAIN" "$OLD_HEAD")
+          candidate_tree=$(git rev-parse "$CANDIDATE^{tree}")
+          test "$candidate_tree" = "$expected"
+          git switch --detach "$OLD_HEAD"
+          git rebase --onto "$NEW_MAIN" "$OLD_BASE"
+          test "$(git rev-parse HEAD^{tree})" = "$expected"
+          git range-diff --no-color "$OLD_BASE..$OLD_HEAD" "$NEW_MAIN..$CANDIDATE" > /tmp/rbm-3014-range.txt
+          cat /tmp/rbm-3014-range.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          lines = Path("/tmp/rbm-3014-range.txt").read_text().splitlines()
+          assert len(lines) == 2, lines
+          assert all(re.fullmatch(r"\s*\d+:\s+[0-9a-f]+\s+=\s+\d+:\s+[0-9a-f]+\s+.+", line) for line in lines), lines
+          PY
+          echo "Expected and verified tree: $expected"
+          git switch --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.10'
+      - run: uv sync --locked
+      - name: OpenClaw and final-reply regressions
+        run: uv run python -m pytest -q tests/test_openclaw*.py packages/maf-compaction/tests/test_background_answers_kept.py
+      - name: Parallel package suite
+        run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages
+      - name: Static checks on the rebased source
+        run: |
+          uv run ruff check samples/experimental/openclaw_bicep_e2e/agent.py scripts/openclaw_conformance/linux_owner_loss.py tests/fixtures/openclaw_gateway_http_check.py tests/fixtures/openclaw_gateway_provider.py tests/test_openclaw_gateway_qualification.py
+          uv run ruff format --check samples/experimental/openclaw_bicep_e2e/agent.py scripts/openclaw_conformance/linux_owner_loss.py tests/fixtures/openclaw_gateway_http_check.py tests/fixtures/openclaw_gateway_provider.py tests/test_openclaw_gateway_qualification.py
+          uv run poe types
+          uv run poe doc-paths
+      - name: Live tracker verification
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: '3014'
+        run: uv run python scripts/check_doc_trackers.py
