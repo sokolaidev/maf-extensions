@@ -53,7 +53,8 @@ def direct(db, operation, **arguments):
 @contextmanager
 def coordinator(root, **kwargs):
     kwargs.setdefault("initialize", not root.exists())
-    db = api.Coordinator(root, {FINGERPRINT: GRANT}, {"session": SESSION}, enabled=True, **kwargs)
+    grants = kwargs.pop("grants", {FINGERPRINT: GRANT})
+    db = api.Coordinator(root, grants, {"session": SESSION}, enabled=True, **kwargs)
     try:
         yield db
     finally:
@@ -1378,6 +1379,81 @@ def scratch_begin(db, call="call", guest="guest-a"):
     assert receipt.owner == owner and receipt.call == call
     assert receipt.request == hashlib.sha256(b"code").hexdigest()
     return owner, receipt
+
+
+@pytest.mark.parametrize("scratch", [None, SCRATCH])
+def test_new_remote_call_reclaims_quota_and_preserves_retry_identities(tmp_path, scratch):
+    with coordinator(tmp_path / "db", scratch_policy=scratch) as db:
+        owner = direct(db, "acquire", guest="guest-a")["owner"]
+        args = {"owner": owner, "request": encoded(b"code")}
+        store = db.stores["session"][1]
+
+        def commit(call):
+            admitted = direct(db, "begin", call=call, **args)
+            usage = store.usage("session")
+            direct(db, "publish", **publication(owner, call, data=call.encode()))
+            if scratch:
+                receipt = api.remote_scratch.Receipt(**admitted["scratch"])
+                db.reconcile_scratch(receipt, lambda value: value == receipt)
+            return usage
+
+        initial_usage = store.usage("session")
+        reservation = commit("old") - initial_usage
+        commit("current")
+        old_charge = store.db.execute(
+            "SELECT checkpoint_charge + result_charge FROM calls WHERE id='old'"
+        ).fetchone()[0]
+        store.db.execute("UPDATE calls SET expires=0,grace=0,remaining=0 WHERE id='old'")
+        quota = store.usage("session") + reservation - old_charge
+        store.db.execute("UPDATE sessions SET quota=?", (quota,))
+
+        assert direct(db, "begin", call="next", **args)["result"] is None
+        assert direct(db, "restore", owner=owner)["files"] == {"index.json": encoded(b"current")}
+        assert direct(db, "retry", call="current", **args)["result"] == encoded(b"result")
+        with pytest.raises(api.Refused, match="result_expired"):
+            direct(db, "begin", call="old", **args)
+        with pytest.raises(api.Refused, match="different request"):
+            direct(db, "retry", owner=owner, call="old", request=encoded(b"changed"))
+
+
+def test_retirement_refuses_pending_publication_without_changing_state(tmp_path):
+    grants = {FINGERPRINT: replace(GRANT, operations=GRANT.operations | {"status", "retire"})}
+    with coordinator(tmp_path / "db", grants=grants) as db:
+        owner = start(db)
+        with pytest.raises(api.Refused, match="outstanding reservation"):
+            direct(db, "retire", owner=owner)
+        assert direct(db, "status", owner=owner)["active"] is True
+        direct(db, "publish", **publication(owner))
+        assert direct(db, "retire", owner=owner) == {"retired": True}
+        assert direct(db, "status", owner=owner)["active"] is False
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+
+
+def test_bound_worker_retirement_requires_grant_and_reconciled_scratch(tmp_path):
+    grants = {FINGERPRINT: replace(GRANT, operations=GRANT.operations | {"status", "retire"})}
+    with coordinator(tmp_path / "db", grants=grants, scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        direct(db, "publish", **publication(owner))
+        state = direct(db, "status", owner=owner)
+        assert state["checkpoint"] == "call" and state["active"] and state["pending"]
+        with pytest.raises(api.Refused, match="reconciliation"):
+            direct(db, "retire", owner=owner)
+        db.reconcile_scratch(receipt, lambda candidate: candidate == receipt)
+        assert direct(db, "retire", owner=owner) == {"retired": True}
+        assert direct(db, "status", owner=owner)["active"] is False
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code"))[
+            "result"
+        ] == encoded(b"result")
+        with pytest.raises(api.Refused, match="retired"):
+            direct(db, "begin", owner=owner, call="new", request=encoded(b"code"))
+        assert db.pending_scratch() == []
+    with coordinator(tmp_path / "legacy") as db:
+        owner = direct(db, "acquire", guest="guest")["owner"]
+        for op in ("retire", "status"):
+            with pytest.raises(api.Refused, match="not authorized"):
+                direct(db, op, owner=owner)
 
 
 def test_remote_scratch_publication_keeps_charge_until_verified_cleanup(tmp_path):

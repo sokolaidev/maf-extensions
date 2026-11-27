@@ -37,6 +37,7 @@ from ._channel import MxcProgramChannel
 from ._config import MxcSandboxConfig
 from ._files import GUEST_ROOT, Files
 from ._state import Catalog
+from .coordinator_binding import MxcCoordinatorBinding, RemoteCatalog
 from .files.request import Request, name
 from .files.transport import GuestProgramError
 from .host_store import Refused
@@ -202,17 +203,20 @@ class MxcSandboxBackend:
     name = "mxc"
     isolation = Isolation.MICROVM
 
-    def __init__(self, config: MxcSandboxConfig):
+    def __init__(
+        self, config: MxcSandboxConfig, *, coordinator: MxcCoordinatorBinding | None = None
+    ):
         recovery_supported = any(
             field.name == "recovers_state" for field in fields(BackendDeclarations)
         )
         if config.persistent and not recovery_supported:
             raise ValueError("persistent MXC router recovery requires maf-sandbox 0.55 or later")
         self.config = config
+        self.coordinator = coordinator
         self.admission = Admission()
         self.closed = False
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mxc-owner")
-        self.catalog: Catalog | None = None
+        self.catalog: Catalog | RemoteCatalog | None = None
         self.sandboxes: dict[tuple[SandboxKey, str], MxcSandbox] = {}
         limits = config.files
         self.declarations = BackendDeclarations(
@@ -248,7 +252,7 @@ class MxcSandboxBackend:
 
     async def work[T](
         self,
-        operation: Callable[[Catalog], T],
+        operation: Callable[[Catalog | RemoteCatalog], T],
         *,
         initialize: bool = False,
         timeout: float | None = None,
@@ -259,7 +263,14 @@ class MxcSandboxBackend:
 
         def run() -> T:
             if self.catalog is None:
-                self.catalog = Catalog(self.config, initialize=initialize)
+                if self.coordinator is None:
+                    self.catalog = Catalog(self.config, initialize=initialize)
+                else:
+                    if initialize:
+                        raise Refused(
+                            "provision the coordinator generation before binding the router"
+                        )
+                    self.catalog = RemoteCatalog(self.config, self.coordinator)
             return operation(self.catalog)
 
         future = asyncio.wrap_future(self.executor.submit(run))
@@ -359,7 +370,11 @@ class MxcSandboxBackend:
         self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
     ) -> DisposalFailure | None:
         try:
-            if self.catalog is None and not (self.config.root / "shared.sqlite").exists():
+            if (
+                self.coordinator is None
+                and self.catalog is None
+                and not (self.config.root / "shared.sqlite").exists()
+            ):
                 return None
             if self.admission.permit is None:
                 async with self.admission.enter(("dispose", key), 90):
@@ -382,9 +397,9 @@ class MxcSandboxBackend:
             if current is not None:
                 if current.state.busy:
                     raise Refused("wait for the active call to stop before disposal")
-                current.state.alive = False
             await self.work(lambda catalog: catalog.retire(session))
             if current is not None:
+                current.state.alive = False
                 del self.sandboxes[current.key, current.spec.kind]
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:

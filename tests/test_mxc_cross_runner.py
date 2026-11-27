@@ -91,7 +91,8 @@ def test_orchestration_initializes_only_before_first_service_start(tmp_path, mon
     monkeypatch.setattr(cross, "_ready", lambda client: None)
     monkeypatch.setattr(cross, "call", lambda *args, **kwargs: {})
     monkeypatch.setattr(cross, "scenario", scenario)
-    assert cross.orchestrate(tmp_path, tmp_path / "bundle", {}) == {"completed": True}
+    peers = {"a": {"profile": {}}}
+    assert cross.orchestrate(tmp_path, tmp_path / "bundle", peers) == {"completed": True}
     assert ["--initialize" in command for command in commands] == [True, False, False]
 
 
@@ -226,9 +227,7 @@ def _active_command(helper, startup, work, request):
     ]
 
 
-@pytest.mark.parametrize("crash_mode", ["none", "captured", "active"])
-def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
-    roots, bundle, peers = participants
+def _redirect_clients(monkeypatch):
     addresses = {}
     original_client = cross._client
 
@@ -238,6 +237,108 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
         return result
 
     monkeypatch.setattr(cross, "_client", client)
+    return addresses
+
+
+def _file_profile(bundle, peers):
+    cross.cross_compat.record_fixture(bundle, "GenuineIntel", file_router=True)
+    for peer in peers.values():
+        peer["profile"] = cross.cross_compat.load_fixture(bundle)
+
+
+@pytest.mark.parametrize("failure", ["guest", "cancel", "timeout"])
+def test_file_call_failure_requires_trusted_cleanup_before_reuse(
+    participants, monkeypatch, failure
+):
+    from maf_sandbox_mxc import coordinator_binding
+    from maf_sandbox_mxc.files import transport
+
+    roots, bundle, peers = participants
+    _file_profile(bundle, peers)
+    addresses = _redirect_clients(monkeypatch)
+    cancel = threading.Event()
+    now = 0.0
+    monkeypatch.setattr(coordinator_binding, "time", SimpleNamespace(monotonic=lambda: now))
+    result = json.dumps(
+        {"streams": {name: {"base64": "", "omitted_bytes": 0} for name in ("stdout", "stderr")}}
+    ).encode()
+
+    def execute(helper, base, work, request, *, restoring, before_spawn, before_start, **kwargs):
+        nonlocal now
+        _native_substitute(
+            helper,
+            base,
+            work,
+            cross.NEXT if restoring else cross.SEED,
+            1024,
+            before_spawn=before_spawn,
+            before_start=before_start,
+            checkpoint_limits=kwargs["checkpoint_limits"],
+        )
+        if request.call_directory == "failed":
+            if failure == "guest":
+                raise transport.GuestProgramError(result)
+            if failure == "cancel":
+                cancel.set()
+            else:
+                now += 11
+        return result
+
+    monkeypatch.setattr(transport, "execute", execute)
+    with endpoint(
+        lambda: cross.Service(roots["coordinator"], peers, initialize=True), roots["coordinator"]
+    ) as (_, server):
+        addresses["coordinator"] = server
+        with endpoint(lambda: cross.Worker(roots["a"], bundle, "a", peers), roots["a"]) as (
+            worker,
+            address,
+        ):
+            addresses["a"] = address
+            admin = cross._client(roots["coordinator"], peers, "coordinator")
+            owner = cross.call(cross._client(roots["coordinator"], peers, "a"), "acquire")["owner"]
+            host = worker.hosts["session"]
+            files = cross.cross_files
+            profile = peers["a"]["profile"]
+            config = files.config(host.root, bundle, profile, host.config.limits, host.scratch)
+            catalog = files.RemoteCatalog(
+                config,
+                files.MxcCoordinatorBinding(worker.transport, host, files.KEY, files.SPEC, profile),
+            )
+
+            def run(call):
+                request = files.Request(b"pass", (), (), config.files, config.workspace, call)
+                return catalog.execute(host.session, call, request, cancel, 10)
+
+            def inspect():
+                return cross.call(admin, "inspect", owner=owner)
+
+            assert run("before") == result
+            cross.call(admin, "reconcile", receipt=inspect()["receipts"][0])
+            message = "guest program failed" if failure == "guest" else "cancelled or timed out"
+            with pytest.raises(cross.api.Refused, match=message):
+                run("failed")
+            state = inspect()
+            (receipt,) = state["receipts"]
+            assert state["current_call"] == "before" and receipt["call"] == "failed"
+            failed = files.Request(b"pass", (), (), config.files, config.workspace, "failed")
+            with pytest.raises(cross.api.Refused, match="explicit recovery"):
+                catalog.replay(files.KEY, files.SPEC, host.session, "failed", failed)
+            cancel.clear()
+            with pytest.raises(cross.api.Refused, match="reconciliation"):
+                run("after")
+            cross.call(admin, "reconcile", receipt=receipt)
+            assert inspect()["receipts"] == []
+            assert run("after") == result
+            assert inspect()["current_call"] == "after"
+
+
+@pytest.mark.parametrize("crash_mode", ["none", "captured", "active", "files"])
+def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
+    roots, bundle, peers = participants
+    if crash_mode == "files":
+        _file_profile(bundle, peers)
+    addresses = _redirect_clients(monkeypatch)
+    client = cross._client
     monkeypatch.setattr(cross.api, "MAX_FRAME", 100_000)
     executions = []
 
@@ -265,6 +366,47 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
         ],
     )
     monkeypatch.setattr(cross.remote_host, "execute", execute)
+    if crash_mode == "files":
+        from maf_sandbox_mxc.files import transport
+
+        def file_execute(
+            helper, base, work, request, *, restoring, before_spawn, before_start, **kwargs
+        ):
+            native_code = cross.NEXT if restoring else cross.SEED
+            assert (
+                request.code
+                == (cross.cross_files.NEXT if restoring else cross.cross_files.SEED).encode()
+            )
+            native = execute(
+                helper,
+                base,
+                work,
+                native_code,
+                1024,
+                before_spawn=before_spawn,
+                before_start=before_start,
+                checkpoint_limits=kwargs["checkpoint_limits"],
+            )
+            number = cross.api._bytes(json.loads(native)["console_base64"], 1024)
+            artifact = b"x" * cross.cross_files.SIZE
+            return json.dumps(
+                {
+                    "streams": {
+                        "stdout": {
+                            "base64": cross.api._encoded(number + b"\n"),
+                            "omitted_bytes": 0,
+                        },
+                        "stderr": {"base64": "", "omitted_bytes": 0},
+                    },
+                    "directories": [],
+                    "call_directory": request.call_directory,
+                    "artifacts": []
+                    if restoring
+                    else [{"name": "proof.bin", "base64": cross.api._encoded(artifact)}],
+                }
+            ).encode()
+
+        monkeypatch.setattr(transport, "execute", file_execute)
     service_context = endpoint(
         lambda: cross.Service(roots["coordinator"], peers, initialize=True), roots["coordinator"]
     )
@@ -292,6 +434,15 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
                 service_context.__enter__()
 
             transports = {r: client(roots["coordinator"], peers, r) for r in cross.ROLES}
+            if crash_mode == "files":
+                report = cross.file_scenario(
+                    transports["a"], transports["b"], transports["coordinator"], restart
+                )
+                assert report["file_bytes"] == cross.cross_files.SIZE
+                assert [state for _, state in executions] == [41, 42]
+                assert executions[0][0].is_relative_to(roots["a"])
+                assert executions[1][0].is_relative_to(roots["b"])
+                return
             report = cross.scenario(
                 transports["a"],
                 transports["b"],
@@ -330,7 +481,17 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
 def test_workflow_requires_oidc_and_overlapping_roles():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
     workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
     assert set(workflow[True]) == {"workflow_dispatch"}
+    file_mode = workflow[True]["workflow_dispatch"]["inputs"]["file_router"]
+    assert file_mode["type"] == "boolean" and file_mode["default"] is False
+    builders = [
+        s for s in workflow["jobs"]["fixture"]["steps"] if "cross_fixture" in s.get("run", "")
+    ]
+    assert {s["if"]: "--file-kernel" in s["run"] for s in builders} == {
+        "inputs.file_router": True,
+        "${{ !inputs.file_router }}": False,
+    }
     participants = workflow["jobs"]["participants"]
     assert participants["needs"] == "fixture"
     assert workflow[True]["workflow_dispatch"]["inputs"]["worker_crash"]["default"] is False
@@ -397,7 +558,9 @@ def test_route_guard_refuses_failed_or_unapplied_preferences(
     tmp_path, set_status, route_all, corp_dns, succeeds
 ):
     path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
-    steps = yaml.safe_load(path.read_text("utf-8-sig"))["jobs"]["participants"]["steps"]
+    workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
+    steps = workflow["jobs"]["participants"]["steps"]
     guard = next(
         s
         for s in steps
@@ -883,6 +1046,7 @@ def test_cli_refuses_combined_crash_modes(monkeypatch, tmp_path):
 def test_hosted_ownership_matrix_exercises_cross_runner_controls():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-remote.yml"
     workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    assert isinstance(workflow, dict)
     paths = workflow[True]["pull_request"]["paths"]
     assert "tests/test_mxc_cross_runner.py" in paths
     assert ".github/workflows/mxc-cross-runner.yml" in paths

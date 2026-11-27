@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -26,7 +27,7 @@ from maf_sandbox_mxc import remote_api as api
 from maf_sandbox_mxc import remote_control, remote_host
 from maf_sandbox_mxc.remote_authority import Authority
 
-from . import cross_compat, cross_crash
+from . import cross_compat, cross_crash, cross_files
 
 ROLES = ("a", "b", "coordinator")
 SESSIONS = frozenset({"session", "missing"})
@@ -232,6 +233,16 @@ def _configuration(profile: dict) -> tuple[api.Session, api.remote_scratch.Polic
         2 * limits.files * (remote_host.PATH_BYTES // 2 + 1) + 14,
         2 * api.MAX_CHECKPOINT + 5 * remote_host.CHUNK,
     )
+    if "startup_tree" in profile:
+        scratch = api.remote_scratch.Policy(
+            bytes=2 * api.MAX_CHECKPOINT + (128 << 20),
+            entries=100_000,
+            total_bytes=2 * api.MAX_CHECKPOINT + (128 << 20),
+        )
+        cfg = cross_files.config(Path("."), Path("."), profile, limits, scratch)
+        return cross_files.MxcCoordinatorBinding.session(
+            cfg, cross_files.KEY, cross_files.SPEC, profile
+        ), scratch
     return api.Session(profile, limits), scratch
 
 
@@ -309,6 +320,8 @@ class Worker:
         if session not in self.hosts:
             raise api.Refused("test generation is not configured")
         host = self.hosts[session]
+        if operation == "stale-publish" and "startup_tree" in self.config.profile:
+            cross_files.stale_publish(self, host)
         if operation in {"reconcile", "late"}:
             receipt = api.remote_scratch.Receipt(**args["receipt"])
             if operation == "reconcile":
@@ -327,6 +340,13 @@ class Worker:
                 1024,
             )
             raise RuntimeError("retired generation executed a receipt")
+        if "startup_tree" in self.config.profile and operation in {
+            "seed",
+            "replay",
+            "next",
+            "stale",
+        }:
+            return asyncio.run(cross_files.exercise(self, operation, host))
         if operation in {"crash", "active-crash"}:
             if self.role != "a" or session != "session":
                 raise api.Refused("crash control requires the primary A generation")
@@ -374,8 +394,12 @@ class Service:
     def __init__(self, root: Path, peers: dict, *, initialize: bool = False):
         self.root, self.peers = root, peers
         self.admin = _fingerprint(peers["coordinator"]["certificate"])
+        self.drop_file_ack = "startup_tree" in peers["a"]["profile"]
+        operations = api.OPERATIONS | {"status", "retire"} if self.drop_file_ack else api.OPERATIONS
         grants = {
-            _fingerprint(peers[r]["certificate"]): api.Grant(r, peers[r]["boot"], SESSIONS)
+            _fingerprint(peers[r]["certificate"]): api.Grant(
+                r, peers[r]["boot"], SESSIONS, operations
+            )
             for r in ("a", "b")
         }
         config, scratch = _configuration(peers["a"]["profile"])
@@ -395,7 +419,17 @@ class Service:
         self, fingerprint: str, request: dict, connection: ssl.SSLSocket | None = None
     ) -> dict:
         if fingerprint != self.admin:
-            return self.db.dispatch(fingerprint, request, connection)
+            result = self.db.dispatch(fingerprint, request, connection)
+            if (
+                self.drop_file_ack
+                and request.get("operation") == "publish"
+                and request["arguments"]["call"] == "seed"
+            ):
+                if connection is None:
+                    raise RuntimeError("lost acknowledgment requires a live connection")
+                self.drop_file_ack = False
+                connection.shutdown(socket.SHUT_RDWR)
+            return result
         operation = request.get("operation")
         args = _fields(
             request,
@@ -501,6 +535,65 @@ def _output(result: dict, expected: bytes) -> None:
         api._bytes(json.loads(value)["console_base64"], 1024).strip() == expected,
         "native Python state differs",
     )
+
+
+def file_scenario(a, b, admin, restart, *, worker_crash=False, active_guest_crash=False) -> dict:
+    """Lose a committed reply, fence A and recover the file and Python state on B."""
+    _require(not worker_crash and not active_guest_crash, "file router uses a lost acknowledgment")
+    owner_a = call(a, "acquire")["owner"]
+    try:
+        call(a, "seed")
+    except api.Refused as error:
+        _require(
+            any(
+                message in str(error)
+                for message in ("incomplete API frame", "coordinator unavailable")
+            ),
+            "unexpected seed failure",
+        )
+    else:
+        raise RuntimeError("seed acknowledgment was delivered")
+    saved = call(admin, "inspect", owner=owner_a)
+    _require(
+        saved["current_call"] == "seed" and len(saved["receipts"]) == 1,
+        "lost acknowledgment did not follow publication",
+    )
+    restart()
+    call(admin, "fence-owner", owner=owner_a)
+    _refused(lambda: call(a, "stale"), "revoked")
+    _refused(lambda: call(a, "stale-publish"), "revoked")
+    call(admin, "reconcile", receipt=saved["receipts"][0])
+    owner_b = call(b, "acquire")["owner"]
+    replay = call(b, "replay")
+    _require(
+        replay["stdout"] == "41\n"
+        and replay["size"] == cross_files.SIZE
+        and replay["fresh"] is False,
+        "file replay failed",
+    )
+    _require(
+        not call(admin, "inspect", owner=owner_b)["receipts"], "replay admitted a new execution"
+    )
+    following = call(b, "next")
+    _require(
+        following["stdout"] == "42\n" and following["fresh"] is False, "checkpoint restore failed"
+    )
+    last = call(admin, "inspect", owner=owner_b)
+    _require(
+        last["current_call"] == "next" and len(last["receipts"]) == 1, "next call was not published"
+    )
+    call(admin, "fence-owner", owner=owner_b)
+    call(admin, "reconcile", receipt=last["receipts"][0])
+    return {
+        "controls": [
+            "lost-publish-ack",
+            "stale-owner-refused",
+            "router-file-replayed",
+            "native-state-restored",
+        ],
+        "file_bytes": replay["size"],
+        "file_sha256": replay["sha256"],
+    }
 
 
 def scenario(
@@ -666,7 +759,8 @@ def orchestrate(
         process = start(initialize=True)
         for role in ("a", "b"):
             _ready(transports[role])
-        report = scenario(
+        run_scenario = file_scenario if "startup_tree" in peers["a"]["profile"] else scenario
+        report = run_scenario(
             transports["a"],
             transports["b"],
             transports["coordinator"],

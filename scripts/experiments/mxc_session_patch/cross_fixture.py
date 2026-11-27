@@ -8,23 +8,27 @@ import sys
 import tarfile
 from pathlib import Path
 
+from scripts.experiments.mxc_files_patch.qualification_runner import build_file_helper
 from scripts.experiments.mxc_v1_patch import qualification_runner as native
 from scripts.experiments.mxc_v1_patch.patch import metadata
 
 from . import cross_compat
 
 
-def build(root: Path) -> None:
+def build(root: Path, file_kernel: Path | None = None) -> None:
     """Reuse the locked overlay build and native startup controls."""
     root.mkdir(parents=True, exist_ok=False)
     producer_vendor = cross_compat.cpu_vendor()
     native.hypervisor()
-    opts = native.sources(root, metadata())
-    tool = [sys.executable, "-m", "scripts.experiments.mxc_v1_patch.patch"]
-    for layer in ("session", "output", "storage"):
-        native.run(root, f"apply-{layer}", *tool, "apply", "--layer", layer, *opts)
-    native.run(root, "configure", *tool, "configure", *opts, "--build-dir", str(root / "build"))
-    native.build(root)
+    if file_kernel is not None:
+        build_file_helper(root, file_kernel, {})
+    else:
+        opts = native.sources(root, metadata())
+        tool = [sys.executable, "-m", "scripts.experiments.mxc_v1_patch.patch"]
+        for layer in ("session", "output", "storage"):
+            native.run(root, f"apply-{layer}", *tool, "apply", "--layer", layer, *opts)
+        native.run(root, "configure", *tool, "configure", *opts, "--build-dir", str(root / "build"))
+        native.build(root)
     native.run(
         root,
         "prepare-agent",
@@ -57,7 +61,10 @@ def build(root: Path) -> None:
     bundle.mkdir()
     shutil.copy2(native.helper(root), bundle / "helper")
     shutil.copytree(root / "images/agent/snapshot", bundle / "startup")
-    cross_compat.record_fixture(bundle, producer_vendor)
+    if file_kernel is None:
+        cross_compat.record_fixture(bundle, producer_vendor)
+    else:
+        cross_compat.record_fixture(bundle, producer_vendor, file_router=True)
     with tarfile.open(root / "bundle.tar.gz", "w:gz") as archive:
         archive.add(bundle, arcname="bundle")
 
@@ -65,4 +72,6 @@ def build(root: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
-    build(parser.parse_args().root)
+    parser.add_argument("--file-kernel", type=Path)
+    args = parser.parse_args()
+    build(args.root, args.file_kernel)
