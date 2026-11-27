@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 from _evidence import INVALID, check_turn, require
 from _provider import Provider
 from _windows_job import Job
+from _worker_restart import WorkerRestart, check_container_events
 
 OPENCLAW = "2026.11.10"
 WORKER_REQUIREMENTS = (
@@ -405,6 +406,11 @@ def model_settings(mode: str) -> tuple[str, str, str]:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Execute two turns and retain a report even when acceptance fails."""
+    worker_restart = getattr(args, "worker_restart", False)
+    require(
+        not worker_restart or (args.mode == "model" and sys.platform == "linux"),
+        "Worker restart requires real-model mode on native Linux",
+    )
     upstream, model, key = model_settings(args.mode)
     root = args.output
     root.mkdir(parents=True, mode=0o700)
@@ -421,6 +427,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "actual_model": args.mode == "model",
         "cleanup_errors": [],
     }
+    recovery: WorkerRestart | None = None
+    event_start = time.time()
     scope = ""
     docker: str | None = None
 
@@ -458,25 +466,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         token_file.chmod(0o600)
         worker = python.with_name("maf-bicep-mcp.exe" if os.name == "nt" else "maf-bicep-mcp")
         report["phase"] = "worker-start"
-        processes.start(
-            "worker",
-            [
-                str(worker),
-                "--transport",
-                "http",
-                "--port",
-                str(worker_port),
-                "--token-file",
-                str(token_file),
-                "--image",
-                image,
-                "--config",
-                str(config_file),
-                "--state-dir",
-                str(root / "owner"),
-            ],
-            worker_environment(),
-        )
+        worker_command = [
+            str(worker),
+            "--transport",
+            "http",
+            "--port",
+            str(worker_port),
+            "--token-file",
+            str(token_file),
+            "--image",
+            image,
+            "--config",
+            str(config_file),
+            "--state-dir",
+            str(root / "owner"),
+        ]
+        processes.start("worker", worker_command, worker_environment())
         processes.ready(worker_port, "/ready", worker_token)
         owner = (root / "owner/owner").read_text().strip()
         require(re.fullmatch(r"[0-9a-f]{32}", owner), "Invalid worker owner")
@@ -513,6 +518,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "gateway", [program("node"), str(claw / "openclaw.mjs"), "gateway", "run"], env
         )
         processes.ready(gateway_port, "/health", gateway_token)
+        if worker_restart:
+            original_worker, worker_log = processes.children[0]
+            gateway = processes.children[-1][0]
+
+            def stop_worker() -> None:
+                require(not containers(), "Fault must precede compiler admission")
+                require(gateway.poll() is None, "Gateway exited before the worker fault")
+                require(original_worker.poll() is None, "Worker exited before fault injection")
+                os.killpg(original_worker.pid, signal.SIGKILL)
+                require(processes.wait_empty(original_worker, 10), "Worker group survived fault")
+                original_worker.wait(timeout=10)
+                require(original_worker.returncode == -signal.SIGKILL, "Unexpected worker exit")
+                worker_log.close()
+                processes.children.remove((original_worker, worker_log))
+                require(not containers(), "Fault left an unexpected compiler container")
+
+            def restart_worker() -> None:
+                require(gateway.poll() is None, "Gateway exited during the worker outage")
+                processes.start("worker-restarted", worker_command, worker_environment())
+                processes.ready(worker_port, "/ready", worker_token)
+                require(
+                    (root / "owner/owner").read_text().strip() == owner,
+                    "Restart changed persistent ownership",
+                )
+                require(not containers(), "Restart allocated an unexpected container")
+
+            recovery = WorkerRestart(stop_worker, restart_worker)
+            provider.before_request = recovery.request
+            provider.before_response = recovery.response
+            provider.ignored_calls = recovery.ignored_calls
         session = "sample-" + uuid.uuid4().hex
         source = (HERE / "main.bicep").read_text(encoding="utf-8").strip()
         require(source == INVALID, "The sample fixture must retain its deliberate type error")
@@ -544,6 +579,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             require(not containers(), "Owned containers remain after a completed turn")
             report["turns"].append(measured)
             print("[measured] " + json.dumps({"turn": index + 1, **measured}), flush=True)
+        if recovery is not None:
+            report["recovery"] = recovery.result()
+            require(
+                [turn["calls"] for turn in report["turns"]] == [1, 1],
+                "Recovery requires exactly one successful execution per turn",
+            )
+            raw_events = execute(
+                [
+                    docker,
+                    "events",
+                    "--since",
+                    str(event_start),
+                    "--until",
+                    str(time.time()),
+                    "--filter",
+                    "label=maf-sandbox.scope=" + scope,
+                    "--format",
+                    "{{json .}}",
+                ],
+                root,
+                timeout=30,
+            )
+            (root / "docker-events.jsonl").write_text(raw_events, encoding="utf-8")
+            events = [json.loads(line) for line in raw_events.splitlines()]
+            report["recovery"]["containers"] = check_container_events(
+                events, scope, recovery.events[2]["time_ns"]
+            )
         report["passed"] = True
         report["phase"] = "complete"
     except Exception as exc:
@@ -578,6 +640,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ]
         report["error"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
     finally:
+        if recovery is not None:
+            report.setdefault(
+                "recovery",
+                {
+                    "profile": "pre-admission-worker-restart-v1",
+                    "attempts": len(recovery.attempts),
+                    "events": recovery.events,
+                },
+            )
         report["cleanup_errors"].extend(processes.close())
         if provider is not None:
             try:
@@ -641,6 +712,11 @@ def main() -> None:
         choices=("provider-default", "none"),
         default="provider-default",
         help="Explicit Chat Completions compatibility setting for the selected model",
+    )
+    parser.add_argument(
+        "--worker-restart",
+        action="store_true",
+        help="Qualify a real-model retry after a controlled pre-admission worker outage on Linux",
     )
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument(
