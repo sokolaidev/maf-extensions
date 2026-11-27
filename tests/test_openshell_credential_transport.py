@@ -115,6 +115,7 @@ def test_real_guest_connection_faults(probe, tls_origin, mode):
             pass
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(tls_dir / "valid.pem", tls_dir / "valid.key")
     transport = probe.GuestHTTPS()
     with Server(("127.0.0.1", 0), Handler) as server:
@@ -166,6 +167,7 @@ def test_real_guest_connection_faults(probe, tls_origin, mode):
         "early_close",
         "lost_response",
         "bad_receipt",
+        "hold_write_failed",
         "edit_failed",
         "expired_hold",
         "extra_event",
@@ -200,6 +202,8 @@ def test_edit_is_bracketed_by_receipt_and_release(probe, monkeypatch, mode):
                 row["authorization_sha256"] = "other"
             if operation != "reuse" or mode not in ("closed", "early_close"):
                 events.append(row)
+            if operation == "hold" and mode == "hold_write_failed":
+                raise OSError("control stream close failed")
             if operation == "reuse" and mode == "extra_event":
                 events.append(dict(row))
 
@@ -246,6 +250,12 @@ def test_edit_is_bracketed_by_receipt_and_release(probe, monkeypatch, mode):
         reconcile,
         lambda group, row: rows.append(row),
     )
+    if mode == "hold_write_failed":
+        with pytest.raises(OSError, match="control stream close failed"):
+            asyncio.run(run)
+        assert order == ["prime", "hold", "release"]
+        assert rows[0]["origin_released"] and not rows[0]["complete"]
+        return
     if mode in ("bad_receipt", "edit_failed", "expired_hold", "extra_event"):
         with pytest.raises(RuntimeError):
             asyncio.run(run)
