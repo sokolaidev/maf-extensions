@@ -63,11 +63,13 @@ def _boot() -> str:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$ErrorActionPreference = 'Stop'; "
-                "$id = (Get-CimInstance Win32_ComputerSystemProduct).UUID; "
-                "$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; "
-                "if (-not $boot -or [guid]$id -eq [guid]::Empty) { throw 'No boot identity' }; "
-                "Write-Output ([guid]$id).ToString(); Write-Output $boot.ToFileTimeUtc()",
+                (
+                    "$ErrorActionPreference = 'Stop'; "
+                    "$id = (Get-CimInstance Win32_ComputerSystemProduct).UUID; "
+                    "$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; "
+                    "if (-not $boot -or [guid]$id -eq [guid]::Empty) { throw 'No boot identity' }; "
+                    "Write-Output ([guid]$id).ToString(); Write-Output $boot.ToFileTimeUtc()"
+                ),
             ],
             check=True,
             capture_output=True,
