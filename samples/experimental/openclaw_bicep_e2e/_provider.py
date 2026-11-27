@@ -63,7 +63,6 @@ class Provider:
         self.response_models: set[str] = set()
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
-        self.diagnostic_shapes: list[dict[str, Any]] = []
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -119,20 +118,6 @@ class Provider:
             self.server.server_close()
 
     def observe(self, body: dict[str, Any]) -> tuple[str, bool]:
-        self.diagnostic_shapes.append({
-            "offered_tools": [
-                item.get("function", {}).get("name")
-                for item in body.get("tools", [])
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,99}", item.get("function", {}).get("name", ""))
-            ],
-            "messages": [
-                {"role": item.get("role"), "calls": [
-                    call.get("function", {}).get("name")
-                    for call in item.get("tool_calls", [])
-                ], "content_type": type(item.get("content")).__name__}
-                for item in body["messages"]
-            ],
-        })
         messages = conversation_messages(body["messages"])
         user = next(message for message in reversed(messages) if message["role"] == "user")
         text = str(user["content"])
@@ -155,10 +140,11 @@ class Provider:
                     name = function["name"]
                     self.function_calls[call["id"]] = (
                         name
-                        if name in {"tool_call", "tool_search", "tool_describe", TOOL}
+                        if name
+                        in {"tool_call", "dispatch_action", "tool_search", "tool_describe", TOOL}
                         else "other"
                     )
-                    if function["name"] == "tool_call":
+                    if name in {"tool_call", "dispatch_action"}:
                         args = json.loads(function["arguments"])
                         if args.get("id") in {TOOL, "mcp:bicep:" + TOOL}:
                             self.bicep_identifiers[call["id"]] = (
@@ -191,6 +177,9 @@ class Provider:
             delta: dict[str, Any] = {"role": "assistant", "content": "Compiler result received."}
             reason = "stop"
         else:
+            offered = {item["function"]["name"] for item in body.get("tools", [])}
+            dispatcher = "dispatch_action" if "dispatch_action" in offered else "tool_call"
+            require("tools" not in body or dispatcher in offered, "Missing tool dispatcher")
             args = {
                 "id": TOOL,
                 "args": {
@@ -204,7 +193,7 @@ class Provider:
                         "index": 0,
                         "id": "call_" + turn,
                         "type": "function",
-                        "function": {"name": "tool_call", "arguments": json.dumps(args)},
+                        "function": {"name": dispatcher, "arguments": json.dumps(args)},
                     }
                 ],
             }

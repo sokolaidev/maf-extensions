@@ -220,13 +220,18 @@ def runtime_context(content: str = "Current runtime instructions.") -> dict[str,
     }
 
 
-def test_runtime_context_does_not_replace_the_tool_call_turn(provider: Any) -> None:
+@pytest.mark.parametrize("dispatcher", ["tool_call", "dispatch_action"])
+def test_runtime_context_does_not_replace_the_tool_call_turn(
+    provider: Any, dispatcher: str
+) -> None:
     first = record()
     history = messages(first)
+    history[1]["tool_calls"][0]["function"]["name"] = dispatcher
     history.insert(1, runtime_context())
     history.append(runtime_context())
     assert provider.observe({"messages": history}) == (TURN, False)
     assert provider.records == [first]
+    assert provider.observations()["function_calls"] == {dispatcher: 1}
     assert b'"finish_reason": "stop"' in provider.smoke({"messages": history}, TURN, False)
 
 
@@ -288,6 +293,25 @@ def test_deterministic_provider_emits_tool_call_and_observes_result(provider: An
     status, payload = post(provider, {"messages": messages(record())})
     assert status == 200 and b"Compiler result received" in payload
     assert check(provider.records)["verdict"] == "invalid"
+
+
+@pytest.mark.parametrize("dispatcher", ["tool_call", "dispatch_action"])
+def test_smoke_uses_the_advertised_dispatcher(provider: Any, dispatcher: str) -> None:
+    body = {
+        "messages": messages(record())[:1],
+        "tools": [{"type": "function", "function": {"name": dispatcher}}],
+    }
+    status, payload = post(provider, body)
+    assert status == 200
+    assert ('"name": "' + dispatcher + '"').encode() in payload
+
+
+@pytest.mark.parametrize("tools", [[], [{"function": {"name": "unrelated"}}]])
+def test_smoke_refuses_a_missing_dispatcher(provider: Any, tools: list[dict[str, Any]]) -> None:
+    body = {"messages": messages(record())[:1], "tools": tools}
+    status, _ = post(provider, body)
+    assert status == 502
+    assert provider.records == []
 
 
 @pytest.mark.parametrize("with_runtime_context", [False, True])
