@@ -36,6 +36,8 @@ from openshell_egress_probe import (
 from openshell_files_probe import execute, signed_gateway
 
 CASES = 9
+NATIVE_TLS_SOCKET_TIMEOUT = 3
+NATIVE_TLS_KEEPALIVE_TIMEOUT = 620  # Full lifetime of the continuous guest exec.
 SCOPE = "public HTTPS echo and private untrusted origin; not complete egress conformance"
 PUBLIC = "httpbingo.org"
 
@@ -360,6 +362,9 @@ def native_tls_servers(
                 and self.request_version == "HTTP/1.1"
                 and self.headers.get("Connection", "").lower() != "close"
             )
+            self.connection.settimeout(
+                NATIVE_TLS_SOCKET_TIMEOUT if self.close_connection else NATIVE_TLS_KEEPALIVE_TIMEOUT
+            )
             row = {
                 "method": self.command,
                 "path": self.path,
@@ -404,7 +409,7 @@ def native_tls_servers(
 
         def get_request(self):
             connection, address = self.socket.accept()
-            connection.settimeout(3)
+            connection.settimeout(NATIVE_TLS_SOCKET_TIMEOUT)
             try:
                 return self.context.wrap_socket(connection, server_side=True), address
             except ssl.SSLError as exc:
