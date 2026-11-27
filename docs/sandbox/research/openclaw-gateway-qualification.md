@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 74919)
-Total output lines: 2238
-
 # OpenClaw Gateway qualification of the Bicep prototype
 
 > Supervised qualification: one-session stdio on 2026-10-03 and bounded two-session HTTP on 2026-10-05, both with a deterministic provider. The shared HTTP service and Gateway-abort cancellation passed the checks below; the complete lifecycle/recovery matrix and unattended operation remain unqualified. The sample README carries the current operator contract.
@@ -550,7 +547,817 @@ The independent `--case idle` passed on clean candidate `76e5d8b60cc50859affa4de
 | New work | A completed a valid call using its original identity. B's stale transport received GET/DELETE HTTP 404, then one fresh initialization preceded a valid call on a new identity. A second B call reused that identity; the final registry held exactly two SDK tasks and adapter records |
 | Replay and shutdown | No result for the aborted turn reached the provider, and exactly six tool dispatches remained through shutdown. The service drained and exited with status zero; independent inspection found zero owned containers and fixture processes |
 
-The threshold was restored to 900 seconds when B's retirement completed. The observer does not edit `touched` timestamps or call retirement itself; it observes the real sweeper's call and the returned task. The ages above show that elapsed idle age alone did not retire A: its active work kept the registration alive. The two-second threshold makes this an accelerated isolation/retirement check, not a measurement of t…29919 tokens truncated…ns, the Windows owner-loss matrix on Linux, arbitrary escaping descendants, unattended recovery, delegated egress, MXC or production operation. The earlier Docker Desktop and Windows records retain their own candidate boundaries.
+The threshold was restored to 900 seconds when B's retirement completed. The observer does not edit `touched` timestamps or call retirement itself; it observes the real sweeper's call and the returned task. The ages above show that elapsed idle age alone did not retire A: its active work kept the registration alive. The two-second threshold makes this an accelerated isolation/retirement check, not a measurement of the default 15-minute policy, a latency SLA, or exhaustive coverage of expiry/admission races.
+
+The observed 404s belong to stale transport GET and DELETE requests, not a workload whose outcome became unknown. Fresh work succeeds after the client establishes a new MCP identity. The checker explicitly aborts A after observing expiry and does not automatically retry that aborted workload. No actual-model retry behavior is claimed.
+
+All eight executed Python source hashes match Git bytes at the candidate. The changed lifecycle checker SHA-256 is `d6e56204e78f70e2a0eb1e4dc312312e12948f7d252ac3c15be392bed73fc2c0`; the observer SHA-256 is `0cf1613ed77a3dea730b9e302091952d701fe869a6655d59452b2c44a1ad63f6`. The remaining six source hashes retain their preceding recorded identities. The focused evidence suite passed 551 tests; fixture type checks reported zero errors and one existing optional-process warning. Negative cases reject non-sweeper retirement, insufficient elapsed age, incomplete SDK draining, lost active state, unexpected client traffic and missing independent container/process/owner observations.
+
+Reproduce with the existing lifecycle command plus `--case idle` and a fresh private root. Retain `idle-report.json`, `idle-expiry.json` and private provider/transport/Gateway logs; no credentials, private paths or raw identities are committed. The startup, registry and combined lifecycle modes and separate live MAF/stdio cases were not rerun. There was no failed live attempt for this candidate. Production-duration idle expiry, broader timing races, other retirement triggers, actual Docker cleanup/daemon failures, prolonged/concurrent churn, repeated discovery failure/backoff and remaining transport/MAF combinations stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676). The report's broad remaining-idle-expiry entry includes this unmeasured production-duration boundary. No host-crash, watchdog or unattended-operation claim is made.
+
+## Default 15-minute idle expiry: bounded follow-up (2026-10-09)
+
+The independent `--case idle-default` keeps the service's 900-second idle threshold and all session timestamps unchanged. After two logical Gateway sessions complete valid calls, the observer watches the real sweeper while the checker submits seven new calls through A at two-minute intervals and leaves B without new work. Before admitting a result, evidence must show B's measured idle age reached at least 900 seconds and the observation elapsed for the remaining interval measured when the observer was armed. All seven waiting-period calls and binding executions must belong to A, with no client-directed deletion or extra initialization. Late cancellation notifications for either known session are counted separately and require a correlated accepted response and settlement; their target must not match any workload call observed during the wait. Such transport activity can refresh a session's idle clock without running a workload.
+
+B must fully drain its SDK/transport/request state and adapter registration, leaving A's unchanged callable registration. A must then complete new work with its existing MCP identity. B must receive stale-transport refusal, initialize once, complete new work with a fresh identity and reuse that identity on another call. The case expects twelve tool dispatches, unchanged Gateway/service processes and owner bytes, preservation of the unrelated sentinel, final registry/SDK agreement and service exit zero. It writes `default-idle-report.json` and `default-idle-expiry.json`, retaining `complete_matrix: false`. This case measures the default elapsed interval with A periodically used; the accelerated case separately covers expiry during another session's active compiler. Broader expiry/admission races remain outside this case. Candidate-specific live evidence is recorded below.
+
+
+The first default-duration attempt on candidate `50bb21f8` observed B's sweeper retirement at an idle age of about 900.75 seconds, with complete SDK/adapter drain. The checker nevertheless refused a success report: it had assumed that every MCP message during the wait was one of A's seven workload calls, while Gateway sent one late cancellation notification for each session that the service accepted with HTTP 202. Neither target matched a recorded workload request; B's control request refreshed its idle timestamp. No B workload ran. The corrected checker distinguishes accepted, correlated control traffic for known sessions from new work, cancellation of an observed workload call and client-directed retirement. Independent cleanup inspection found zero owned containers or fixture processes after the failed attempt. That partial observation does not establish reconnection or final success; the fresh complete run below supplies that evidence.
+
+
+A retry on `cda1af17` was deliberately stopped early when a complete audit of the first trace identified the second session's control notification as well. That intermediate validator had unnecessarily restricted harmless control traffic to B. The final validator checks the target against every recorded workload call in the wait, while requiring the same known session, exchange, accepted response and ordered settlement. The interrupted retry is not qualification evidence and produced no success report.
+
+
+## Default 15-minute idle expiry: live result (2026-10-09)
+
+The independent `--case idle-default` passed on clean candidate `d34736448e8c99a5f73ace5b34cf1b686f67f455`. It retained OpenClaw 2026.9.7, published core 0.46.0 / Bicep 0.22.0 / Docker 0.24.4, MCP 1.28.1, MAF core 1.19.0 and Uvicorn 0.54.0. Docker server 29.8.2 used the prepared image and compiler configuration recorded in the accelerated result above; both identities were rechecked. Production service/binding files and installed Gateway code were unchanged. The observer did not write the idle threshold or session timestamps.
+
+`default-idle-report.json` SHA-256 is `0b11942e6a84885d4cb55683faf566fa577a35272123a6f8f5a24c588e2cc699`; `default-idle-expiry.json` SHA-256 is `9bea372077233125ca87743e64f6b2faa0a0d55b051561c7fa99378295bea2de`. The report records twelve tool dispatches and retains `complete_matrix: false`.
+
+| Check | Observed result |
+|---|---|
+| Baseline | A and B completed valid calls on distinct MCP identities with exactly two SDK tasks and adapter registrations |
+| Waiting period | Seven new A calls at two-minute intervals succeeded on A's original identity. B received no new workload. Two late cancellation controls were correlated with accepted HTTP 202 responses and settlement; neither targeted an observed waiting-period workload call |
+| Default timer | The unchanged threshold was 900 seconds. The real sweeper retired B at a measured idle age of 900.707369 seconds, 947.7280071 seconds after the observer was armed |
+| Retired B | Its SDK task finished, transport terminated and streams/request-ID/request counts reached zero. Its adapter registration was absent, leaving only A with matching SDK/adapter state |
+| Preserved A | A completed another valid call on its original identity. Gateway/service processes, owner bytes and the unrelated sentinel remained unchanged |
+| Reconnected B | The stale identity received HTTP 404; exactly one fresh initialization preceded new valid work. A second B call reused the fresh identity, and the final registry held exactly two SDK tasks and adapter registrations |
+| Replay and shutdown | Exactly twelve tool dispatches occurred without replay. Final service shutdown drained state, closed the listener and exited zero. Independent inspection found zero owned containers and fixture processes |
+
+The observation period exceeds 900 seconds because transport activity can refresh a registration's idle clock even without a new workload. The checker validates the actual last-touch age at retirement as well as monotonic elapsed observation; it does not equate time since the last compiler call with transport inactivity. This is one measured default-duration execution, not an expiry latency SLA or exhaustive coverage of expiry/admission races. The accelerated result separately establishes preservation of an actively running compiler during retirement.
+
+All eight executed Python source hashes match Git bytes at the successful candidate. The lifecycle checker SHA-256 is `3e996ccac1162d80b1734ff66297b8c3152f42547050c946a9d4ec200ccf8ef8`; the observer SHA-256 is `17faedf2b3ca190b9e0c7657d48440eee46ade562152438c9220970245de4021`. The remaining six retain their preceding recorded identities. The focused evidence suite passed 620 tests; the full local gate passed with 17,371 tests and 909 skips, lint/format checks and package/repository type checks. Three temporary mutation checks confirmed rejection when elapsed-observation, measured-idle-age or non-accelerated-policy guards are removed.
+
+Reproduce with the existing lifecycle command plus `--case idle-default` and a fresh private root. Retain both default-idle JSON files and private provider/transport/Gateway logs; credentials, host paths and raw identities are not committed. The earlier accelerated, startup, registry and combined lifecycle modes and separate live MAF/stdio cases were not rerun. The failed and deliberately stopped attempts above remain part of the evidence history; neither produced a success report. Broader expiry/admission races, other retirement triggers, actual Docker cleanup/daemon failures, prolonged/concurrent churn, repeated discovery failure/backoff and remaining transport/MAF combinations stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676). No actual-model retry, watchdog, host-crash or unattended-operation claim is made.
+
+
+## Docker connection loss during cleanup: bounded follow-up (2026-10-09)
+
+The independent `--case docker-disconnect` uses a private Docker CLI configuration and named context, initially pointing at the same local pipe/socket engine as the independent observer. Once two logical Gateway sessions have completed valid calls and A has an observed Bicep compiler, the checker pauses that exact owned container to prevent natural completion. It changes only the private context to a reserved, non-listening loopback endpoint, then aborts A's Gateway turn. The published backend and Docker CLI execute normally; an opt-in observer records real `docker rm -f` outcomes without substituting a result or cleanup implementation.
+
+Acceptance requires correlated accepted MCP cancellation, a nonzero real removal command with connection-refusal evidence for the exact container name, independently retained paused work, poisoned admission and HTTP 503 readiness. Both existing sessions must refuse new work without executing a binding. Shutdown must drain protocol state, exit nonzero and leave the independently observed container intact. The checker then restores the private context and starts the service with retained ownership. The original cleanup path must remove the container before readiness; the same Gateway must complete new work in both sessions on distinct fresh MCP identities without replay of the aborted call. Seven tool dispatches are expected, with an unrelated owner preserved and final cleanup confirmed.
+
+This injects loss of the service's Docker connection, not a Docker daemon crash or a daemon-side removal rejection. It changes a fixture-only context and never switches the user's global context, stops the shared engine or fabricates Docker responses. The daemon remains independently reachable. The case is restricted to local pipe/socket endpoints; TLS/remote-daemon behavior and general outage recovery are not qualified. A successful execution writes `docker-disconnect-report.json` and `docker-disconnect.json` with the candidate, environment and bounded evidence, retaining `complete_matrix: false`. Live execution was blocked at this preparation checkpoint; the subsequent successful execution is recorded below.
+
+
+The attempted execution on clean candidate `1ee561f4` stopped at prepared-image inspection before starting any fixture service, Gateway, provider or container: the local Docker engine endpoint was absent. Starting Docker Desktop did not restore the engine; startup reported a VMM socket-forwarder failure while renaming a stale socket. A subsequent bounded engine probe timed out. This prerequisite failure is outside the injected scenario and establishes no new cleanup, admission or recovery behavior. No success report was produced, and the real connection-loss/recovery sequence was unrun at this checkpoint. The default-idle evidence above retains its original candidate and successful execution boundary.
+
+
+The full local gate passed: 17,544 tests, 909 skips, lint/format, package/repository type checks and documentation paths. The repository type pass reported zero errors and 425 warnings. Its full pytest phase preceded four additional classifier negatives; the focused suite passed 691 tests after those additions. The later Linux portability follow-up `1b41b87a` added the `SO_EXCLUSIVEADDRUSE`-absence case and passed 692 focused tests. That follow-up also passed the complete repository type check targeting Linux (zero errors, 425 warnings), Windows fixture typing and replacement hosted CI. Final documentation checks passed 381 tests, Markdown examples passed, and 234 live tracker references matched GitHub. These are offline harness checks; they do not establish the unrun live Docker connection-loss sequence.
+
+
+## Docker connection loss and retained-resource recovery: live result (2026-10-10)
+
+The independent `--case docker-disconnect` passed on clean candidate `1a537b2d2dc606bbe083e903324a8f73432abbae` after Docker engine availability was restored. The fixture from merged [#1809](https://github.com/sokolaidev/maf-extensions/pull/1809) ran unchanged. This Windows execution retained OpenClaw 2026.9.7, published core/Bicep/Docker 0.46.0/0.22.0/0.24.4, MCP 1.28.1, MAF core 1.19.0 and Uvicorn 0.54.0. Docker client/server were 29.8.2, Node was v26.8.1 and uv was 0.12.5. The immutable prepared image was `sha256:5611ccff6015b5dd25d512c1f2dc6ab3cdfaecf9274a523c48cc07116fb38c89`; the compiler configuration SHA-256 was `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1`.
+
+| Check | Observed result |
+|---|---|
+| Baseline and fault target | A and B completed valid work on distinct MCP sessions; Docker independently observed A's subsequent compiler and the checker paused its exact owned container before disconnecting the service's private context |
+| Cancellation and failed removal | Gateway abort delivered correlated accepted MCP cancellation; four real removal commands in the selected cleanup evidence returned nonzero with connection-refusal diagnostics for the exact target |
+| Refused admission | The service settled poisoned with unconfirmed cleanup and returned HTTP 503 readiness; both existing sessions refused new work without binding execution |
+| Retained resource | Independent Docker inspection found the same paused compiler after refusal and after poisoned shutdown; the service drained sessions/active work and exited 1 |
+| Explicit recovery | Restoring the private Docker context and restarting with unchanged owner bytes removed the retained compiler through the original cleanup path before startup readiness |
+| New work | The same Gateway completed new valid work in A and B with two distinct fresh MCP identities; the final registry had two adapter records and two SDK tasks, with no replay of aborted work |
+| Final cleanup | Exactly seven tool dispatches, preservation of the unrelated owner during the sequence, final service exit zero and drained state; independent post-run checks found zero owned containers and zero fixture processes |
+
+`docker-disconnect-report.json` SHA-256 is `b1e26fc968700b51420c8d79fe1e7457d8ffbbe90cda4cafb573a8fd06d6b06c`; `docker-disconnect.json` SHA-256 is `593e7c13b18277d8d070992a63026c2a7c337f7b979f4371aa296bec346c0927`. The report records `dirty: false` and retains `complete_matrix: false`. All eight executed source hashes match candidate Git bytes exactly:
+
+| Source | Executed and Git-LF SHA-256 |
+|---|---|
+| `server.py` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` |
+| `workload_http.py` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` |
+| `workload_service.py` | `984c722e9fb732c79d7449e74be1ea3c84e06ae79d5df4eeb5be2391b68376ac` |
+| `openclaw_gateway_check.py` | `4786505bb3d6a7df0c6c99d1be25d9ad1a78c92db46c5be5669f30d098d8dda1` |
+| `openclaw_gateway_http_check.py` | `c2c46e21b62739cfb9a65b491491fb858c7245d92236700d8ffd5e839175ac67` |
+| `openclaw_gateway_lifecycle_check.py` | `b11d0558c7c6acf6e7e97b2c4a080c6afca474faf0eb71fdad74def8653ed56c` |
+| `openclaw_gateway_provider.py` | `f9bf7f8446e0cf620fb371d51cdacfbe2661b3cd0ba31af90436568b453f5403` |
+| `openclaw_http_observer.py` | `502a8ca2e37056cf259e39b5d6fa9e474336d605be6e599a5418b1aa7ba44b1e` |
+
+Reproduce with the existing lifecycle command, `--case docker-disconnect` and a fresh private root. Retain both Docker-disconnect JSON files and the private provider, transport and process logs; credentials, raw owner/session identities and host paths are not committed. This successful run supersedes the engine-availability blocker for this case; the earlier prerequisite failure remains a separate unsuccessful attempt with no scenario evidence.
+
+This qualifies one service-side Docker CLI connection refusal and explicit recovery on the recorded Windows candidate. It does not qualify a daemon crash, daemon-side removal rejection, remote/TLS Docker endpoints, an automatic watchdog, actual-model retries or unattended operation. Previous combined lifecycle, registry, idle-expiry and separate live MAF/stdio cases were not rerun. Broader Docker outages, expiry/admission races, other retirement triggers, prolonged/concurrent churn, repeated discovery failures and the remaining transport/MAF matrix stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676).
+
+
+## Daemon authorization denial and retained-resource recovery: live result (2026-10-11)
+
+The independent [daemon-denial supervisor](../../../tests/fixtures/openclaw_docker_denial_check.py) passed the seven-dispatch Gateway sequence on clean candidate `5a149d372c0273540bf6135492c7b316550ccea7`. The selected fault uses Docker's real [authorization plugin API](https://docs.docker.com/engine/extend/plugins_authorization/): a fixture plugin returns `Allow: false` for DELETE of one exact compiler container, and the daemon rejects the actual Docker CLI removal. The observer forwards the original removal command and records its real exit and diagnostic; it does not replace a cleanup result. This establishes a policy rejection, not a daemon storage failure or crash.
+
+The supervisor starts a dedicated `docker:29.8.2-dind` daemon, resolved to `sha256:1e08cdb63405ca788aea94ef35b792d1e299607c667d33d7bcbcae1fd2611ced`, with its own ephemeral volume and a randomly assigned loopback port protected by mutual TLS. It copies the plugin into that container and discovers it through Docker's [Unix socket plugin interface](https://docs.docker.com/engine/extend/plugin_api/). The [official entrypoint](https://github.com/docker-library/docker/blob/master/29/dind/dockerd-entrypoint.sh) creates the certificates. The daemon uses the [containerd image store](https://docs.docker.com/engine/storage/containerd/) so loading the prepared OCI image preserves its exact identity; the observed storage driver was `overlayfs`. The fixture sets two CPUs, 2 GiB memory and a 512-process limit, disables its bridge and iptables management, and uses no host bind mount or parent Docker socket mount. Docker-in-Docker runs privileged as required by the [official image](https://github.com/docker-library/docs/blob/master/docker/README.md); this disposable setup is not a containment guarantee. The shared engine configuration and global context are unchanged.
+
+The execution retained Windows, OpenClaw 2026.9.7, published core/Bicep/Docker 0.46.0/0.22.0/0.24.4, MCP 1.28.1, MAF core 1.19.0 and Uvicorn 0.54.0. The dedicated Docker daemon was 29.8.2. The prepared image remained `sha256:5611ccff6015b5dd25d512c1f2dc6ab3cdfaecf9274a523c48cc07116fb38c89` and the compiler configuration remained SHA-256 `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1`. Go 1.27.0 on Windows built the Linux/amd64 plugin with `CGO_ENABLED=0` and `-trimpath`. Plugin source SHA-256 was `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4`; binary SHA-256 was `db8135a51f3041874a7933e064defb62dd99902de682c4bd9aa2a2407ad41202`.
+
+| Check | Observed result |
+|---|---|
+| Baseline and target | A and B completed valid work on distinct MCP sessions; independent Docker observation found A's next compiler, which the checker paused before arming denial for its exact name and full container ID |
+| Real daemon rejection | Correlated accepted MCP cancellation triggered four failed removal commands in the initial cleanup evidence; each matched a plugin decision by the private service-client marker, target and armed nonce, and the CLI reported the plugin's authorization-denied diagnostic |
+| Refusal and survival | HTTP 503 readiness, poisoned admission and unconfirmed cleanup; both existing sessions refused new work without executing a binding, and the same paused compiler survived service shutdown with exit 1 |
+| Ordered recovery | All removal decisions through shutdown remained denied; disarming the policy and restarting with unchanged owner bytes produced real successful removal and an allowed plugin decision after those denials, before startup readiness |
+| New work | The same Gateway completed new valid work in both sessions on two distinct fresh MCP identities; final registry held two adapter records and two SDK tasks, without replay of aborted work |
+| Cleanup | Seven dispatches, unrelated owner preserved during the sequence, final service shutdown clean and all nested containers absent; the supervisor removed the exact dedicated daemon and its anonymous volume, then verified absence and unchanged parent engine identity |
+
+The plugin synchronizes its append-only decision journal before returning authorization. A strictly increasing sequence orders decisions without comparing Windows and Linux clocks. Evidence acceptance requires one matching decision per observed service removal command; wrong client/nonce/target, missing or extra decisions, reordered/duplicate sequences and malformed flags refuse qualification. The final `docker-denial-host-report.json` is written only after Gateway qualification and dedicated-daemon cleanup succeed; the inner Gateway report alone cannot establish supervisor cleanup. Independent post-run inspection found no authorization-fixture containers or processes using this run root.
+
+| Private evidence artifact | SHA-256 |
+|---|---|
+| `docker-denial-host-report.json` | `265742f1b0af3da4d39fbc9a3f7e5716c2eb91aa9bc322e7737e84fb6eb44ac5` |
+| `docker-denial-report.json` | `501e4e81ee9e3b53338fec393352cc930238440ff7ee900cb23a12aab96d50e9` |
+| `docker-denial.json` | `a71c064ab4d7a79d3c8186c8a9dd20bc2ae313794c5c3ed3553edb149ff10b06` |
+| `docker-authz.jsonl` | `103547846c727a5cdbb2d3f57a866b801a01259e4cf61e5ff29e7ac6703b465e` |
+
+The report records `dirty: false` and `complete_matrix: false`. Executed bytes match the recorded hashes. Four Python fixture files used Windows CRLF checkout bytes; all ten Python sources match candidate Git bytes after CRLF-to-LF normalization, while the Go source matches Git byte-for-byte. The two identities are recorded separately rather than claiming raw byte equality:
+
+| Source | Executed SHA-256 | Git-LF SHA-256 |
+|---|---|---|
+| `server.py` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` |
+| `workload_http.py` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` |
+| `workload_service.py` | `984c722e9fb732c79d7449e74be1ea3c84e06ae79d5df4eeb5be2391b68376ac` | `984c722e9fb732c79d7449e74be1ea3c84e06ae79d5df4eeb5be2391b68376ac` |
+| `openclaw_docker_denial.py` | `b0ee9bcc9932a1b421161b93288df45bc3eb1d5b4d2d6970b21da71abe6bf62e` | `32b951278591a0436ce595800787a5def7b38c24aba642ef49893f0fb6bad4ce` |
+| `openclaw_docker_denial_check.py` | `dcca2904d245f9005b31c458c21b798bfe36a8084a9856451afa62bbb9475016` | `c9b037a18984505dcebee864047eefc7ac4fe73d1ccc44cd44c287655c42a331` |
+| `openclaw_gateway_check.py` | `4786505bb3d6a7df0c6c99d1be25d9ad1a78c92db46c5be5669f30d098d8dda1` | `4786505bb3d6a7df0c6c99d1be25d9ad1a78c92db46c5be5669f30d098d8dda1` |
+| `openclaw_gateway_http_check.py` | `c2c46e21b62739cfb9a65b491491fb858c7245d92236700d8ffd5e839175ac67` | `c2c46e21b62739cfb9a65b491491fb858c7245d92236700d8ffd5e839175ac67` |
+| `openclaw_gateway_lifecycle_check.py` | `ca86012fc9fdc93ef7c3f29eac08d23c54660fb1cca3556341690f3182895dea` | `e8a1a88351e9af60a99c78e3e6298dd2b6e4f1e619ea81950721003eb569f0c9` |
+| `openclaw_gateway_provider.py` | `f9bf7f8446e0cf620fb371d51cdacfbe2661b3cd0ba31af90436568b453f5403` | `f9bf7f8446e0cf620fb371d51cdacfbe2661b3cd0ba31af90436568b453f5403` |
+| `openclaw_http_observer.py` | `174df39a76a990b4166768210d6102e85949b8633d10670c016d2d02716cd5d5` | `4c8ffcabf67cde31b21c7267299bc96704776041c34cf914219e4d7adcd08d40` |
+
+Reproduce with a local parent Docker context, a prepared image already loaded in that engine, Go on PATH, the pinned OpenClaw installation and a fresh private root. Pass the same private Gateway configuration and prepared Bicep configuration used by the lifecycle checker:
+
+```text
+uv run python tests/fixtures/openclaw_docker_denial_check.py --root <fresh-private-root> --config <private-openclaw.json> --bicep-config <prepared.bicepconfig.json> --image <prepared-image-id> --daemon-image <docker-dind-image-id> --openclaw <pinned-openclaw-installation>
+```
+
+Retain the host report, Gateway report, detailed evidence, plugin journal and private process logs. Raw identities, host paths, Gateway credentials and TLS private keys are not committed. Preliminary setup probes using Windows bind mounts timed out before creating a daemon; a copy-based standalone authorization probe then verified actual denial, survival and recovery. Those probes did not establish Gateway acceptance. The final clean candidate's full Gateway sequence passed on its first attempt.
+
+The focused evidence suite passed 750 tests, including Go policy tests. Two temporary guard mutations made the corresponding negative tests fail when client correlation or the real authorization-denial requirement was removed. This case adds fixture/evidence coverage only; production packages, service/binding behavior and installed OpenClaw code are unchanged. Earlier connection-loss, idle-expiry, registry and combined lifecycle modes and separate live MAF/stdio combinations were not rerun. General remote/TLS deployment, daemon storage/removal faults, daemon or host crashes, broader outages, expiry/admission races, other retirement triggers, prolonged/concurrent churn, repeated discovery failures and the remaining transport/MAF matrix stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676). No watchdog, actual-model retry or unattended-operation claim is made.
+
+The full local gate passed: 17,833 tests, 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks. Repository typing reported zero errors and 443 warnings. Linux-targeted fixture typing reported zero errors and one existing warning. Markdown examples and all 236 live tracker references passed. Hosted CI is a separate gate and is not established by these local checks.
+
+
+## Repeated discovery failure: bounded follow-up (2026-10-11)
+
+The independent `--case discovery-backoff` extends the existing eight-slot registry sequence with three real MCP initialization HTTP 503 responses at full capacity. It retains the three delete/reconnect cycles and expects 26 tool dispatches overall. The installed Gateway, prototype service and binding are unchanged. After the first refusal the checker waits 35 seconds before submitting a fresh turn that triggers a second refused initialization. After that failure, a new turn between 30 and 60 seconds must receive the cached-catalog error without provider execution or another initialization. A later turn triggers a third refused initialization; another probe between 60 and 120 seconds must remain suppressed. Both wall-clock evidence and a monotonic observation must place each probe inside its selected window. Quiet intervals reject autonomous discovery, workload calls, binding execution and session retirement.
+
+The checker then deletes one occupied logical session and verifies SDK/adapter draining, leaving seven original registrations. The immediate replacement turn must still fail before provider execution or MCP initialization. After another 65-second quiet interval, a newly submitted turn must trigger one successful initialization and tool listing while still returning the stale-catalog error. A separate new turn must complete on that fresh MCP identity, and all seven surviving sessions must complete work with unchanged identities. None of the seven refused turns may reach the provider or replay later. The same Gateway/service processes, owner bytes and unrelated sentinel must survive; final service exit, owned-resource cleanup and listeners must be clean. The checker writes `backoff-report.json` and `registry-churn.json`, retaining `complete_matrix: false`.
+
+This case measures selected later-backoff windows and cross-runtime recovery after real capacity refusal. It does not measure the originating runtime's five-second first retry, exact deadline transitions, delays above 120 seconds, concurrent discovery, other transport errors, model retry decisions or unattended recovery. A successful live result must be recorded separately against its clean candidate; the harness and offline evidence checks alone do not establish that result.
+
+
+## Repeated capacity-refusal backoff and recovery: live result (2026-10-11)
+
+The independent `--case discovery-backoff` passed on clean candidate `8e538283a864d75412e853c2e061dd3dcde4507d`. It retained OpenClaw 2026.9.7, published core/Bicep/Docker 0.46.0/0.22.0/0.24.4, MCP 1.28.1, MAF core 1.19.0, Uvicorn 0.54.0, and the immutable prepared image/configuration baseline above. The installed Gateway, prototype service and binding were unchanged. The report records 26 tool dispatches, `dirty: false`, a clean final service shutdown and `complete_matrix: false`.
+
+| Check | Observed result |
+|---|---|
+| Full registry | Eight distinct registrations and three delete/reconnect cycles completed; all seven unaffected sessions remained callable before the overflow sequence |
+| Repeated discovery failures | Exactly three correlated MCP initialization requests received real HTTP 503 responses at the unchanged eight-slot limit; each failed before any workload dispatch |
+| Second-failure probe | A new turn ran 35.84–36.31 seconds after the second refusal settled; it returned the catalog error without another initialization or provider execution. The monotonic observation was 36.05 seconds |
+| Third-failure probe | A new turn ran 65.86–69.25 seconds after the third refusal settled; it remained suppressed without another initialization or provider execution. The monotonic observation was 69.00 seconds |
+| Quiet observation | The four measured intervals lasted at least 35, 35, 30 and 65 seconds; no autonomous discovery, workload call, binding execution or retirement occurred |
+| Free slot during cooldown | Deleting one occupied logical session drained its SDK/adapter state and left seven original registrations. A new turn in that deleted session still failed before provider execution or MCP initialization |
+| Recovery after cooldown | After another 65-second quiet interval, a newly submitted turn triggered one successful initialization and tool listing while receiving the stale-catalog error. A separate new turn completed on the fresh MCP identity; all seven surviving sessions completed work with their original identities |
+| Isolation and cleanup | All seven refused turns stayed absent from provider execution. Gateway/service processes and owner bytes were retained, the unrelated sentinel survived until fixture cleanup, and final service exit was zero. Independent inspection found zero owned containers and zero surviving recorded fixture processes |
+
+These measured windows are consistent with the pinned source's 60- and 120-second later startup backoffs. They establish suppression beyond the preceding delay and eventual cross-runtime recovery, not the exact deadline boundary or a guarantee that a waiting service automatically triggers discovery. Successful work required new turns; none of the refused turns was retried as workload execution.
+
+| Retained evidence | SHA-256 |
+|---|---|
+| `backoff-report.json` | `17c017ff33ddc6b4100fc1ee0cc2728e1cc5c7a943238d055d49b271fd3a0ba4` |
+| `registry-churn.json` | `03a539517099bd7ca4f8bacadcb215d9747784e37b2c656e9c55c82fa373feac` |
+| `backoff-windows.json` | `0113ca89b223d285ea336d6020c40e6ab0c12b335f9e8014f72ba582dc79b928` |
+
+All ten source hashes recorded in the report match the candidate's Git bytes. The changed lifecycle checker SHA-256 is `7f2c63a87878c7de023d698c1e819f15e0ede8730a73767a1be6f55d45c2bf11`. The three installed Gateway discovery/allowlist source hashes match the earlier delayed-capacity-recovery table. Reproduce with the existing lifecycle command plus `--case discovery-backoff` and a fresh private root. Retain the three evidence files and private provider/transport/Gateway logs; credentials, host paths and raw identities are not committed.
+
+An earlier clean attempt on `ed4be4f6` stopped at the second quiet-interval assertion after two capacity refusals. Its trace contained no forbidden transport activity in that interval, but the exact clock observations were not retained, so the failed clock delta cannot be reconstructed. It produced no success report; independent inspection found no remaining owned containers or recorded fixture processes. The successful candidate retains every interval observation before validation and adds a 250 ms observation margin while preserving both elapsed-clock assertions. This failed attempt remains distinct from the successful result.
+
+Offline verification passed 859 focused tests and 381 documentation tests. Three temporary guard mutations were rejected when monotonic probe timing, quiet-interval duration or unique-attempt correlation was weakened. The full local gate passed 18,007 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks; repository typing reported zero errors and 453 warnings. The timing-observation follow-up was separately rechecked with all 859 focused tests and fixture typing. Markdown examples and 239 live documentation tracker references passed. Hosted CI remains separate evidence on the delivering PR.
+
+The longer lifecycle, idle-expiry, Docker-failure and separate MAF/stdio combinations were not rerun. Originating-runtime first retry, exact deadline races, delays beyond 120 seconds, concurrent discovery, other discovery errors, broader daemon faults, expiry/admission races and the remaining transport/MAF matrix stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676). No actual-model retry, watchdog, host-crash or unattended-operation claim is made.
+
+
+## Bicep HTTP ownership and independent MAF closure: live result (2026-10-11)
+
+The standalone [ownership checker](../../../tests/fixtures/openclaw_bicep_ownership_check.py) passed all five cases on clean candidate `d458625fcac0487e950ebfc42032336cfad150e1`. This supplies the real Bicep/MAF composition observations requested by [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850), complementing the existing Gateway evidence. No OpenClaw process or model was used in this execution. The checker serves the unchanged Bicep composition over real loopback HTTP and uses two raw MCP sessions or two real `MCPStreamableHTTPTool` clients as appropriate.
+
+The host ran Windows, Python 3.13.12 and Docker Engine 29.8.2 with Linux guests. Python dependencies retained MAF core 1.19.0, MCP 1.28.1, maf-sandbox 0.46.0, Bicep 0.22.0, Docker backend 0.24.4, Starlette 1.7.0 and Uvicorn 0.54.0. The old local image `sha256:0bda3505a331713614b847025ce35199f3dda5a81ea2a661130525226dbc0265` was unavailable. This run deliberately used the released Bicep AVM 0.1.0 reference `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e`. Its retained signed bundles verified before execution with `releaseIdentityVerified: true`; monitoring was reported clean at verification. The [image release evidence](../../../images/bicep-sandbox/AVM.md#release-010-evidence) records the source and compiler/cache identity. Docker's local image inspection and container `Image` field both returned the same `b3f14b...` identity on this host; the release's separate configuration digest remains `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3`. This is qualification of the new image identity, not a rerun of the old local image. The prepared compiler configuration SHA-256 remained `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1`.
+
+| Case | Observed result |
+|---|---|
+| Equal request IDs and repeated cancellation | A's compiler was independently observed and paused. B submitted the same numeric request ID and received busy without another owned container. Cancellation addressed to B was accepted but left A active. A matching cancellation then reached real disposal; three further matching cancellations while one exact owned Docker removal was held preserved global admission. Releasing the fixture barrier delegated the real removal unchanged. Exact-container absence and a successful new B call followed. All five cancellation messages had correlated HTTP 202 responses. |
+| Active response-only loss | The checker closed only the raw HTTP response connection while A's compiler was paused. No MCP cancellation was sent or observed. B remained busy without allocation. After unpausing, the binding returned an incomplete result with confirmed cleanup; the exact container disappeared and B completed new work. The 1,500-variable stress source generated oversized diagnostics, so no completed verdict is claimed for that source. The returned binding result and source digest distinguish normal incomplete settlement from cancellation or a service deadline. |
+| Idle MAF close | Closing idle A issued DELETE and retired its SDK/adapter state while B's compiler remained supervised. B's original call returned, and the same B client completed a new valid call. |
+| Active MAF close | Closing active A issued DELETE, cancelled only A's binding and held admission through controlled real disposal. Service cleanup and SDK retirement were observed by 22.52 seconds after the call was submitted. B's session survived and completed new work while A's client future was still pending. A's client later raised `ToolExecutionException` with underlying MCP timeout code 408 at 240.01 seconds, consistent with its configured 240-second request timeout. |
+| Ordinary independent MAF close | Both clients discovered the unchanged Bicep tool and completed valid calls with one projected content item and matching source/config/image identities. After closing A, B completed another valid call through its existing session. |
+| Final ownership and transport state | The run recorded 19 tool-call requests, five cancellation notifications, ten DELETE requests and ten retired sessions. Retirements required completed SDK tasks, terminated transports, zero SDK streams/request IDs/handlers and absent adapter records. The independently created unrelated-owner container survived every scenario boundary and was removed by the checker afterward. Final service state had zero sessions, no active call, no poisoning and an empty owned scope. |
+
+The fixture pauses only a compiler independently identified by `docker top` and uses a one-shot barrier before one exact owned `docker rm -f`. It does not replace removal results, simulate container absence, alter service admission, or shorten service deadlines. Its barrier resolves ownership before arming and delegates absent companion targets and later idempotent removals unchanged. Transport observation reuses the existing observer; no production package, service, binding, MAF or MCP code changed.
+
+Client closure and outstanding-call settlement are distinct in this pinned stack. The active MAF future remained pending after service retirement, while B could already execute. The recorded elapsed values are observation times, not cleanup deadlines or upper bounds for other runs. Hosts must retain ownership of their outstanding client tasks; this evidence does not claim that `close()` promptly completes every awaiting caller. The idle-close run's client was already settled when retirement/cleanup was inspected; its later elapsed observation includes the successful survivor call.
+
+The PEP 723 runner recorded every installed distribution and rejected direct-URL/editable installations. Its complete manifest was:
+
+```text
+PyJWT==2.15.1
+PyYAML==6.0.3
+agent-framework-core==1.19.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+cryptography==50.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+maf-sandbox==0.46.0
+maf-sandbox-bicep==0.22.0
+maf-sandbox-docker==0.24.4
+mcp==1.28.1
+msgspec==0.21.1
+opentelemetry-api==1.45.1
+pycparser==3.11
+pydantic==2.14.1
+pydantic-settings==2.15.0
+pydantic_core==2.50.1
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pywin32==312
+referencing==0.37.0
+rpds-py==2026.9.1
+sse-starlette==3.5.0
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
+```
+
+The canonical manifest digest (sorted JSON keys, compact separators) was `743c1ad7ae42687ef852aae3210b9ebe345d01b77027849eef1e16f549a825b7`. A future resolver result must be recorded separately; this manifest is an observed environment, not a claim that every transitive dependency is constrained by the script.
+
+### Ownership reproduction and evidence
+
+Verify the prepared image's release identity using its consumer guide, then run from the repository root on a clean checkout with a fresh private evidence directory outside the repository:
+
+```powershell
+uv run --script tests/fixtures/openclaw_bicep_ownership_check.py `
+  --prototype samples/experimental/openclaw_bicep/server.py `
+  --config images/bicep-sandbox/prepared.bicepconfig.json `
+  --root ../ownership-evidence `
+  --image ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
+```
+
+Retain `ownership-report.json`, `transport.jsonl` and private process output. The checker removes a stale success report before prerequisites, refuses a reused transport journal or dirty checkout, records exact candidate/source hashes and writes success only after every case and final cleanup pass. The report's SHA-256 was `7383252e5e1f0e199d5cbe406975c2baf06fefbdcc8b8d978cb8a674136da525`; the executed checker file hash was `dc83a4e866750739a9bccce8710fa106b32e0dc41ba95e6afb29b0b337364e66`. Credentials, private paths, raw owner/session/container identities and source-bearing process logs are not committed.
+
+An earlier complete run on `e7dec5ff435739d4316d697a4df6c40cddedd243` passed the same five cases and final cleanup; its report SHA-256 was `23ff72c79fe9c4d4261aade1664883f04957259bef3bf1f7f11fe69c95a8ca5f`. The final run adds explicit separation of service/client settlement and calls through B before awaiting A's client timeout. Earlier unsuccessful candidates remain distinct: `fa1c54b5` and `ce5f926f` stopped at Docker process observation because the selected output omitted the required PID field; `23135107` exposed the fixture's attempt to inspect absent companion/retry removal targets; `14cc6043` completed the cancellation case but rejected the stress source's incomplete result. None wrote a success report. The process selector, one-shot removal barrier and incomplete-result acceptance now have focused regression coverage.
+
+These observations discharge #1850's composition cases from the [closure audit](openclaw-qualification-closure-audit.md). They do not complete [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851)'s finite published transport/100-session retirement subset. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open until that evidence is delivered and reconciled. Other host platforms, current-version compatibility, new Gateway executions, actual-model behavior, exhaustive crashes and unattended recovery remain outside this execution.
+
+Offline verification passed 904 focused tests and 384 documentation tests. The full local gate passed 18,153 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks; repository typing reported zero errors and 453 warnings. The final timing observation and four additional negative regressions were separately checked with the focused suite and fixture/test typing after the full gate collected its tests. Hosted CI remains separate evidence on the delivering PR.
+
+
+## Published transport bounds and SDK retirement: live result (2026-10-11)
+
+The [published transport checker](../../../tests/fixtures/openclaw_published_transport_check.py) passed all 43 selected cases on clean candidate `80215d91be2df64c139d11dd39544853984ebca2`, using Windows and Python 3.13.12. This supplies [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851)'s finite transport/client evidence. It reuses the existing [HTTP acceptance tests](../../../tests/test_mcp_workload_service.py), unchanged service/adapter code, actual Uvicorn loopback sockets and real MAF clients with synthetic workload bindings. Five parametrized cases directly drive ASGI; the remaining 38 use HTTP sockets. No Docker container, Bicep compiler, OpenClaw Gateway or model ran in this execution.
+
+The runner selects 24 test functions, expanding to 43 cases, and requires all 129 setup/call/teardown reports to pass. No case was skipped or expected-failed. Pytest reported 43 passes in 46.97 seconds; runner elapsed time was 47.78 seconds. One dependency warning reported an unresolved `lifespan` annotation in pydantic-settings; it did not prevent service startup or the passing client cases. These are observed execution times, not latency guarantees.
+
+| Acceptance area | Recorded observation |
+|---|---|
+| Authentication and framing | POST/GET/DELETE authorization, Host/Origin refusal, malformed/uninitialized requests, duplicate live IDs, typed IDs, nonfinite JSON, Content-Length/chunked body limits, header limits and slow-body refusal passed. Rejected authorization and malformed input did not dispatch a synthetic binding or expose the submitted marker. |
+| Capacity and reservations | Eight sessions admitted, ninth refused; initialization and retirement reservations, pending-body settlement, idle/active separation, shutdown startup races, one GET stream and 32-connection limits passed. Event barriers and injected startup/retirement failures are test controls, not additional production behavior. |
+| Direct ASGI subset | `test_body_reader_budget_released_after_rejection` exercises the 16-reader budget directly. Four `test_pending_post_releases_reservation_on_body_failure` cases inject malformed input, timeout, overflow and cancellation through ASGI. They prove handler/accounting settlement, not five additional socket-level failure cases. The separate chunked/slow-body and pending-body reservation cases use real HTTP. |
+| SDK retirement | Read-only references to 109 distinct session records were retained: eight saturation sessions, 100 sequential churn sessions and one expired idle session. Every SDK task and retirement task finished successfully; every transport terminated with zero SDK streams, request IDs and HTTP handlers, and no active GET handler. The checker records every observation and rejects missing cycles, unsettled state and non-integer zero substitutes. |
+| Final transport state | Zero adapter records, zero body readers, no active call, no poisoned service, and FastMCP's default retaining session manager absent. No production registry was added. The 109 observed retirements belong to the churn test, not a claim about the total number of sessions created by all 43 cases. |
+| MAF client contract | Two actual `MCPStreamableHTTPTool` clients used trusted static headers, discovered the two synthetic bindings and returned one projected result item with the expected values. B completed a new call through its existing session after A closed; both sessions retired. This complements #1850's real Bicep/MAF composition evidence. |
+
+### Transport environment and reproduction
+
+The selected published baseline is MAF core 1.19.0, MCP 1.28.1, maf-sandbox 0.46.0, Bicep 0.22.0, Docker backend 0.24.4, HTTPX 0.28.1, jsonschema 4.26.0, Starlette 1.7.0, Uvicorn 0.54.0 and pytest 9.0.3. The installed Bicep/Docker packages preserve the requested environment; their presence is not runtime qualification of those backends. Every installed distribution was recorded, direct-URL/editable installs were refused, and suite/framework import locations had to resolve under their installed distributions. The complete resolved manifest was:
+
+```text
+agent-framework-core==1.19.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+iniconfig==2.3.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+maf-sandbox==0.46.0
+maf-sandbox-bicep==0.22.0
+maf-sandbox-docker==0.24.4
+mcp==1.28.1
+msgspec==0.21.1
+opentelemetry-api==1.45.1
+packaging==26.3
+pluggy==1.6.0
+pycparser==3.11
+pydantic==2.14.1
+pydantic-core==2.50.1
+pydantic-settings==2.15.0
+pygments==2.21.0
+pyjwt==2.15.1
+pytest==9.0.3
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pywin32==312
+pyyaml==6.0.3
+referencing==0.37.0
+rpds-py==2026.9.1
+sse-starlette==3.5.0
+starlette==1.7.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.54.0
+```
+
+The canonical manifest SHA-256 (normalized names, sorted JSON keys and compact separators) is `170aa13121a875f4ac1e8043d19d52708b813e16139a568220fb0c52839c8d4e`. Transitive dependencies are observed versions; a later resolution must produce its own manifest and evidence. The runner disables external pytest plugins, conftest loading and environment addopts, and uses an empty temporary pytest configuration to keep workspace dependencies and test selection out of the published execution.
+
+From a clean checkout, use a fresh private evidence directory outside the repository:
+
+```powershell
+uv run --script tests/fixtures/openclaw_published_transport_check.py `
+  --root ../transport-evidence
+```
+
+The service retains its eight-session, 32-connection, 16-reader, 2 MiB body and 16 KiB header limits. The inherited tests deliberately accelerate selected timing: slow-body timeout to 0.02 seconds, incomplete-header deadline to 0.05 seconds, and the pending-body idle case to 0.02 seconds. The churn and active/idle separation tests age retained timestamps by the configured 900-second idle interval. Other cases use fixture events to hold initialization, retirement and pending bodies. These observations do not claim a fresh 900-second expiry run; that is separately recorded in the earlier Gateway evidence.
+
+The runner removes a stale success report before prerequisite checks, refuses a reused attempt directory or dirty checkout, records source hashes and rechecks the source/checkout after execution. `attempt.json` retains the sanitized test-phase observations even when acceptance fails; `transport-report.json` is written only after every required case and retirement/final-state guard passes. Retain private process output separately. Raw credentials, session identities and host paths are absent from the report.
+
+| Evidence identity | SHA-256 |
+|---|---|
+| `transport-report.json` | `3bb5e3608aba3b21e05a933438feca010888040fc71f6522f3721b0f0b8f09d5` |
+| `tests/fixtures/openclaw_published_transport_check.py` | `e0b628d77011deabfd6f0a022b7aba44a2609e498c406b17564e2f4caba74fbf` |
+| `tests/test_mcp_workload_service.py` | `6e2af3c9289bd4cce75b145563713787189ae089555de7800d07a8fa67665271` |
+| `samples/experimental/openclaw_bicep/server.py` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` |
+| `samples/experimental/openclaw_bicep/workload_http.py` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` |
+| `samples/experimental/openclaw_bicep/workload_service.py` | `984c722e9fb732c79d7449e74be1ea3c84e06ae79d5df4eeb5be2391b68376ac` |
+
+The successful candidate was the first published-stack attempt for this checker; earlier workspace validation and type-check corrections are not published execution failures. Negative regressions reject omitted/duplicated tests, missing phases, skipped/expected-failed cases, teardown failures, missing retirement observations, retained SDK/service state, changed dependency versions, editable installations and import shadowing.
+
+These observations fill the closure audit's published transport/resource/MAF attribution gap. [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) separately delivers #1850's Bicep/MAF ownership evidence. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open for delivery and consolidated reconciliation; this transport run alone does not close the host qualification. Historical `complete_matrix: false` reports remain unchanged. No new Gateway, compiler, other-host-platform, current-version, indefinite churn, actual-model or unattended-operation qualification is implied.
+
+Offline verification passed 939 focused tests (eight separate live cases deselected), 387 documentation tests, and typing for the changed fixture/tests with zero errors or warnings. Markdown examples and 254 live documentation tracker references passed. The full local gate passed 18,498 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks. Repository typing reported zero errors and 455 warnings. Hosted CI remains separate evidence on the delivering PR.
+
+
+## Installed worker qualification (2026-10-13)
+
+Issue #1898 packages the existing service as `maf-sandbox-mcp`, with fixed `maf-bicep-mcp` entry point and explicit Bicep/Docker dependencies. The reusable service still imports no concrete kind or backend. The historical sample remains a source specimen; current runtime development and installed tests use the package. This execution qualifies the wheel built from candidate `991a6c11`, not a published release. Subsequent harness/reporting and documentation changes do not change its four runtime module hashes.
+
+The clean environment was created outside the checkout with Python 3.13.12 on Windows and Linux guests on Docker Engine 29.8.2. The candidate wheel was the only local artifact; every dependency resolved from the package index. No editable, `PYTHONPATH` or sibling-source fallback was admitted. Framework, suite, MCP, Uvicorn and worker imports resolved inside the environment's `site-packages`; the private report retains their locations. Each installed worker module matched its bytes inside the built wheel before and after execution. The console executable loaded and ran from that environment.
+
+The deliberate baseline change is MAF core 1.20.0, sandbox 0.48.0, Bicep 0.22.2 and Docker backend 0.27.0, with MCP 1.28.1, Starlette 1.7.0 and Uvicorn 0.54.0. OpenClaw remained the locally installed npm 2026.9.7 release. The selected image remained released Bicep AVM 0.1.0, `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e`; the configuration hash remained `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1`. The launchers passed its resolved immutable local identity, and observed compiler results attributed that same identity.
+
+### Results and evidence boundary
+
+| Evidence | Observed result |
+|---|---|
+| Clean-wheel smoke | Installed entry point `--help`, inert fixed binding construction, typing marker and installed module locations passed without allocating a sandbox. |
+| Installed transport/MAF suite | All 43 finite cases passed with setup/call/teardown evidence; 109 SDK retirements (eight saturation, 100 churn, one expiry) settled with zero retained sessions/readers/active work and no poisoned service. Synthetic bindings and the original bounded fault/timing controls remain explicit. |
+| Real Bicep/MAF ownership | Equal request IDs and repeated cancellation, response loss, idle MAF close, active MAF close and ordinary close all passed. Exact-owned containers were removed, unrelated-owner survival held, and the final sentinel was removed. |
+| Active client versus service retirement | Service settlement took 25.91 seconds; the active MAF caller stayed pending until its configured 240-second timeout and raised `ToolExecutionException` with code 408. A surviving client completed validation before that timeout. The host still owns its outstanding client tasks. |
+| Instrumented packaged service through Gateway | Two distinct MCP sessions produced valid/invalid/incomplete outcomes with one projected item, denied unauthorized/helper tools, refused competing work without allocation, observed the matching MCP cancellation, removed the exact container, preserved another owner and completed a later call. Observer service exited 0 with no sessions, active work or cleanup uncertainty. |
+| Actual installed console through Gateway | A second fresh profile launched the installed `maf-bicep-mcp` executable. Two Gateway sessions each completed valid, invalid and uncached-module/incomplete scenarios with one projected item and confirmed cleanup. An additional MAF call validated prepared virtual-network module 0.7.2. |
+| Closed-network behavior | The same image reached a fresh control listener over HTTP/IPv4 TCP with bridge networking and returned the expected nonce. With `network=none`, curl returned connection failure (exit 7), no response body, and Docker inspection confirmed the selected network mode. Both probe containers and the listener were removed. This qualifies one destination/protocol, not all network paths. |
+
+The direct console was stopped only after every call settled and independent Docker inspection showed no owned resources. Its idle Windows process tree was then terminated, its owner lock was reacquired and all launched test processes were confirmed stopped. That console stop is not evidence of graceful Windows signal handling; graceful transport/resource shutdown is the separately observed service pass. No host-crash or power-loss guarantee is added.
+
+The Gateway provider was a deterministic local fixture, not an LLM. The observed Gateway report keeps `complete_matrix: false`; its broader restart/crash/runtime-disposal rows remain credited to their prior candidates, while the finite transport and Bicep ownership rows above were rerun for this wheel. Actual-model behavior, exhaustive interruptions, other host/interpreter versions, remote tenancy, independent watchdogs, unattended operation and package publication remain outside this evidence.
+
+Three preliminary Gateway launcher attempts failed before qualification completed: one waited for the wrong readiness log phrase; one passed a repository digest reference to an assertion expecting the resolved image ID; the first console attempt made the same configured-versus-resolved identity mismatch. Their private attempt records remain failed, and their processes were stopped. The successful runs used fresh isolated state and the matching immutable image identity; no worker behavior was changed to pass those assertions.
+
+### Artifact and report identities
+
+| Artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `570cb6ba88410822adf449ea610f35b2af80532f6dbf06687e1bb9554dff77a7` |
+| Installed transport/ownership/network report | `3288a5fd1c96e6c50b00af41b1e79fe50390189cfde7fafcacaa682d456c8833` |
+| Instrumented Gateway report | `14125de0e4bcd28c99df7e5bb868f9a1cd1ebc17cba8aeb88e27caee73eeecfc` |
+| Console Gateway report | `f3789a8daca658eba19bcce123c00cc1ed605d1968b7e9722877c64e00d0456b` |
+| Canonical resolved manifest | `bf042754f19e5af6646bd7f3d844690eff27e2cae438f03456bf73b3a181db52` |
+
+Runtime modules inside the wheel:
+
+| Module | SHA-256 |
+|---|---|
+| `maf_sandbox_mcp/__init__.py` | `c5f5876773dd0b24687a7c16b95770af37f5143c5b89bade19407cfe3aeb369e` |
+| `maf_sandbox_mcp/server.py` | `f000c5c76c9859ce207d19be008059e875c4c4baf4b307db4a204c0955a9898d` |
+| `maf_sandbox_mcp/workload_http.py` | `04d7e3ac3f48559fa7fd1a3ef95dab30e90ecadc69a8df781c15b0652e4d016b` |
+| `maf_sandbox_mcp/workload_service.py` | `8972bc76c8ef9f990f4f0a4cbf3f6704b0e5752bb2b42aaa9f7dfcd0a35a45e0` |
+
+Raw reports, launch profiles and logs stay private because they can contain host paths, credentials or compiler source. Hashes identify retained evidence; they do not make those private artifacts publicly downloadable. The complete resolved manifest follows. The unreleased worker's `0.0.0` is repository bootstrap metadata, not a published version.
+
+```text
+agent-framework-core==1.20.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+iniconfig==2.3.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+maf-sandbox==0.48.0
+maf-sandbox-bicep==0.22.2
+maf-sandbox-docker==0.27.0
+maf-sandbox-mcp==0.0.0
+mcp==1.28.1
+msgspec==0.22.0
+opentelemetry-api==1.45.1
+packaging==26.3
+pluggy==1.6.0
+pycparser==3.11
+pydantic==2.14.1
+pydantic-core==2.50.1
+pydantic-settings==2.15.0
+pygments==2.21.0
+pyjwt==2.15.1
+pytest==9.0.3
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pywin32==312
+pyyaml==6.0.3
+referencing==0.37.0
+regex==2026.9.29
+rpds-py==2026.9.1
+sse-starlette==3.5.0
+starlette==1.7.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.54.0
+```
+
+### Reproduction
+
+Build using `uv build --package maf-sandbox-mcp`, then create a fresh Python environment outside the checkout and install the wheel plus `pytest==9.0.3` and `httpx==0.28.1`. Do not use workspace editables or `PYTHONPATH`. The [installed checker](../../../tests/fixtures/openclaw_installed_worker_check.py) fails on changed baselines, missing runtime modules, differing installed bytes, local dependency fallbacks and incomplete test/cleanup evidence. Use a clean committed checkout and a fresh private evidence directory for each attempt:
+
+```bash
+"$WORKER_PYTHON" "$REPO/tests/fixtures/openclaw_installed_worker_check.py" --wheel "$WORKER_WHEEL" --root "$NEW_EVIDENCE" --config "$BICEP_CONFIG" --image "$BICEP_IMAGE_ID"
+```
+
+For observed Gateway acceptance, retain the isolated pinned-Gateway setup described earlier, use the fresh environment's Python to launch `openclaw_http_observer.py` with `--installed` and the existing observer arguments, then run `openclaw_gateway_http_check.py --installed` with the existing checker arguments. The prototype argument is retained for compatibility with the historical runner; installed mode imports and hashes the wheel modules, not that source path. Stop the observer through its stop file and verify its zero exit and empty shutdown record.
+
+For console acceptance, launch `maf-bicep-mcp --transport http` from the installed environment as described in the [operator guide](../../../packages/maf-sandbox-mcp/README.md). Start the pinned Gateway and deterministic provider with fresh isolated state and credentials. Resolve the image before launch and pass the identical identity to the checker:
+
+```bash
+"$WORKER_PYTHON" "$REPO/tests/fixtures/openclaw_installed_worker_check.py" --wheel "$WORKER_WHEEL" --root "$NEW_EVIDENCE" --config "$BICEP_CONFIG" --image "$BICEP_IMAGE_ID" --gateway-config "$GATEWAY_CONFIG" --provider-evidence "$PROVIDER_EVIDENCE" --owner "$OWNER_DIRECTORY" --openclaw "$OPENCLAW_PACKAGE"
+```
+
+The console checker covers outcomes and prepared resolution; the observer is still required for exact session/dispatch/cancellation attribution. After validation, stop only the test processes and independently verify empty owned-container scope and released owner lock. Do not use forced termination of an idle test process as a claim about graceful shutdown or interruption recovery.
+
+### Final packaged candidate
+
+Candidate `d2068a78` completes the repository package registrations, README conventions and experimental import warning. The warning is confined to stderr, preserves `-W error` imports and leaves MCP stdout empty. Its three execution modules retain the hashes above; `__init__.py` now hashes to `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430`. The wheel was rebuilt and installed into a second empty environment outside the checkout; the complete dependency manifest and its hash are unchanged.
+
+The final wheel repeated all 43 transport cases and 109 retirements, all five Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed. Final transport state had zero records/readers/active calls and no poison; ownership shutdown was empty, preserved the unrelated owner and removed the sentinel. Active MAF closure again settled the service before its client: 25.41 seconds versus 240.02 seconds, ending with code 408 while the surviving client completed valid work. The observed service exited 0; the separately idle-terminated Windows console released its owner lock. Both Gateway runs confirmed their test processes stopped. The evidence boundaries and unqualified scenarios above remain unchanged.
+
+| Final artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `ec256f48e82357bd20bdc89095169173daab43bca80544cbeabd871c39ebda8c` |
+| Installed transport/ownership/network report | `234b6a28271fc0b1623ef4f1ab874fc26630f7f1a46e66807e2864da09525665` |
+| Instrumented Gateway report | `da9c7bfd24f35456ba08c94d020751b3ec3b8e36ddaf7ac2d0ca42f23661c531` |
+| Console Gateway report | `3981c1823d3bc846211bcf6b28f02a057efed71e64746fa2127f82ddc84d394f` |
+
+### Prepared-core compatibility reconciliation
+
+The merged #1900 adoption moves the workspace core to MAF 1.21.0. The worker's direct framework requirement therefore permits `>=1.20.0,<1.22`; the core dependency still selects the narrower installable pairing. Its ordinary index installation remains core 0.48.0 and MAF 1.20.0, while CI's prepared-core override can exercise core 0.49.0 and MAF 1.21.0. This does not move either end of the worker's core range or claim published core 0.49 support.
+
+The adjusted wheel is `97585f8326972d1aa275cf7827e2c6b5ff1edcaf023d66c862b5a5d9dbe69c0c`. A third clean external index installation reproduced the complete manifest and all four runtime hashes of the final runtime candidate above, and its installed entry-point smoke passed. The artifact/manifest reconciliation report hashes to `dd7b73dc6dd04556f7d970152312bee34e3c50acf68676454a48fe91b6476653`. The Docker/Gateway observations remain attributed to the unchanged runtime and recorded earlier wheel; they were not independently repeated after this metadata-only adjustment.
+
+Separately, all 15 sandbox wheels installed together with the prepared local core, and the worker's clean-wheel smoke passed with MAF 1.21.0. On that workspace baseline, 1,078 focused service/prototype/qualification/package tests passed, with four opt-in tests skipped. These establish offline and installation compatibility for the prepared pairing; the live Gateway/Bicep qualification remains the MAF 1.20.0 baseline above.
+
+### Review candidate requalification (2026-10-13)
+
+Candidate `c05c84155cff12c360c0fd2d944edb1d02db94bf` changes two runtime paths: stdio shutdown raises on unconfirmed final cleanup, and authenticated non-GET requests to `/ready` return 405. The historical source specimen remains frozen. The earlier artifact hashes still describe their recorded candidates; they do not describe this revised runtime.
+
+Before the fixes, the new shutdown/readiness regressions produced 17 failures and 22 passing controls. The affected workspace suites then passed with 229 tests and 14 skips. A fresh external installation of the revised wheel passed all 39 new regression cases against the recorded MAF 1.20 dependency baseline. Those are synthetic cleanup/readiness checks, separate from the real Docker observations below.
+
+The revised installed wheel repeated all 43 transport cases and 109 SDK retirements, all five real Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed on the same Python, Docker, OpenClaw, image/configuration and complete dependency baseline recorded above. Transport and ownership shutdown ended empty and unpoisoned; the unrelated owner survived and the sentinel was removed. Active MAF closure again settled the service before the client: 24.56 seconds versus 240.01 seconds, with client code 408 and a successful survivor call. The instrumented service exited 0. The console was terminated while idle on Windows, exited 1 and released its owner lock; that is still not graceful-console-shutdown evidence. Both Gateway runs confirmed all their test processes stopped. Historical `complete_matrix: false` limits remain in force.
+
+| Revised artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `b024019f7e0987556c792bca27bb0002dac5aa6e7e6a6f4a19385a7df7f7baa5` |
+| `maf_sandbox_mcp/__init__.py` | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| `maf_sandbox_mcp/server.py` | `818dd044894a90881cc46f467c6efd16767f532a382f4d4a1706d2cfd94c3ae2` |
+| `maf_sandbox_mcp/workload_http.py` | `f020d90da0e670cfc4bdbbdd7f131a3b84cde83cb8d876021b4ae4d84180d599` |
+| `maf_sandbox_mcp/workload_service.py` | `8972bc76c8ef9f990f4f0a4cbf3f6704b0e5752bb2b42aaa9f7dfcd0a35a45e0` |
+| Installed transport/ownership/network report | `828cd2119b717e12268ade24782056997e53930fe7b6a6eed363960683361add` |
+| Instrumented Gateway report | `055f92f3ee6ad4d20ad65184f2fdc09a7d8a545b7423555f989d4fef8385f187` |
+| Console Gateway report | `66c033748d11fc79f6be87ab1fc5b18b8e3888584e8b60407b333e452827f454` |
+
+
+## Published candidate conformance campaign (2026-10-16)
+
+**Historical v1 evidence, superseded by the reviewed v2 contract below.** PR #1983 review identified missing transitive/native byte checks, incomplete source/control correlation, auxiliary-log bounds and interrupted-stage cleanup gaps. The original report and its evaluator result are retained unchanged; the current evaluator refuses that profile.
+
+The repository-local runner for #1972 completed `installed-bicep-windows-v1` on one fresh external installation, with campaign `fce960ecf9f64cb794a4af2a69c03ca4` and candidate SHA-256 `1d2c51882a090bccab8f12ca04a000c65c0ea9dc2386a594d10fa10d836268f8`. Independent evaluation returned `qualified_for_profile` for all eight required groups. This is new evidence for the published worker; none of the historical source or wheel reports above was relabelled or reused.
+
+The retained [expected candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/candidate.json), [selected plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/plan.json), [complete summary](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evidence/summary.json) and [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evaluation.json) bind the artifact records in the adjacent evidence directory. The summary SHA-256 is `c0f75f4f8673635280babce5ce1c9a0e697cf8935ab4e252363429e778348c35`. The candidate includes every resolved Python distribution, both dependency-lock hashes, installed worker module hashes, npm archive/tree identity and host configuration. Private setup/campaign directories retain the original locks and diagnostics; the public records contain no operator paths, credentials or provider state.
+
+| Candidate dimension | Observed value |
+|---|---|
+| Runner | Commit `75b9819dc35c01aa49e1e31de44e67685827912c`; runner/adapter content SHA-256 `0da7026e013706117d1c4b5eb870aab20da76a9236f504d72ccdbb42c06b2149` |
+| OpenClaw | Installed npm release 2026.9.7; 13,280 runtime files checked against the integrity-pinned archive, before and after the campaign; only the pinned installer's lifecycle-marker removal is allowed |
+| Published worker | `maf-sandbox-mcp` 0.1.0; wheel SHA-256 `1228f030135da4e3c5797ec76e19c34275fb7bba20fbc55d3d42d6cc43955529`; installed module origins and bytes verified |
+| Dependency selection | MAF 1.21.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MCP 1.28.1; complete versions and hashed index resolution in the candidate |
+| Host/engine | Windows 11 AMD64, Python 3.13.15, Node 26.8.1, Docker 29.8.2, Linux x86_64 engine with kernel 7.0.14-linuxkit |
+| Compiler image | `sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler configuration | SHA-256 `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+| Evidence group | Accepted observation |
+|---|---|
+| Installed identity | Exact complete dependency manifest, worker wheel/modules and npm runtime bytes; isolated imports from the external installed environment, repeated after runtime execution |
+| Discovery | Worker-module imports caused no observed guarded side effects; a separate late-exit control refused activity after the report was emitted |
+| Policy/input refusal | Missing/oversized configuration, mutable image and malformed authenticated input refused before workload allocation; positive compiler control establishes that work was reachable |
+| Transport | All 43 exact expanded cases passed with setup/call/teardown records; 109 SDK retirements settled; socket and direct-ASGI attribution retained |
+| Bicep/MAF ownership | All five real compiler scenarios passed: equal IDs/repeated cancellation, response-only loss, idle MAF close, active MAF close and ordinary close; surviving sessions completed valid work |
+| Gateway | Two real sessions each projected one valid, invalid and explicitly incomplete result; installed console entry point and prepared AVM module execution passed with the deterministic local provider |
+| Network | The selected image reached the nonce-bearing host TCP control on bridge networking and could not reach it with networking disabled; control resources were removed |
+| Cleanup | Owned process supervision settled, owner scopes were independently empty, an unrelated sentinel survived and was then removed; no emergency cleanup was needed |
+
+Active MAF closure settled the service in 20.53 seconds, while the pending caller settled at its 240.02-second deadline with code 408. Its surviving peer completed valid work. Response-only loss returned one attributed, explicitly incomplete binding result with confirmed cleanup, without replay or implicit cancellation. These are measured limitations and outcomes, not guarantees of prompt client cancellation or successful compilation after a lost response.
+
+The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/development-attempts.json) retains two separate failed campaign summaries: an evaluator that incorrectly required response-loss compilation to complete, and a superseded runner rejected when its fingerprint changed. Their full private evidence directories remain separate. The accepted campaign used a fresh installation and fresh output directory after the corrections; it does not combine successful stages from those attempts.
+
+The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current contract.
+
+The [operator guide](../openclaw.md#installed-bicep-conformance-runner) describes fresh preparation and execution. Expected inputs must be selected independently and trusted: hashes establish byte correlation, not the truth of a forged observation. The evaluator fixes required groups and case identities and refuses missing, duplicated, transplanted, malformed, narrowed or failed evidence; offline adversarial tests also cover boolean count substitutions, late import effects, changed installed bytes and all-denied network controls. PR CI exercises these offline checks, not the opt-in Docker/Gateway campaign.
+
+This profile is finite, supervised Windows/Docker deterministic evidence. Process supervision confirms stopped processes and released ownership; it does not establish graceful console shutdown, unattended recovery, a model's reasoning, Linux-host support, native MXC/file boundaries, credential delegation, package publication or production acceptance. Worker owner-loss qualification remains #1973; native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and full-backend design remains #1642.
+
+
+## Reviewed v2 conformance campaign (2026-10-16)
+
+**Historical v2 evidence, superseded by the v3 contract below.** The next review identified missing retained network image identity, unbound Gateway session/turn records, duplicate exchange counting, nonfinite float parsing, premature summary success and preparation/cleanup output-limit gaps. These records remain unchanged; the current evaluator refuses the v2 profile.
+
+The reviewed `installed-bicep-windows-v2` contract requires archive-backed dependency and native assets plus a complete preflight/postflight inventory. Each ownership survivor identifies the fixed simple source; each of six Gateway outcomes retains its image, configuration and source digest; prepared-module qualification requires the fixed AVM source digest shared with the live probe. Ownership checks correlate session/request IDs, accepted cancellation responses, binding cancellation, busy admission, DELETE retirement and survivor ordering. Idle close must preserve the original peer call without an exception.
+
+The file inventory covers the prepared Python environment's `Lib/site-packages` and `Scripts` trees and OpenClaw's complete `node_modules` tree. The host Python installation, Node executable, Docker engine and operating system remain host prerequisites recorded by version; this is not an attestation of those host binaries. The only archive transformations accepted are the pinned OpenClaw lifecycle-marker removal, wheel script relocation with identical bytes, and npm's first-line CRLF normalization for archive-declared executables.
+
+The parent bounds outer, worker, Gateway and observer logs during execution and after process-job cleanup. Before creating resources it persists the exact names and campaign label of the outer sentinel, ownership sentinel and two network controls. Cleanup attempts every recorded owner and control resource independently, retains observation/removal failures, and marks emergency reclamation as a failed campaign. It never sweeps a global container-name prefix.
+
+The fresh v2 candidate is `293320ccbd77ac0cc1522dfd3e8fe839c0cea352236833d39e1a908a605c1eaf`, prepared from runner commit `95ec72deae02e240cc19a176d6b226ee58186224` with runner fingerprint `4fcfefc1012f2e472efb92015925d287228370134180956850e57a8aef29123a`. It contains 43,862 inventoried files: 43,597 verified against 388 locked archives, plus 265 explicitly listed installer outputs. The selected published dependency versions remain worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `608ffe97c305475a9e323deb44c9ab2b` across all eight required groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six Gateway outcomes, prepared-module execution and paired network controls passed. Fresh postflight verification matched the original runtime inventory; independent cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation.
+
+Active MAF close settled the service in 19.84 seconds and the caller in 240.02 seconds, with error code 408; its surviving peer completed valid work. The response-loss result was explicitly incomplete with confirmed cleanup and no replay or implicit cancellation. These observations preserve the client-timeout limitation.
+
+The [separate live interruption control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/interruption-control.json) killed a supervised child after resource creation and injected a sentinel-observation failure. All four recorded controls were reclaimed while an unrelated container survived; the observation error and emergency-cleanup flag remained, so this control cannot qualify as a successful campaign. The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/development-attempts.json) retains the refused installer-layout checks, a superseded campaign rejected by its runner fingerprint, and a campaign refused after its isolated supervisor added startup bytecode. Full private diagnostics remain separate, and no earlier stage is reused in the accepted campaign.
+
+Historical v2 evaluation requires its recorded runner revision. The following offline command applies only at that revision; the current evaluator refuses v2:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
+
+That historical campaign qualified its supervised Windows/Docker candidate under v2 with a deterministic provider. Unattended parent/owner loss remains #1973, native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and broader backend design remains #1642.
+
+
+## Reviewed v3 conformance campaign (2026-10-17)
+
+**Historical v3 evidence, superseded by v4 below.** Review found unbounded discovery/policy subprocess capture, permissive parsing inside the provider tool-result string, and missing request/response correlation for active and surviving bindings. These records remain unchanged and require their recorded runner revision; the current evaluator refuses the v3 profile.
+
+The `installed-bicep-windows-v3` contract retains the inspected candidate image for both network controls. Each of six Gateway outcomes carries a distinct turn and its session, linked to the outgoing request and both original provider observations; the evaluator reconstructs the result from the provider record. Cancellation requests and admission observations must identify distinct exchanges. The shared JSON reader refuses overflow numbers as well as literal nonfinite values, including in otherwise unused fields.
+
+Preparation counts stdout and stderr while the owned process tree runs. Overflow or deadline stops that tree; a normal parent exit also reclaims remaining descendants. Cleanup uses independently bounded command diagnostics, so an exhausted setup log cannot hide a successful Docker observation or prevent removal. The original diagnostics failure remains recorded. A saved summary stays unqualified until complete evaluation succeeds, including the aggregate byte budget for the final success summary.
+
+The [separate live diagnostics control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/diagnostics-cleanup-control.json) began with an 8,388,609-byte setup log against the 8,388,608-byte limit. Cleanup reclaimed all four recorded Docker resources, preserved an unrelated container and left the oversized log unchanged. The retained `setup_log_limit` error and emergency-cleanup flag keep that control unqualified. Offline regressions also exercise noisy stdout/stderr, deadlines and descendant reclamation while preserving an unrelated process.
+
+Fresh candidate `0c58788bb3e455a5f668e1a96e8fafe5f914d81e790b83b0808e8607db1ba769` was prepared from frozen runner `e96c6878d80c0c3ffe3c10feeeb0dc2588340efd` with fingerprint `6a30c1954db6578447ca512e99e09a8a92a904e8ca9ac7a72f039a2a85a03a81`. The inventory contains 43,862 files, including 43,597 archive-verified files from 388 locked archives and 265 explicitly listed installer outputs. Published versions remain OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `dd75630a7a8f4a6b8b04ea06b2953a4b` across all eight groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six correlated Gateway turns across two sessions, prepared-module execution and both image-bound network controls passed. Postflight inventory matched the original candidate; final cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation. No earlier campaign stage was reused.
+
+Active MAF close settled the service in 20.50 seconds and the caller in 240.02 seconds, with error code 408; the peer completed valid work. This remains deterministic Windows/Docker evidence for one installed candidate. Real-model behavior, Linux, unattended owner loss (#1973), conditional native qualification (#1974), credential enforcement (#1952) and production acceptance remain outside this result. Additional tools remain deferred in #1639 and broader backend design remains #1642.
+
+Re-evaluate the historical v3 report at its recorded runner revision without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
+
+
+## Reviewed v4 conformance campaign (2026-10-17)
+
+The `installed-bicep-windows-v4` contract supervises discovery and policy probes with streaming stdout/stderr limits while preserving their expected exit statuses. Docker inventory observations inside those stages use the same bounded command supervisor. Embedded Gateway tool-result JSON uses the same duplicate-key and finite-number checks as outer evidence before projection discards fields.
+
+Every credited active binding must follow its matching transport request. A surviving result must follow the latest matching binding start and precede the unique successful response on that request's exchange. Request IDs may be reused after completed exchanges; the evaluator rejects stale, missing, ambiguous and mismatched exchanges. The process-tree regression publishes its child PID atomically before the parent can signal completion.
+
+Fresh candidate `2e02925fe204842f5809e9eaf9ac094ca0c8747d5a8e84cdfcecdbc1075a6c33` was prepared from frozen runner `749c60048cee19a48f9d2ca41a65d0c7d08c9b9c` with fingerprint `b4775bdffba41481e53245a46d30e4b485d47f14926bc073b8360d710d3e491d`. The inventory contains 43,868 files: 43,603 archive-verified files from 388 locked archives and 265 explicitly listed installer outputs. Published versions remain OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `6bdc5a6ece204ffc9cdbf36df99870ac` across all eight groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six correlated Gateway turns across two sessions, prepared-module execution and both image-bound network controls passed. Postflight inventory matched the candidate; final cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation. No earlier campaign stage was reused.
+
+Active MAF close settled the service in 20.89 seconds and the caller in 240.18 seconds, with recorded error `ToolExecutionException` and code `408`; the peer completed valid work. This remains deterministic Windows/Docker evidence for one installed candidate. Real-model behavior, Linux, unattended owner loss (#1973), conditional native qualification (#1974), credential enforcement (#1952) and production acceptance remain outside this result. Additional tools remain deferred in #1639 and broader backend design remains #1642.
+
+The [separate v4 live diagnostics control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/diagnostics-cleanup-control.json) began with an 8,388,609-byte setup log against an 8,388,608-byte limit. Cleanup reclaimed all four recorded resources, preserved the unrelated container and retained the diagnostics error and emergency-cleanup flag. The control verified final removal of its resources and unrelated container; it remains explicitly unqualified.
+
+The ownership evaluator also requires one binding start and one correlated terminal event per executed transport exchange, forbids binding execution on refused admissions, and checks case-specific ordering of active work, DELETE, cancellation, admission probes and completed retirement, and correlated successful A and B exchanges before ordinary close. The exact per-session binding counts also reject extra executed exchanges. B's survivor exchange starts after A retires in each MAF close scenario. Synthetic controls and mutations of the retained v4 observations reject missing pre-close work, reversed lifecycle events, duplicate starts at equal or distinct timestamps, duplicate or conflicting terminal results, orphaned events and work on refused exchanges; completed exchanges still permit request-ID reuse. Final provider evidence is read with a bounded strict JSON decoder after Gateway and provider shutdown, including provider request-thread settlement. Final ownership transport evidence is read strictly after service shutdown and re-read after the ownership checker returns. Binding intervals must not overlap across any scenarios sharing the observer boot; case-map order and valid request-ID reuse do not affect this check. Duplicate keys, nonfinite values, non-object records and unfinished trailing lines refuse qualification; only live polling tolerates an unfinished line. Prepared-module and Gateway response JSON use the same strict decoder before normalization. Gateway fixtures share a 1 MiB response-body limit enforced before decoding, including content-length, chunked and connection-close framing. Campaign timestamps are ordered as parsed UTC datetimes, independent of their accepted ISO separator. Ordinary-close evidence requires A's completed response before B's pre-close request, matching the live checker's sequential calls. Each transport setup, call and teardown record must report literal `false` for `xfail`; null, numeric and empty collection/string substitutes cannot establish a passing phase. The unchanged v4 report passes these stronger offline predicates. This is re-evaluation of the recorded candidate, not a new live campaign or qualification of the branch's upgraded MCP dependency. Successful raw JSON-RPC envelopes must declare version 2.0, carry an integer or string ID matching the request by type and value, contain an object result, and omit the error member. Ownership initialization, calls, busy probes and policy controls share this check; withheld results correlate against the captured request ID. Policy positive controls also require HTTP 200, and both policy and withheld success projections reject tool error flags.
+
+Re-evaluate the retained v4 report without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
+
+The shared Gateway checker rejects error-marked envelopes, MCP results and details before normalizing a successful workload outcome, and requires exactly one text content item. Synthetic and retained-observation mutations cover each error signal independently. The command supervisor reclaims its owned descendants as soon as the parent exits, then drains its bounded pipes; a standard-library process control verifies successful exit with inherited pipes, captured output and survival of an unrelated process. These checks strengthen offline validation and process supervision without changing the recorded v4 campaign.
+
+Offline qualification enforces the 16 MiB event budget across all artifacts, including before finalization changes the summary to qualified; exact-budget controls still pass. Every retirement must retain the expected sibling count and active-call identity, including B remaining active while idle A closes. The complete pinned `structuredContent:` text projection must strictly parse and equal the details object, so duplicate keys, nonfinite values and contradictory model-facing results cannot be hidden by normalization. Synthetic and retained-v4 controls cover these predicates; the recorded campaign remains unchanged and still passes offline evaluation.
+
+DELETE exchanges share the campaign-wide bounded identity namespace with transport requests. Each retirement requires its own successful DELETE response before the snapshot; orphan retirement events are refused. Busy responses must precede their recorded admission observations, which in turn precede the active binding terminal. Synthetic and retained-v4 mutations cover absent, empty, oversized and reused identities, missing or contradictory DELETE responses, and late busy responses. These are additional offline predicates, not a new live campaign.
+
+Active ownership cases require a valid SHA-256 container alias before comparing observations. Repeated cancellation must preserve the recorded probe sequence: initial busy response, peer cancellation acknowledgement, another busy probe, active cancellation, then a busy probe after each of three repeated active cancellations, all before the binding terminal. Synthetic and retained-v4 controls reject malformed resource identities and reordered exchanges or acknowledgements; the original v4 campaign still passes these offline checks.
+
+Gateway turn evidence preserves provider order: the tool-selecting request record precedes its result record, while independent turns may interleave. Qualification checks the pinned tool ID, name, MCP source, server and workload-tool identity before normalization. Synthetic and retained-v4 controls reject reversed observations and missing or substituted routing fields in every turn; the unchanged recorded campaign still passes offline evaluation.
+
+Every supplied ownership `settled` snapshot must report literal `false` for `poisoned`; true, missing and mistyped state cannot support a healthy-service claim. Supplied snapshots must also carry typed active/session state and a correlated exchange; their active flag must agree with established binding activity bounds. Intervals after cancellation while cleanup may still be active remain uncertain rather than being inferred from callback timing. Raw ownership results and MAF text are strictly decoded before normalization, and a raw successful result must carry one JSON text mirror exactly matching its structured content with an absent-or-literal-false error flag. The same strict decoding applies to busy responses, policy-response evidence and withheld results. Raw ownership, policy positive controls and withheld responses share an exact typed JSON text-mirror check; successful typed binding observations and completed-cleanup fault controls verify the same mirror before retaining normalized fields. The Gateway cleanup-failure projection must also carry matching text, the expected route identity and a literal tool-error flag when present. These controls reject duplicate keys and nonfinite values before discarded fields can hide them. Ownership correlation also requires one well-formed 32-character lowercase hexadecimal observer boot ID across all recorded events. Missing, malformed or substituted runtime identities cannot connect a survivor result, request, admission, retirement or observer snapshot to another service instance. Synthetic and retained-v4 controls cover every observed event class and all five survivor scenarios; the unchanged v4 evidence still passes offline evaluation.
+
+
+## Bounded actor-loss qualification (2026-10-20)
+
+The #1973 campaign selects `owner-loss-windows-v1` on the installed published worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1. The candidate records OpenClaw 2026.9.7, Python 3.13.15, Node 26.8.1, Windows build 10.0.26220 and Docker 29.8.2 with a Linux engine. Qualification sources are frozen at `46457d9f`; the [retained candidate and evidence](../../../scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1/README.md) bind their complete hashes, image identities, configuration and dependency inventories. The canonical candidate digest is `01c302cfa02f341cb149da075a86d28285cfd8e0a04e372103c5c3bad4a1eeb0`.
+
+A fresh eight-group installed-Bicep baseline, campaign `07275a0ad4df43aa8fa673cb12e35269`, qualified this candidate before faults. Fault campaign `48d6fda50c654d76acc81494eb733401` passed all fifteen required case checks. Preflight and postflight inventory matched the candidate, and independent evaluation of the retained repository copy returned `qualified_for_profile` for all fifteen cases. The same offline evaluation runs in the regression suite.
+
+| Cases | Observed dispatch and caller behavior | Recovery and isolation |
+|---|---|---|
+| Unbroken control | Valid Gateway result through the external HTTP caller | Confirmed cleanup and unrelated sentinel survival |
+| Gateway loss at all four barriers | One target dispatch in each case; caller connection reset; no replay | Surviving service settled, retained sibling session completed valid work, owned resources empty |
+| Caller loss at all four barriers | Caller terminated; one target dispatch in each case; no replay | Gateway survived, service settled, pre-existing Gateway sibling session completed valid work |
+| Worker loss before admission | Zero target dispatches; Gateway returned HTTP 200 to the caller | No orphan observed; same-owner replacement recovered with a new runtime/session |
+| Worker loss during compilation or cleanup | One target dispatch; one orphan observed after worker exit in each case | Replacement removed the orphan before readiness; old authority could not affect new work |
+| Worker loss after completion with response held | One target dispatch; no orphan remained | Delivery loss did not imply non-execution; new worker/session completed fresh control work |
+| Worker recovery with Docker unavailable or removal denied | One target dispatch and one retained orphan in each case; replacement exited nonzero without readiness | Restoring the scoped control allowed same-owner cleanup and replacement readiness; dedicated denial daemon was removed |
+
+Every worker replacement rejected the old token with HTTP 401 and the old session with HTTP 404. Stale cancellation and DELETE also received 404 while a fresh compiler call remained active. The active probe uses a deliberately large source: its incomplete verdict is retained, with confirmed cleanup and no cancellation, rather than presented as a valid compilation. Separate simple control and sibling calls returned valid results. Token rotation was an explicit operator action; the experiment adds no automatic rotation or restart mechanism. HTTP 200 from Gateway after worker loss is a caller transport observation, not proof of successful workload completion.
+
+Case durations ranged from 84.45 to 185.93 seconds, including setup and cleanup; these are observations, not recovery guarantees. All actor targets were identified process handles inside the test supervisor's job, and the other actors remained alive at the fault boundary. Each case confirmed stopped process trees, empty owned resource scopes, unrelated sentinel survival and final sentinel removal. Independent fallback cleanup removed no worker leftovers. The live denial used mutual TLS and correlated the denied container, client and nonce against the real daemon authorization decisions; the parent daemon remained unchanged.
+
+The retained development inventory preserves collector failures and successful probes separately. An earlier baseline that overlapped qualification-source changes is explicitly excluded without rewriting its original reported outcome. A fresh baseline and the final fault campaign supply the accepted evidence; no earlier stage is transplanted. The offline regression evaluates the retained baseline and complete fault bundle, while rejection controls cover shortened inventories, changed artifacts, lost correlation, replay, expired barriers, stale generations and uncertain cleanup.
+
+This is finite Windows/Docker evidence with a deterministic provider. Host power loss, arbitrary descendants, independent watchdogs, other platforms, native MXC (#1974), real-model behavior, credential delegation and orphan expiry (#1952), and production acceptance remain unqualified. Additional tools remain deferred in #1639; #1642 owns the broader backend design. Historical reports are unchanged.
+
+
+Offline settlement acceptance additionally joins the summary to one unambiguous target `tools/call` exchange, its POST terminal after the fault and an inactive, healthy registry snapshot from the same worker runtime. Both the request and terminal must preserve the target identity and ordering. Synthetic controls and mutations of all eight surviving-worker case records reject unrelated GET terminals, substituted runtimes/sessions, unhealthy terminals and reversed request order. The retained campaign still passes; this is stronger evaluation of its original observations, not a new live campaign or qualification of changed runner bytes.
+
+
+Target admissions are counted across the complete transport trace, so a replay cannot occupy a presumed sibling slot. Surviving sibling work must use the original worker runtime and a separate pre-fault session: the direct session initialized between the control and target for Gateway loss, or the control Gateway session and distinct correlated turns for caller loss. Raw requests, binding results, initialization responses and provider projections support those identities; a result must precede its observation. Retained-case mutations reject substituted or coherently replaced identities and missing supporting records. These offline checks preserve the recorded campaign and its original candidate boundary.
+
+The owner-loss supervisor checks outer logs, auxiliary logs and transport records again after process-tree shutdown and independent resource cleanup. Output emitted before the first poll, during shutdown or by cleanup cannot bypass the budget; a refusal is retained while independent resource cleanup still runs. Regression controls cover immediate exit, shutdown and cleanup writes at and above each limit. This runner change is locally tested and does not change the retained campaign's original source identity or qualify a new live candidate.
+
+Final observer, transport, provider and client traces are parsed strictly after owned writers stop. An unfinished last record, empty line, duplicate JSON key, nonfinite number or non-object record refuses collection instead of disappearing from the accepted evidence. Only the control case may omit its unused client trace. Live polling still tolerates an in-progress final line; that tolerance does not apply to the retained snapshot.
+
+Independent cleanup uses the case's isolated Docker environment for inventory, inspection, removal and the final empty-inventory check. Parent home-directory configuration, TLS variables and custom headers cannot silently select another engine for this observer; explicit host, context and config selections are retained consistently with the case launcher. The dedicated denial daemon continues to use its recorded local endpoint and verified ownership identity.
+
+An operator interrupt stops the campaign after the current cleanup attempt and retained failure record; no later case starts. Interruptions during process cleanup or independent resource cleanup are retained as unconfirmed cleanup, never success. A prior case failure cannot mask a later interrupt and allow the campaign to continue.
+
+
+## Linux Gateway-to-Docker sample (2026-10-26)
+
+The maintainer selected Docker adoption while #2104 waits upstream. [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) exercised the existing [two-turn sample](../../../samples/experimental/openclaw_bicep_e2e/README.md) through a real Linux OpenClaw Gateway, an installed MCP worker wheel and the Docker backend. The provider was deterministic; it supplied tool requests, while the actual compiler results came back through Gateway. No MXC component or new workload tool was involved.
+
+The accepted attempt ran from `2026-10-25T23:36:41.6010017Z` to `2026-10-25T23:40:08.2284338Z` and its controller exited zero. Its Linux controller used Docker Desktop on Windows, with Linux kernel `7.0.14-linuxkit`, x86-64 and glibc 2.36. The controller had two CPUs, 6 GiB memory, a 512-process limit and Docker's init process for orphan reaping. It had access to the Docker socket as a trusted operator; this controller is not a sandbox for untrusted code. The Bicep workloads retained the existing closed-network worker policy. No host checkout or credentials were mounted into the controller: selected sample files and the wheel were copied in, and runtime output stayed in a dedicated Docker volume outside the checkout.
+
+| Candidate | Observed identity |
+|---|---|
+| Repository source | `a9bf6d61f4425d2ab0d06d598744dc457e930e92`, with the sample dependency-pin correction; unchanged sample helpers and fixtures from that revision |
+| Executed `agent.py` SHA-256 | `46b7631f3cefb16b735fb30b0f89c13a2b03846e2501a2c5cb532f5a68152613` |
+| Built worker wheel | `maf-sandbox-mcp` 0.2.0; SHA-256 `05ffe6f84a82dc17d636f80486a4a1147b2f8ae3e2f44a02c0618e7790b9312d`; installed module hashes matched the wheel |
+| Published Python dependencies | Core 0.51.1, Bicep 0.24.0, Docker backend 0.29.0, MAF core 1.22.0, MCP 1.30.0, Uvicorn 0.54.0 and Starlette 1.7.0; complete resolved inventory retained in the private report |
+| Gateway and runtimes | OpenClaw 2026.9.7, Node 26.8.1, Python 3.13.15, uv 0.12.5 |
+| Docker client and daemon | 29.9.2; daemon `linux/amd64`, Docker Desktop |
+| Controller image | `sha256:f67493da09d9d71abf7fd706d16f7ab3a073aefdeff3f954dd1fed0a76062f53` |
+| Bicep image | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+| Acceptance observation | Result |
+|---|---|
+| Original turn | One actual tool call, `completed: true`, `verdict: invalid`, `cleanup: confirmed`; source SHA-256 `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf` |
+| Repair turn | One actual tool call, `completed: true`, `verdict: valid`, `cleanup: confirmed`; source SHA-256 `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7` |
+| Identity | Both projected results matched the submitted source, compiler configuration and selected image |
+| Final service cleanup | `processes_stopped: true`; absent owned POSIX process groups; `cleanup_errors: []` |
+| Owner cleanup | `owned_empty: true`, `owner_lock_released: true`; a separate host-side Docker inventory after controller exit also found zero containers in the exact worker scope |
+| Final sample result | `passed: true`, `mode: smoke`, `actual_model: false`; no emergency workload purge |
+
+The private final report SHA-256 is `d5d0c4628fe287814d9f3865b22375e27d97c959bad02ce114e82d05a65e341c`; the observed tool-evidence stream SHA-256 is `2b1fe8946784095a2045967c30fd9443f3de70b92ca888aa8461cde7f9987f12`. Raw credentials, session output and JSON remain outside the repository. These hashes identify retained evidence, not independently reproducible proofs by themselves. After retaining the diagnostics, the stopped controllers and dedicated output volume were removed after checking their ownership labels; final inventories found neither remaining.
+
+### Setup failures retained separately
+
+The unchanged sample pinned core 0.48.0, Bicep 0.22.2, Docker 0.27.0 and MAF 1.20.0, which cannot satisfy the current worker 0.2.0 wheel. A dry resolver run exited 1 before installation; its retained diagnostic SHA-256 is `a80447994ab857143ff6da5c17356620dcf615f8c07d7e4e3496a6e0554e45db`. The correction selects the published compatible versions in the candidate table. The subsequent clean Linux installation and wheel-to-installed-module comparison supplied compatibility evidence without tying sample pins to a future package release's unshipped metadata.
+
+The first controller creation stalled while using a Windows temporary-directory bind mount and was interrupted before a controller was available. Copying inputs avoided that delay; its cause was not established. The next controller exited 1 before setup because the copied sample directory was too shallow for its repository-relative output guard (`HERE.parents[2]`). That controller log has SHA-256 `8d3e1e4a5f79cf9e7147696ad53c853bce4c1998858c7b0fae57ad8480045a5e`. Preserving the sample's directory hierarchy fixed the test setup. Neither attempt started Gateway or a Bicep workload, and neither is counted as qualified execution.
+
+### Reproduction boundary
+
+Use the sample's documented POSIX command with its pinned dependencies and prepared image. To reproduce the recorded controller environment, build this Dockerfile in a private directory; the observed Python resolution was 3.13.15:
+
+```dockerfile
+FROM ghcr.io/astral-sh/uv@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
+FROM docker@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker
+FROM node@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e
+COPY --from=uv /uv /usr/local/bin/uv
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install 3.13
+WORKDIR /work
+```
+
+Create a named controller with `--init --cpus 2 --memory 6g --pids-limit 512`, an exclusive output volume at `/work` and the operator's Docker socket. Copy the worker wheel to `/input/maf_sandbox_mcp-0.2.0-py3-none-any.whl` and the sample directory to `/input/checkout/samples/experimental/openclaw_bicep_e2e` before starting it. Run `uv run --no-project --python 3.13 /input/checkout/samples/experimental/openclaw_bicep_e2e/agent.py --wheel /input/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image <the-pinned-image-above> --output /work/<fresh-attempt>`. The Bicep image must already exist on the selected daemon. Read the sample's final report and independently inspect the recorded owner scope before removing only the controller and volume created for this attempt; retain private diagnostics first. The copied layout, fresh output directory and init process are part of this tested profile.
+
+This establishes the complete deterministic sample path on the recorded Linux-on-Docker-Desktop candidate. It does not qualify a native Linux host, other POSIX systems, a real model, newer OpenClaw versions, arbitrary escaping descendants, host power loss, unattended recovery, delegated egress, additional tools or production operation. The Windows owner-loss campaign remains separate evidence and is not transplanted to this Linux profile.
+
+
+## GitHub-hosted Linux sample (2026-10-27)
+
+Following #2191, the maintainer requested the same sample on a GitHub-hosted runner. [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) tracks direct execution on `ubuntu-24.04`, using the existing Docker backend and deterministic provider. This is separate from the earlier Linux controller on Docker Desktop and from the Windows owner-loss campaign.
+
+The opt-in `openclaw_bicep=true` dispatch of `docker-live.yml` builds the worker wheel from the selected source and runs the sample outside a job container. Normal Docker suites remain the default. Private state stays under runner temporary storage; only selected result fields, runtime and artifact identities, hashes and an independent exact-owner Docker inventory are uploaded as Markdown. Raw reports and sessions are not retained as public artifacts.
+
+The first [dispatch, 40428384156](https://github.com/sokolaidev/maf-extensions/actions/runs/40428384156), at `ca01fab21de811d33df5ece3ba3e13d88407a521`, was cancelled while pending with no jobs created. A newer `main` run entered the shared Docker concurrency group immediately afterward. This supplied no workload evidence. The opt-in sample now uses its own concurrency group with cancellation of active runs disabled, preserving the normal Docker group's behavior.
+
+The replacement [run 40429831275, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40429831275), passed at source `11f45bb15621442bd79d3e086170deca98883c17`. The [Ubuntu job](https://github.com/sokolaidev/maf-extensions/actions/runs/40429831275/job/121944537870) ran from `2026-10-27T00:59:24Z` to `2026-10-27T01:00:39Z`, including setup and collection. The normal Docker jobs and failure reporter were skipped as intended. A successful workflow result is accompanied by the measured sample observations below.
+
+| Candidate | Observed identity |
+|---|---|
+| Host | GitHub-hosted `ubuntu-24.04`, runner image `20261023.334.3`, Linux `6.17.0-1022-azure`, x86-64, glibc 2.39; no job container |
+| Gateway and runtimes | OpenClaw 2026.9.7, Node 26.8.1, worker Python 3.13.15, uv 0.12.5 |
+| Docker | Docker Engine Community 28.0.4, API 1.48; containerd v2.4.1 and runc 1.5.2 |
+| Executed sample SHA-256 | `46b7631f3cefb16b735fb30b0f89c13a2b03846e2501a2c5cb532f5a68152613` |
+| Built worker wheel | `maf-sandbox-mcp` 0.2.0, SHA-256 `05ffe6f84a82dc17d636f80486a4a1147b2f8ae3e2f44a02c0618e7790b9312d`; installed module hashes matched the wheel |
+| Pulled compiler reference | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Observed local compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3`; both tool results matched this local identity |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+The first turn made one actual compiler call and returned `completed: true`, `verdict: invalid`, `cleanup: confirmed`, with source SHA-256 `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf`. The second made one actual call and returned `completed: true`, `verdict: valid`, `cleanup: confirmed`, with repaired-source SHA-256 `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7`.
+
+Final sample flags were `passed: true`, `owned_empty: true`, `owner_lock_released: true` and `processes_stopped: true`, with zero cleanup errors. The existing POSIX supervisor required owned process-group absence, and the worker lock was independently reacquired. The hosted collector's separate Docker inventory also found zero containers in the exact owner scope. No emergency workload purge was needed. `mode: smoke` and `actual_model: false` remain explicit.
+
+The bounded Markdown artifact SHA-256 is `1adfb8c8f255f67c61fd5890221d96243eea93cda3e6278f9640c46fbecf94b2`. It records raw-report SHA-256 `85f0747d48022130bff31a1dec1e7856e29e028d6747e2a86d7503e1a5861b62` and tool-evidence SHA-256 `06601a78d305c50c4ab4facf9cbf19d65561fc2c606eda72a84fe3afd6ea280c` without publishing those private files. The Actions artifact has 30-day retention; the candidate and dependency inventory below remain in this document. Hashes identify observed bytes, not independent proof after private state is discarded.
+
+### Installed dependency inventory
+
+| Distribution | Version |
+|---|---|
+| `agent-framework-core` | `1.22.0` |
+| `annotated-types` | `0.8.0` |
+| `anyio` | `4.15.1` |
+| `attrs` | `26.1.0` |
+| `certifi` | `2026.10.23` |
+| `cffi` | `2.1.1` |
+| `click` | `8.5.0` |
+| `cryptography` | `50.0.2` |
+| `h11` | `0.16.0` |
+| `httpcore` | `1.0.9` |
+| `httpx` | `0.28.1` |
+| `httpx-sse` | `0.4.3` |
+| `idna` | `3.20` |
+| `jsonschema` | `4.26.0` |
+| `jsonschema-specifications` | `2025.9.1` |
+| `maf-sandbox` | `0.51.1` |
+| `maf-sandbox-bicep` | `0.24.0` |
+| `maf-sandbox-docker` | `0.29.0` |
+| `maf-sandbox-mcp` | `0.2.0` |
+| `mcp` | `1.30.0` |
+| `msgspec` | `0.22.0` |
+| `opentelemetry-api` | `1.45.1` |
+| `pycparser` | `3.12` |
+| `pydantic` | `2.14.1` |
+| `pydantic-settings` | `2.16.1` |
+| `pydantic_core` | `2.50.1` |
+| `PyJWT` | `2.15.1` |
+| `python-dotenv` | `1.2.4` |
+| `python-multipart` | `0.0.32` |
+| `PyYAML` | `6.0.3` |
+| `referencing` | `0.37.0` |
+| `regex` | `2026.9.29` |
+| `rpds-py` | `2026.9.1` |
+| `sse-starlette` | `3.6.0` |
+| `starlette` | `1.7.0` |
+| `typing-inspection` | `0.4.4` |
+| `typing_extensions` | `4.16.0` |
+| `uvicorn` | `0.54.0` |
+
+This qualifies the existing deterministic sample on the recorded GitHub-hosted Ubuntu candidate. It does not qualify every Linux host, a real model, newer OpenClaw or dependency versions, the Windows owner-loss matrix on Linux, arbitrary escaping descendants, unattended recovery, delegated egress, MXC or production operation. The earlier Docker Desktop and Windows records retain their own candidate boundaries.
 
 ## GitHub-hosted real-model profile (2026-10-28)
 
