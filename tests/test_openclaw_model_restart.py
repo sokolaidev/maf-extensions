@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 from typing import Any
 
 import pytest
 from test_openclaw_e2e_sample import CONFIG, IMAGE, TURN, agent, messages, record
-from test_openclaw_hosted_report import report
+from test_openclaw_hosted_report import model_sample, report
 
 recovery_accepted = report.recovery_accepted
 
@@ -214,3 +215,48 @@ def test_collector_refuses_incomplete_recovery(mutation: str) -> None:
     else:
         result["events"][1]["time_ns"] = result["events"][0]["time_ns"]
     assert not recovery_accepted(result)
+
+
+@pytest.mark.parametrize("mutation", ["valid", "missing-removal", "foreign-owner", "before-ready"])
+def test_collector_rechecks_retained_container_events(
+    tmp_path: Any, monkeypatch: Any, mutation: str
+) -> None:
+    recovery, _ = complete()
+    value = model_sample()
+    value["turns"][1]["calls"] = 1
+    value["recovery"] = recovery.result()
+    value["recovery"]["containers"] = {"created": 2, "destroyed": 2}
+    value["recovery"]["private"] = "PRIVATE_SENTINEL"
+    value["recovery"]["events"][0]["private"] = "PRIVATE_SENTINEL"
+    (tmp_path / "owner").mkdir()
+    (tmp_path / "owner/owner").write_text("a" * 32)
+    (tmp_path / "report.json").write_text(json.dumps(value))
+    (tmp_path / "tool-evidence.jsonl").write_text("private")
+    items = events()
+    ready = value["recovery"]["events"][2]["time_ns"]
+    for item in items:
+        item["timeNano"] += ready
+        item["Actor"]["Attributes"]["maf-sandbox.scope"] = "openclaw-bicep-" + "a" * 32
+    if mutation == "missing-removal":
+        items.pop()
+    elif mutation == "foreign-owner":
+        items[0]["Actor"]["Attributes"]["maf-sandbox.scope"] = "foreign"
+    elif mutation == "before-ready":
+        items[0]["timeNano"] = ready
+    (tmp_path / "docker-events.jsonl").write_text("\n".join(map(json.dumps, items)))
+    monkeypatch.setattr(report, "command", lambda *args: "")
+    public, accepted = report.collect(tmp_path, "model", worker_restart=True)
+    assert accepted is (mutation == "valid")
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+    assert not report.observations(value, "model")[1]
+
+
+@pytest.mark.parametrize("mode,platform", [("smoke", "linux"), ("model", "win32")])
+def test_restart_requires_explicit_native_linux_model_mode(
+    tmp_path: Any, monkeypatch: Any, mode: str, platform: str
+) -> None:
+    monkeypatch.setattr(agent.sys, "platform", platform)
+    output = tmp_path / "private"
+    with pytest.raises(RuntimeError, match="real-model mode on native Linux"):
+        agent.run(argparse.Namespace(mode=mode, worker_restart=True, output=output))
+    assert not output.exists()

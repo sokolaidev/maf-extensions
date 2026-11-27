@@ -525,9 +525,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             def stop_worker() -> None:
                 require(not containers(), "Fault must precede compiler admission")
                 require(gateway.poll() is None, "Gateway exited before the worker fault")
+                require(original_worker.poll() is None, "Worker exited before fault injection")
                 os.killpg(original_worker.pid, signal.SIGKILL)
                 require(processes.wait_empty(original_worker, 10), "Worker group survived fault")
                 original_worker.wait(timeout=10)
+                require(original_worker.returncode == -signal.SIGKILL, "Unexpected worker exit")
                 worker_log.close()
                 processes.children.remove((original_worker, worker_log))
                 require(not containers(), "Fault left an unexpected compiler container")
