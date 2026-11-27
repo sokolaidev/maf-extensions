@@ -178,7 +178,8 @@ def check_container_events(
         target = event.get("Actor", {}).get("ID")
         stamp = event.get("timeNano")
         require(isinstance(target, str) and len(target) == 64, "Missing container identity")
-        require(type(stamp) is int and stamp > ready_ns, "Execution predates worker readiness")
+        if type(stamp) is not int or stamp <= ready_ns:
+            raise RuntimeError("Execution predates worker readiness")
         collection = creates if event["Action"] == "create" else destroys
         require(target not in collection, "Repeated container lifecycle event")
         collection[target] = stamp
