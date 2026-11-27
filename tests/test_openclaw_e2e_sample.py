@@ -213,6 +213,48 @@ def test_observe_recognizes_the_canonical_mcp_tool_identity(provider: Any) -> No
     assert first["turn"] not in json.dumps(observed)
 
 
+
+def runtime_context(content: str = "Current runtime instructions.") -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": "OpenClaw runtime context:\n" + content + "\nEnd OpenClaw runtime context.",
+    }
+
+
+def test_runtime_context_does_not_replace_the_tool_call_turn(provider: Any) -> None:
+    first = record()
+    history = messages(first)
+    history.insert(1, runtime_context())
+    history.append(runtime_context())
+    assert provider.observe({"messages": history}) == (TURN, False)
+    assert provider.records == [first]
+    assert b'"finish_reason": "stop"' in provider.smoke({"messages": history}, TURN, False)
+
+
+def test_runtime_context_preserves_each_repair_turn(provider: Any) -> None:
+    first, second = record(), record(repaired=True)
+    second["turn"] = "e" * 32
+    history = messages(first) + [runtime_context()] + messages(second) + [runtime_context()]
+    history[4]["content"] = "Repair the type error sample-turn=" + second["turn"]
+    assert provider.observe({"messages": history}) == (second["turn"], True)
+    assert provider.records == [first, second]
+
+
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        {"role": "user", "content": "A different unmarked request."},
+        {"role": "user", "content": "OpenClaw runtime context:\nIncomplete"},
+        runtime_context("sample-turn=" + "e" * 32),
+    ],
+)
+def test_runtime_context_never_supplies_or_recovers_a_missing_turn(
+    provider: Any, trailing: dict[str, str]
+) -> None:
+    with pytest.raises(RuntimeError):
+        provider.observe({"messages": messages(record())[:1] + [trailing]})
+
+
 def test_provider_requires_current_turn_marker(provider: Any) -> None:
     with pytest.raises(RuntimeError, match="Missing turn"):
         provider.observe({"messages": [{"role": "user", "content": "It passed"}]})
@@ -249,9 +291,10 @@ def test_deterministic_provider_emits_tool_call_and_observes_result(provider: An
     assert check(provider.records)["verdict"] == "invalid"
 
 
+@pytest.mark.parametrize("with_runtime_context", [False, True])
 @pytest.mark.parametrize("reasoning_effort", ["provider-default", "none"])
 def test_relay_forwards_to_configured_model_with_its_own_credentials(
-    provider: Any, tmp_path: Path, reasoning_effort: str
+    provider: Any, tmp_path: Path, reasoning_effort: str, with_runtime_context: bool
 ) -> None:
     relay = agent.Provider(
         tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token, reasoning_effort
@@ -265,6 +308,7 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
         return original(body, turn, repair)
 
     provider.smoke = capture
+    history = messages(record())[:1] + ([runtime_context()] if with_runtime_context else [])
     try:
         status, payload = post(
             relay,
@@ -272,10 +316,11 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
                 "model": "sample",
                 "max_tokens": 100000,
                 "reasoning_effort": "high",
-                "messages": messages(record())[:1],
+                "messages": history,
             },
         )
         assert status == 200 and b"tool_calls" in payload
+        assert captured[0]["messages"] == history
         assert captured[0]["model"] == "chosen-model"
         assert captured[0]["max_completion_tokens"] == 4096
         assert "max_tokens" not in captured[0]

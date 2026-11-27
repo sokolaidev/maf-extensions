@@ -584,9 +584,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 provider.close()
             except Exception as exc:
                 report["cleanup_errors"].append("Provider cleanup: " + type(exc).__name__)
-            report["provider"] = provider.observations()
-            report["provider_diagnostic_reasons"] = provider.diagnostic_reasons
-            report["provider_diagnostic_shapes"] = provider.diagnostic_shapes
+            if args.mode == "model":
+                report["provider"] = provider.observations()
         try:
             if not scope and (root / "owner/owner").exists():
                 owner = (root / "owner/owner").read_text().strip()

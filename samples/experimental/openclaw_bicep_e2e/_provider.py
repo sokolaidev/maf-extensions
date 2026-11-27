@@ -21,6 +21,26 @@ MAX_REQUESTS = 32
 MAX_COMPLETION_TOKENS = 4096
 
 
+def conversation_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude the pinned Gateway's runtime envelope from fixture turn accounting."""
+    result = []
+    for message in messages:
+        content = message.get("content")
+        if (
+            message.get("role") == "user"
+            and isinstance(content, str)
+            and content.startswith("OpenClaw runtime context:\n")
+        ):
+            require(
+                content.endswith("\nEnd OpenClaw runtime context.")
+                and "sample-turn=" not in content,
+                "Invalid runtime context envelope",
+            )
+            continue
+        result.append(message)
+    return result
+
+
 class Provider:
     def __init__(
         self,
@@ -43,8 +63,6 @@ class Provider:
         self.response_models: set[str] = set()
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
-        self.diagnostic_reasons: list[str] = []
-        self.diagnostic_shapes: list[list[dict[str, Any]]] = []
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -76,13 +94,6 @@ class Provider:
                     self.wfile.write(payload)
                 except Exception as exc:
                     provider.errors.append(type(exc).__name__)
-                    allowed = {
-                        "Unknown provider route", "Provider authorization failed",
-                        "Provider request exceeds bounds", "Incomplete provider request",
-                        "Model request budget exhausted", "Missing turn identity",
-                        "Tool identity was reused", "Tool call has no turn identity",
-                    }
-                    provider.diagnostic_reasons.append(str(exc) if str(exc) in allowed else type(exc).__name__)
                     self.send_error(502, "Sample provider failed; no acceptance recorded")
 
             def log_message(self, format: str, *args: Any) -> None:
@@ -107,23 +118,10 @@ class Provider:
             self.server.server_close()
 
     def observe(self, body: dict[str, Any]) -> tuple[str, bool]:
-        messages = body["messages"]
+        messages = conversation_messages(body["messages"])
         user = next(message for message in reversed(messages) if message["role"] == "user")
         text = str(user["content"])
         marker = re.search(r"sample-turn=([0-9a-f]{32})(?![0-9a-f])", text)
-        if marker is None:
-            self.diagnostic_shapes.append([
-                {
-                    "role": message.get("role"),
-                    "content_type": type(message.get("content")).__name__,
-                    "has_turn_prefix": "sample-turn=" in str(message.get("content")),
-                    "turn_marker_count": len(re.findall(r"sample-turn=([0-9a-f]{32})(?![0-9a-f])", str(message.get("content")))),
-                    "has_validation_prompt": "Use the Bicep validation tool" in str(message.get("content")),
-                    "has_repair_prompt": "Repair the type error" in str(message.get("content")),
-                    "has_summary_prompt": "summar" in str(message.get("content")).lower(),
-                }
-                for message in messages
-            ])
         require(marker is not None, "Missing turn identity")
         assert marker is not None
         turn = marker[1]
@@ -174,7 +172,7 @@ class Provider:
         return turn, "Repair the type error" in str(user["content"])
 
     def smoke(self, body: dict[str, Any], turn: str, repair: bool) -> bytes:
-        if body["messages"][-1]["role"] == "tool":
+        if conversation_messages(body["messages"])[-1]["role"] == "tool":
             delta: dict[str, Any] = {"role": "assistant", "content": "Compiler result received."}
             reason = "stop"
         else:

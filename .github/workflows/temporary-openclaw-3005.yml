@@ -22,6 +22,11 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.8.1'
+      - name: Check provider regressions
+        run: |
+          uv run --no-project --with pytest --with ruff python -m pytest -q -o addopts='' tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
+          uv run --no-project --with ruff ruff check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
+          uv run --no-project --with ruff ruff format --check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
       - name: Verify exact npm candidate metadata
         run: |
           python3 - <<'PY'
@@ -73,34 +78,6 @@ jobs:
           for item in list(result.values()):
               if isinstance(item, dict):
                   item["unrecognized_keys"] = [re.findall(r'"([A-Za-z][A-Za-z0-9_.-]{0,60})"', line) for line in item["unrecognized_keys"]][:10]
-          config = json.loads((root / "state/openclaw.json").read_text()) if (root / "state/openclaw.json").exists() else {}
-          secret_values = []
-          def secrets(value):
-              if isinstance(value, dict):
-                  for key, child in value.items():
-                      if key.lower() in ("token", "apikey", "authorization") and isinstance(child, str):
-                          secret_values.append(child)
-                      secrets(child)
-              elif isinstance(value, list):
-                  for child in value:
-                      secrets(child)
-          secrets(config)
-          gateway = (root / "gateway.log").read_text(errors="replace")
-          errors = []
-          for line in gateway.splitlines():
-              if "Error:" not in line:
-                  continue
-              line = line.split("Error:", 1)[1].strip()
-              for value in secret_values:
-                  line = line.replace(value, "<redacted>")
-              line = re.sub(r"https?://\S+", "<url>", line)
-              line = line.replace(str(root), "<private-state>")
-              line = re.sub(r"\b[0-9a-f]{32,}\b", "<id>", line)
-              errors.append(line[:300])
-          result["gateway_error_summaries"] = errors[:4]
-          result["provider"] = {key: report.get("provider", {}).get(key) for key in ("requests", "error_count", "function_calls", "observed_bicep_results")}
-          result["provider_diagnostic_reasons"] = report.get("provider_diagnostic_reasons", [])[:8]
-          result["provider_diagnostic_shapes"] = report.get("provider_diagnostic_shapes", [])[:2]
           print(json.dumps(result, indent=2))
           PY
       - name: Record installed npm identity
