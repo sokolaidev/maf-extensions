@@ -62,9 +62,9 @@ jobs:
               text = path.read_text(errors="replace")
               result[name] = {
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                  "error_codes": sorted(set(re.findall(r"\\b(?:ERR_[A-Z_]+|EACCES|ENOENT|EINVAL|ETARGET|ECONNREFUSED)\\b", text))),
+                  "error_codes": sorted(set(re.findall(r"\b(?:ERR_[A-Z_]+|EACCES|ENOENT|EINVAL|ETARGET|ECONNREFUSED)\b", text))),
                   "markers": [item for item in ("Invalid config", "Unrecognized key", "Unknown config", "Cannot find module", "Cannot find package", "Gateway failed", "requires Node", "plugins.enabled", "controlUi", "chatCompletions", "mcp", "TypeError", "SyntaxError", "Error:") if item in text],
-                  "unrecognized_keys": re.findall(r'Unrecognized keys?:?[^\\n]*', text),
+                  "unrecognized_keys": re.findall(r'Unrecognized keys?:?[^\n]*', text),
               }
           report = json.loads((root / "report.json").read_text())
           errors = ("A sample process exited; inspect its private log", "Readiness timed out; inspect private logs")
@@ -72,7 +72,7 @@ jobs:
           # Config validation keys are schema identifiers, not values.
           for item in list(result.values()):
               if isinstance(item, dict):
-                  item["unrecognized_keys"] = [re.sub(r"[^A-Za-z0-9_.,: \\"'-]", "", line)[:240] for line in item["unrecognized_keys"]][:10]
+                  item["unrecognized_keys"] = [re.findall(r'"([A-Za-z][A-Za-z0-9_.-]{0,60})"', line) for line in item["unrecognized_keys"]][:10]
           print(json.dumps(result, indent=2))
           PY
       - name: Record installed npm identity
