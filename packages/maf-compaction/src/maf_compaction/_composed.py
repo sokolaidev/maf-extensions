@@ -33,6 +33,7 @@ import json
 import logging
 import threading
 from bisect import bisect_left
+from collections import Counter
 from collections.abc import AsyncGenerator, Callable, Collection, Generator, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
@@ -291,6 +292,32 @@ class _PreparedMerge:
     searched_guarded: bool | None = None
 
 
+#: The detail field a merge event names its reason in.
+MERGE_EVENT_REASON_FIELD: Final[str] = "reason"
+PASS_MODE_CARRIED: Final[str] = "carried view"
+PASS_MODE_SAVED: Final[str] = "saved view"
+PASS_MODE_RESTORED: Final[str] = "restored"
+PASS_MODE_CONTINUED: Final[str] = "continued"
+PASS_MODE_FULL: Final[str] = "full"
+
+
+def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
+    """How a pass came by the list it starts from, for the pass's summary line.
+
+    ``carried`` is the view the previous call's pass left in memory, ``saved`` a turn's saved
+    layout. A pass that could use neither starts from the stored history and puts every earlier
+    decision back.
+    """
+    if resumed is not None:
+        source = PASS_MODE_CARRIED if carried else PASS_MODE_SAVED
+        return f"{source} {PASS_MODE_RESTORED if resumed.restored else PASS_MODE_CONTINUED}"
+    if carried:
+        return f"{PASS_MODE_FULL} ({PASS_MODE_CARRIED} declined)"
+    if saved:
+        return f"{PASS_MODE_FULL} ({PASS_MODE_SAVED} declined)"
+    return f"{PASS_MODE_FULL} (nothing carried or saved)"
+
+
 class _RecordMergeWork:
     """Prepare isolated record answers; only a foreground pass may accept them."""
 
@@ -474,6 +501,7 @@ class _RecordMergeWork:
             with steps_locked(steps):
                 await worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
         finally:
+            worker._log_merge_events("Compaction background worker finished")  # pyright: ignore[reportPrivateUsage]
             worker._background_records = None  # pyright: ignore[reportPrivateUsage]
             worker._record_answer_ready = None  # pyright: ignore[reportPrivateUsage]
             worker._record_work_current = None  # pyright: ignore[reportPrivateUsage]
@@ -1326,6 +1354,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._kept_records: dict[tuple[str, int | None], str] = {}
         # Content caches can be reused only where current reasoning guards permit edits.
         self._reshaped: set[str] = set()
+        # Merge events sent since the last summary line, by name and reason code.
+        self._merge_event_counts: Counter[str] = Counter()
+        self._merge_event_lock = threading.Lock()
         # Only source-bound decisions may replay across retained reasoning.
         self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
@@ -1370,6 +1401,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         # Every container it can write is its own, so its steps and the foreground's run on
         # worker threads side by side (_offload).
+        worker._merge_event_lock = threading.Lock()
         worker.tool_results = _worker_copy(self.tool_results)
         worker.tool_results.fallback = _worker_copy(self.tool_results.fallback)
         worker.user_turns = _worker_copy(self.user_turns)
@@ -1389,6 +1421,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker._background_requests = _BackgroundRequests(self.user_turns.summary_timeout_seconds)
         return worker
 
+    def _log_merge_events(self, prefix: str, *, mode: str | None = None) -> None:
+        """Log, at INFO, how many of each merge event this pass or worker sent, by reason code.
+
+        The events reach only an observer, so without this a host cannot see why background
+        merges stall: how many batches a worker selected, skipped and why, or whether it ran out
+        of time. Names and reason codes only, never values.
+        """
+        with self._merge_event_lock:
+            counts = sorted(self._merge_event_counts.items())
+            self._merge_event_counts.clear()
+        events = " ".join(f"{name}={count}" for name, count in counts) or "none"
+        if mode is None:
+            logger.info("%s: merge events: %s.", prefix, events)
+        else:
+            logger.info("%s: mode=%s; merge events: %s.", prefix, mode, events)
+
     def _merge_event(
         self,
         event: str,
@@ -1397,6 +1445,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         details: Mapping[str, int | str] | None = None,
         **counts: int | str,
     ) -> None:
+        reason = (details or {}).get(MERGE_EVENT_REASON_FIELD, counts.get(MERGE_EVENT_REASON_FIELD))
+        key = f"{event}[{reason}]" if isinstance(reason, str) else event
+        with self._merge_event_lock:
+            self._merge_event_counts[key] += 1
         observer = record_merge_observer.get()
         if observer is not None:
             try:
@@ -2117,6 +2169,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
         if resumed is not None and resumed.restored:
             self._calls_resumed += 1
+        mode = _pass_mode(
+            carried=carried is not None, saved=saved_view is not None, resumed=resumed
+        )
+        with self._merge_event_lock:
+            self._merge_event_counts.clear()
         # Handed back as the last pass left it, the list is no account of the stored messages.
         continuing = carried if resumed is not None and not resumed.restored else None
         self._settled = False
@@ -2145,6 +2202,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise
         finally:
             self._request_budget.reset(token)
+            self._log_merge_events("Compaction pass", mode=mode)
         if changed or resumed is not None:
             self._carried = await off_loop(CarriedView, handed, messages, continuing=continuing)
             if len(self._carried.view) == len(messages):
