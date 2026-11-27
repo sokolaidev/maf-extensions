@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import json
 import socket
-import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,9 +25,10 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
     probe, monkeypatch, tmp_path
 ):
     https = importlib.import_module("openshell_https_probe")
-    https.prepare_native_tls(tmp_path, "10.23.45.67")
+    tls_dir = tmp_path / "tls"
+    https.prepare_native_tls(tls_dir, "10.23.45.67")
     gate = https.HeldTLSResponse()
-    servers, events = https.native_tls_servers(tmp_path, ports=(0, 0, 0, 0), held_response=gate)
+    servers, events = https.native_tls_servers(tls_dir, ports=(0, 0, 0, 0), held_response=gate)
     port = servers[0].server_port
     host = "allowed.10.23.45.67.nip.io"
     original = socket.getaddrinfo
@@ -37,10 +37,9 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
         "getaddrinfo",
         lambda name, *args: original("127.0.0.1" if name == host else name, *args),
     )
-    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "ca.pem"))
-    namespace: dict = {"ssl": ssl}
-    exec(probe.GUEST_HTTPS, namespace)
-    get = namespace["transport_get"]
+    monkeypatch.setenv("SSL_CERT_FILE", str(tls_dir / "ca.pem"))
+    transport = probe.GuestHTTPS()
+    get = transport.get
     marker = "a" * 32
     url = f"https://{host}:{port}/provider/first?case={marker}&transport="
     try:
@@ -62,8 +61,8 @@ def test_owned_tls_holds_one_response_while_a_separate_socket_stays_idle(
         assert events[0]["origin_connection"] == events[2]["origin_connection"]
         assert events[0]["origin_connection"] != events[1]["origin_connection"]
     finally:
-        if namespace["idle_connection"] is not None:
-            namespace["idle_connection"].close()
+        if transport.idle_connection is not None:
+            transport.idle_connection.close()
         for server in servers:
             server.shutdown()
             server.server_close()

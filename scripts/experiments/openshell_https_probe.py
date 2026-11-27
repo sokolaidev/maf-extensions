@@ -309,7 +309,7 @@ class HeldTLSResponse:
 
     def release(self, marker):
         with self.lock:
-            if self.marker != marker or time.monotonic() >= self.deadline:
+            if self.marker != marker or self.event.is_set() or time.monotonic() >= self.deadline:
                 return False
             self.event.set()
             return True
@@ -373,12 +373,17 @@ def native_tls_servers(
                     if authorization is not None
                     else None
                 )
-            if transport:
+            if transport and held_response is not None:
                 row["origin_connection"] = self.origin_connection
                 if transport[2] == "held":
                     held_response.arm(transport[1])
             record(row)
-            if transport and transport[2] == "held" and not held_response.wait():
+            if (
+                transport
+                and held_response is not None
+                and transport[2] == "held"
+                and not held_response.wait()
+            ):
                 self.send_error(504, "TLS response hold expired")
                 return
             body = json.dumps(row).encode()
