@@ -20,6 +20,7 @@ from test_record_budget import _history, _Summarizer
 from test_session import Model, build_stack
 
 from maf_compaction import (
+    observe_record_merges,
     SessionCompactionRegistry,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
@@ -150,8 +151,9 @@ class _LoopModel(Model):
         return answer()
 
 
+@pytest.mark.parametrize("_attempt", range(10))
 @pytest.mark.parametrize("roundtrip", [False, True], ids=["same session", "saved and loaded"])
-async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundtrip):
+async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundtrip, _attempt):
     """Each run's last background answer used to be thrown away by its final reply, so the next
     run asked the same batch again; it is now applied by the end-of-run pass."""
     summarizer = _Summarizer()
@@ -175,10 +177,17 @@ async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundt
         return "lookup complete"
 
     agent = background_harness(registry, _LoopModel(), lookup)
+    events = []
     for run in range(RUNS):
-        await agent.run(f"Continue {run}.", session=session)
-        if roundtrip:
-            session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+        with observe_record_merges(lambda p, e, d: events.append((run, p, e, d))):
+            await agent.run(f"Continue {run}.", session=session)
+            work = registry._retained.get(session.session_id)
+            if work:
+                print("BOUNDARY", run, len(work._ready), work._task.done() if work._task else None,
+                      work.expected_state == json.loads(json.dumps(session.state[registry.state_key])))
+            if roundtrip:
+                session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+    print("EVENTS", events)
 
     asked = Counter(summarizer.merges)
     assert asked, "the premise: the runs merged records"
