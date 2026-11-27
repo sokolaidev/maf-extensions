@@ -186,3 +186,12 @@ def test_a_summary_standing_for_sources_on_both_sides_is_refused() -> None:
     order = [sources[0], {"insert": _summary("a1", "u2")}, *sources[1:]]
 
     assert split_saved_layout(_layout(messages, order), 2) is None
+
+
+@pytest.mark.parametrize("named", [("a2",), ("u2", "a2")])
+def test_a_summary_naming_a_source_the_order_leaves_out_is_refused(named: tuple[str, ...]) -> None:
+    messages = _history()
+    sources = [{"source": i, "id": m.message_id} for i, m in enumerate(messages)]
+    order = [*sources[:3], {"insert": _summary(*named)}]
+
+    assert split_saved_layout(_layout(messages, order), 2) is None

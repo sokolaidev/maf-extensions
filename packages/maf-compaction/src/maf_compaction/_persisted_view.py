@@ -246,8 +246,12 @@ def turn_boundary(messages: list[Message]) -> int:
     return 0
 
 
-def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> list[int]:
-    """The source positions an inserted summary or note names as what it stands for."""
+def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> list[int] | None:
+    """The source positions an inserted summary or note names as what it stands for.
+
+    Empty when it names none. None when it names a message the layout's order does not place
+    (``save_view`` leaves a replaced source out of the order): its side cannot be known.
+    """
     properties: Any = insert.get("additional_properties")
     if not isinstance(properties, dict):
         return []
@@ -258,7 +262,9 @@ def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> lis
     if not isinstance(ids, list):
         return []
     named = cast(list[Any], ids)
-    return [positions[mid] for mid in named if isinstance(mid, str) and mid in positions]
+    if not all(isinstance(mid, str) and mid in positions for mid in named):
+        return None
+    return [positions[mid] for mid in named]
 
 
 def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
@@ -271,8 +277,9 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
     that names none (a written record, inserted after its sources) goes with the part of the
     source entry before it, or the earlier part when none precedes it.
 
-    Returns None for a malformed layout, a boundary outside it, or an insert that stands for
-    sources on both sides of the boundary, which neither part can hold alone.
+    Returns None for a malformed layout, a boundary outside it, an insert that stands for
+    sources on both sides of the boundary, which neither part can hold alone, or one that names
+    a source the order does not place, whose side cannot be known.
     """
     parsed = _parse_layout(layout)
     if parsed is None:
@@ -297,6 +304,8 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
                 earlier_order.append(entry)
             continue
         covered = _covered_positions(entry["insert"], positions)
+        if covered is None:
+            return None
         if covered:
             sides = {position >= boundary for position in covered}
             if len(sides) > 1:
