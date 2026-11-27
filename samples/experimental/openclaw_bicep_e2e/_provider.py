@@ -44,6 +44,7 @@ class Provider:
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
         self.diagnostic_reasons: list[str] = []
+        self.diagnostic_shapes: list[list[dict[str, Any]]] = []
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -110,6 +111,19 @@ class Provider:
         user = next(message for message in reversed(messages) if message["role"] == "user")
         text = str(user["content"])
         marker = re.search(r"sample-turn=([0-9a-f]{32})(?![0-9a-f])", text)
+        if marker is None:
+            self.diagnostic_shapes.append([
+                {
+                    "role": message.get("role"),
+                    "content_type": type(message.get("content")).__name__,
+                    "has_turn_prefix": "sample-turn=" in str(message.get("content")),
+                    "turn_marker_count": len(re.findall(r"sample-turn=([0-9a-f]{32})(?![0-9a-f])", str(message.get("content")))),
+                    "has_validation_prompt": "Use the Bicep validation tool" in str(message.get("content")),
+                    "has_repair_prompt": "Repair the type error" in str(message.get("content")),
+                    "has_summary_prompt": "summar" in str(message.get("content")).lower(),
+                }
+                for message in messages
+            ])
         require(marker is not None, "Missing turn identity")
         assert marker is not None
         turn = marker[1]

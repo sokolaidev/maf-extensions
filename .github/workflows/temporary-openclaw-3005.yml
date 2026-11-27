@@ -100,6 +100,7 @@ jobs:
           result["gateway_error_summaries"] = errors[:4]
           result["provider"] = {key: report.get("provider", {}).get(key) for key in ("requests", "error_count", "function_calls", "observed_bicep_results")}
           result["provider_diagnostic_reasons"] = report.get("provider_diagnostic_reasons", [])[:8]
+          result["provider_diagnostic_shapes"] = report.get("provider_diagnostic_shapes", [])[:2]
           print(json.dumps(result, indent=2))
           PY
       - name: Record installed npm identity
