@@ -329,7 +329,6 @@ def configuration(
                 "workspace": str(root / "workspace"),
                 "skipBootstrap": True,
                 "model": {"primary": "sample/sample"},
-                "heartbeat": {"every": "0m"},
             }
         },
         "mcp": {
