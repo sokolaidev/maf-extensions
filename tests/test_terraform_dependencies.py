@@ -352,7 +352,8 @@ def test_ordinary_redirect_chain_must_be_completed(receiver, observed):
         b"HTTP/1.1 200 OK\r\n" + (b"X-Many: " + b"a" * 1000 + b"\r\n") * 60 + b"\r\n",
         b"HTTP/1.1 200 OK\r\nX-Folded: a\r\n" + (b" " + b"a" * 1000 + b"\r\n") * 60 + b"\r\n",
         b"HTTP/1.1 200 " + b"a" * 50000 + b"\r\n\r\n",
-        b"HTTP/1.1 100 Continue\r\n\r\n" * 1500 + b"HTTP/1.1 200 OK\r\n\r\n",
+        (b"HTTP/1.1 100 Continue\r\nX-Pad: " + b"a" * 1000 + b"\r\n\r\n") * 100
+        + b"HTTP/1.1 200 OK\r\n\r\n",
     ],
     ids=["long-line", "many-headers", "folded", "long-status", "interim"],
 )
