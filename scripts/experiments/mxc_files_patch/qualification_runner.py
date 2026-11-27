@@ -19,8 +19,8 @@ from scripts.experiments.mxc_v1_patch.patch import metadata
 from scripts.experiments.mxc_v1_patch.qualification_runner import build, helper, run, sources
 
 
-def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool = False) -> None:
-    """Build a fresh profile and preserve the original experiment's native-state controls."""
+def build_file_helper(root: Path, kernel_dir: Path, report: dict) -> list[str]:
+    """Build the pinned file-channel helper against the verified kernel artifact."""
     kernel_report = json.loads((kernel_dir / "kernel-result.json").read_text(encoding="utf-8"))
     kernel = kernel_dir / "elfloader_hyperlight-x86_64"
     if (
@@ -54,6 +54,12 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
     build(root)
     report["helper_sha256"] = digest(helper(root))
     report["lock_sha256"] = digest(root / "build/Cargo.lock")
+    return opts
+
+
+def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool = False) -> None:
+    """Build a fresh profile and preserve the original experiment's native-state controls."""
+    opts = build_file_helper(root, kernel_dir, report)
     unit = root / ("stream-tests.exe" if sys.platform == "win32" else "stream-tests")
     run(
         root,
@@ -189,7 +195,9 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
         "--junitxml=" + str(root / "adapter-codeact.xml"),
     )
     report["adapter_codeact"] = "passed"
-    shutil.copyfile(original, embedded)
+    shutil.copyfile(root / "original-kernel", root / "runtime/kernel/elfloader_hyperlight-x86_64")
+    file_tool = [sys.executable, "-m", "scripts.experiments.mxc_files_patch.patch"]
+    baseline = [sys.executable, "-m", "scripts.experiments.mxc_v1_patch.patch"]
     run(root, "remove-files", *file_tool, "remove", *opts)
     run(
         root,

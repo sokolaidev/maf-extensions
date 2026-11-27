@@ -5,6 +5,7 @@ import warnings as _warnings
 from ._backend import MxcSandboxBackend as MxcSandboxBackend
 from ._config import MxcSandboxConfig as MxcSandboxConfig
 from ._config import startup_identity as startup_identity
+from .coordinator_binding import MxcCoordinatorBinding as MxcCoordinatorBinding
 
 
 class MafSandboxMxcExperimentalWarning(UserWarning):

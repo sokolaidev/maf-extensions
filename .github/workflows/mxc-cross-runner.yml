@@ -3,6 +3,10 @@ name: MXC native recovery between Linux runners
 on:
   workflow_dispatch:
     inputs:
+      file_router:
+        description: Qualify file-capable router replay and recovery after a lost acknowledgment
+        type: boolean
+        default: false
       worker_crash:
         description: Kill A's call worker before publication and require verified fencing
         type: boolean
@@ -25,12 +29,17 @@ jobs:
         env:
           WORKER_CRASH: ${{ inputs.worker_crash }}
           ACTIVE_GUEST_CRASH: ${{ inputs.active_guest_crash }}
+          FILE_ROUTER: ${{ inputs.file_router }}
           CLIENT_ID: ${{ secrets.MXC_TAILSCALE_CLIENT_ID }}
           AUDIENCE: ${{ secrets.MXC_TAILSCALE_AUDIENCE }}
         run: |
           set -euo pipefail
           if [ "$WORKER_CRASH" = true ] && [ "$ACTIVE_GUEST_CRASH" = true ]; then
             echo 'Select one crash boundary.'
+            exit 1
+          fi
+          if [ "$FILE_ROUTER" = true ] && { [ "$WORKER_CRASH" = true ] || [ "$ACTIVE_GUEST_CRASH" = true ]; }; then
+            echo 'File-router handoff uses the lost-acknowledgment boundary.'
             exit 1
           fi
           test -n "$CLIENT_ID" && test -n "$AUDIENCE" || {
@@ -41,7 +50,7 @@ jobs:
   fixture:
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.file_router && 85 || 45 }}
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
@@ -66,7 +75,14 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Build the file-channel kernel
+        if: inputs.file_router
+        run: uv run --locked python -m scripts.experiments.mxc_files_patch.build_kernel --root "$RUNNER_TEMP/mxc-file-kernel"
+      - name: Build the file-capable helper and startup checkpoint
+        if: inputs.file_router
+        run: uv run --locked python -m scripts.experiments.mxc_session_patch.cross_fixture --root "$RUNNER_TEMP/mxc-fixture" --file-kernel "$RUNNER_TEMP/mxc-file-kernel"
       - name: Build the common helper and startup checkpoint
+        if: ${{ !inputs.file_router }}
         run: uv run --locked python -m scripts.experiments.mxc_session_patch.cross_fixture --root "$RUNNER_TEMP/mxc-fixture"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

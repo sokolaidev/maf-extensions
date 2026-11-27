@@ -12,9 +12,27 @@ from maf_sandbox_mxc.host_store import CHUNK, Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
 from maf_sandbox_mxc.shared_store import (
     PATH_BYTES,
+    Limits,
     ScratchLimits,
     SharedStore,
 )
+
+
+def check_file_budget(request: Request, limits: Limits, scratch: ScratchLimits) -> None:
+    """Reserve the whole file call, including the restored and candidate checkpoints."""
+    minimum_bytes = (
+        2 * limits.checkpoint_bytes
+        + 4 * CHUNK
+        + len(request.code)
+        + sum(len(item.data) for item in request.inputs)
+        + request.limits.artifact_bytes
+        + 3 * CONTROL_LIMIT
+    )
+    minimum_entries = 2 * limits.files * (PATH_BYTES // 2 + 1) + 24
+    if limits.result_bytes < result_limit(request):
+        raise Refused("result allowance must cover encoded streams and artifacts")
+    if scratch.bytes < minimum_bytes or scratch.entries < minimum_entries:
+        raise Refused("scratch allowance cannot cover files, streams and checkpoints")
 
 
 def call(
@@ -47,21 +65,8 @@ def call(
         existing = store.db.execute(
             "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
         ).fetchone()
-        minimum_bytes = (
-            2 * store.limits.checkpoint_bytes
-            + 4 * CHUNK
-            + len(request.code)
-            + sum(len(item.data) for item in request.inputs)
-            + request.limits.artifact_bytes
-            + 3 * CONTROL_LIMIT
-        )
-        minimum_entries = 2 * store.limits.files * (PATH_BYTES // 2 + 1) + 24
-        if existing is None and store.limits.result_bytes < result_limit(request):
-            raise Refused("result allowance must cover encoded streams and artifacts")
-        if existing is None and (
-            scratch.bytes < minimum_bytes or scratch.entries < minimum_entries
-        ):
-            raise Refused("scratch allowance cannot cover files, streams and checkpoints")
+        if existing is None:
+            check_file_budget(request, store.limits, scratch)
         identity = (
             request.identity() if restore_state else b"mxc-fresh-state-v1\0" + request.identity()
         )

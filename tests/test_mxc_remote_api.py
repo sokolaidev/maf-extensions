@@ -53,7 +53,8 @@ def direct(db, operation, **arguments):
 @contextmanager
 def coordinator(root, **kwargs):
     kwargs.setdefault("initialize", not root.exists())
-    db = api.Coordinator(root, {FINGERPRINT: GRANT}, {"session": SESSION}, enabled=True, **kwargs)
+    grants = kwargs.pop("grants", {FINGERPRINT: GRANT})
+    db = api.Coordinator(root, grants, {"session": SESSION}, enabled=True, **kwargs)
     try:
         yield db
     finally:
@@ -1378,6 +1379,31 @@ def scratch_begin(db, call="call", guest="guest-a"):
     assert receipt.owner == owner and receipt.call == call
     assert receipt.request == hashlib.sha256(b"code").hexdigest()
     return owner, receipt
+
+
+def test_bound_worker_retirement_requires_grant_and_reconciled_scratch(tmp_path):
+    grants = {FINGERPRINT: replace(GRANT, operations=GRANT.operations | {"status", "retire"})}
+    with coordinator(tmp_path / "db", grants=grants, scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        direct(db, "publish", **publication(owner))
+        state = direct(db, "status", owner=owner)
+        assert state["checkpoint"] == "call" and state["active"] and state["pending"]
+        with pytest.raises(api.Refused, match="reconciliation"):
+            direct(db, "retire", owner=owner)
+        db.reconcile_scratch(receipt, lambda candidate: candidate == receipt)
+        assert direct(db, "retire", owner=owner) == {"retired": True}
+        assert direct(db, "status", owner=owner)["active"] is False
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code"))[
+            "result"
+        ] == encoded(b"result")
+        with pytest.raises(api.Refused, match="retired"):
+            direct(db, "begin", owner=owner, call="new", request=encoded(b"code"))
+        assert db.pending_scratch() == []
+    with coordinator(tmp_path / "legacy") as db:
+        owner = direct(db, "acquire", guest="guest")["owner"]
+        for op in ("retire", "status"):
+            with pytest.raises(api.Refused, match="not authorized"):
+                direct(db, op, owner=owner)
 
 
 def test_remote_scratch_publication_keeps_charge_until_verified_cleanup(tmp_path):

@@ -31,6 +31,12 @@ def contract(spec: SandboxSpec) -> str:
     return identity(json.dumps(fields, sort_keys=True, separators=(",", ":")))
 
 
+def complete_result(result: bytes) -> None:
+    streams = json.loads(result)["streams"]
+    if any(streams[key]["omitted_bytes"] for key in ("stdout", "stderr")):
+        raise Refused("program output exceeds the adapter's independent stream limits")
+
+
 class Catalog:
     """One worker thread owns the root sentinel and all live SQLite connections."""
 
@@ -152,11 +158,6 @@ class Catalog:
     ) -> bytes:
         """Publish through the native journal before returning a successful result."""
 
-        def complete(result: bytes) -> None:
-            streams = json.loads(result)["streams"]
-            if any(streams[key]["omitted_bytes"] for key in ("stdout", "stderr")):
-                raise Refused("program output exceeds the adapter's independent stream limits")
-
         store = self.stores[session]
         store.collect_checkpoints()
         store.expire()
@@ -170,7 +171,7 @@ class Catalog:
             cancel=cancel,
             timeout=timeout,
             restore_state=self.config.persistent,
-            validate_result=complete,
+            validate_result=complete_result,
         )
 
     def reclaim(self, session: str) -> None:

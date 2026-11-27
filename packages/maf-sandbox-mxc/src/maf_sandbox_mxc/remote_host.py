@@ -135,14 +135,39 @@ class Host:
         boundary: Callable[[str], None] = lambda _: None,
     ) -> bytes:
         """Consume a receipt once; replayed or interrupted local identities cannot launch."""
-        binding = self._binding(receipt)
         self._bounds(code, output_limit)
-        if hashlib.sha256(code).hexdigest() != receipt.request:
-            raise Refused("native request differs from receipt")
         if digest(helper) != self.config.profile.get("helper") or digest(
             startup / "index.json"
         ) != self.config.profile.get("startup_index"):
             raise Refused("native runtime differs from pinned profile")
+
+        def native(base: Path, work: Path, restoring: bool, journal: NativeJournal) -> bytes:
+            return execute(
+                helper,
+                base,
+                work,
+                code,
+                output_limit,
+                before_spawn=lambda: journal.start(receipt.token, boundary),
+                before_start=lambda child: journal.arm(receipt.token, child, boundary),
+                checkpoint_limits=(self.config.limits.checkpoint_bytes, self.config.limits.files),
+            )
+
+        return self.execute_reserved(client, receipt, code, startup, native, boundary)
+
+    def execute_reserved(
+        self,
+        client: Client,
+        receipt: remote_scratch.Receipt,
+        request: bytes,
+        startup: Path,
+        run: Callable[[Path, Path, bool, NativeJournal], bytes],
+        boundary: Callable[[str], None] = lambda _: None,
+    ) -> bytes:
+        """Restore, supervise and publish under the exact generation and scratch receipt."""
+        binding = self._binding(receipt)
+        if hashlib.sha256(request).hexdigest() != receipt.request:
+            raise Refused("native request differs from receipt")
         if self.owner is not None and not (self.root / "shared.sqlite").is_file():
             raise Refused("generation journal must be provisioned before execution")
         with self._store() as store:
@@ -164,21 +189,12 @@ class Host:
                 files=limits.files,
             )
             boundary("after_remote_restore")
-            result = execute(
-                helper,
-                restored if previous else startup,
-                work,
-                code,
-                output_limit,
-                before_spawn=lambda: journal.start(receipt.token, boundary),
-                before_start=lambda child: journal.arm(receipt.token, child, boundary),
-                checkpoint_limits=(limits.checkpoint_bytes, limits.files),
-            )
+            result = run(restored if previous else startup, work, previous is not None, journal)
             client.publish(
                 self.session,
                 receipt.owner,
                 receipt.call,
-                code,
+                request,
                 work / "candidate",
                 result,
                 result_bytes=limits.result_bytes,
@@ -222,6 +238,13 @@ class Host:
         if self.owner is None:
             raise Refused("generation ownership is not configured")
         with self._store(provision=True):
+            pass
+
+    def verify_provisioned(self) -> None:
+        """Open the existing generation journal before admitting a new router call."""
+        if self.owner is None:
+            raise Refused("generation ownership is not configured")
+        with self._store():
             pass
 
     def fence(self, request: Fence, boundary: Callable[[str], None] = lambda _: None) -> bool:

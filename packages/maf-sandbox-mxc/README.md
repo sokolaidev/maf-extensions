@@ -36,3 +36,11 @@ Install from this directory with `pip install .`, or use the repository's uv wor
 MXC 1.1 rich-state qualification is recorded separately from the 1.0.1 custom file/stream profiles. A package build or offline test pass does not establish native isolation, cross-platform checkpoint portability, physical power-loss recovery or production readiness. Networking remains closed for the qualified Hyperlight profile.
 
 The [MXC research record](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/mxc-backend.md) contains the accepted design, implementation status, native evidence, reproduction instructions and workflow entry points.
+
+### Compatible-machine file recovery
+
+A host can bind one persistent router key and execution contract to an independently provisioned coordinator session. Local SQLite remains the default. Build the coordinator's `Session` with `MxcCoordinatorBinding.session(config, key, spec, compatibility)`. The deployment supplies the verified OS, architecture and CPU compatibility profile, a mutual-TLS client and the worker's host/boot certificate grant. Include `status` and, for disposal, `retire` in its operation grant. Acquire the owner with `expected_profile=session.digest` and provision its generation-bound `remote_host.Host` journal before the first call. For a restart, reopen the existing journal. The configured root and scratch limits must match the host.
+
+Construct `MxcSandboxBackend(config, coordinator=MxcCoordinatorBinding(client, host, key, spec, compatibility))` and register it with the router. The binding admits only that key, spec and session epoch. Session status and result replay go to the coordinator. Successful execution publishes the verified file result and checkpoint before acknowledgment. The trusted controller must reconcile the execution receipt before another new call, reclaim or retirement. Closing the backend releases its local handles. Retiring a session refuses new calls and preserves retained retries until expiry. Provision a new session epoch for subsequent execution.
+
+Select `file_router` in the [cross-runner workflow](../../.github/workflows/mxc-cross-runner.yml) to exercise acknowledgment loss on A, controller-confirmed fencing, exact file replay on a compatible B, and the next stateful call through the router.

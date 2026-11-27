@@ -226,9 +226,13 @@ def _active_command(helper, startup, work, request):
     ]
 
 
-@pytest.mark.parametrize("crash_mode", ["none", "captured", "active"])
+@pytest.mark.parametrize("crash_mode", ["none", "captured", "active", "files"])
 def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
     roots, bundle, peers = participants
+    if crash_mode == "files":
+        cross.cross_compat.record_fixture(bundle, "GenuineIntel", file_router=True)
+        for peer in peers.values():
+            peer["profile"] = cross.cross_compat.load_fixture(bundle)
     addresses = {}
     original_client = cross._client
 
@@ -265,6 +269,47 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
         ],
     )
     monkeypatch.setattr(cross.remote_host, "execute", execute)
+    if crash_mode == "files":
+        from maf_sandbox_mxc.files import transport
+
+        def file_execute(
+            helper, base, work, request, *, restoring, before_spawn, before_start, **kwargs
+        ):
+            native_code = cross.NEXT if restoring else cross.SEED
+            assert (
+                request.code
+                == (cross.cross_files.NEXT if restoring else cross.cross_files.SEED).encode()
+            )
+            native = execute(
+                helper,
+                base,
+                work,
+                native_code,
+                1024,
+                before_spawn=before_spawn,
+                before_start=before_start,
+                checkpoint_limits=kwargs["checkpoint_limits"],
+            )
+            number = cross.api._bytes(json.loads(native)["console_base64"], 1024)
+            artifact = b"x" * cross.cross_files.SIZE
+            return json.dumps(
+                {
+                    "streams": {
+                        "stdout": {
+                            "base64": cross.api._encoded(number + b"\\n"),
+                            "omitted_bytes": 0,
+                        },
+                        "stderr": {"base64": "", "omitted_bytes": 0},
+                    },
+                    "directories": [],
+                    "call_directory": request.call_directory,
+                    "artifacts": []
+                    if restoring
+                    else [{"name": "proof.bin", "base64": cross.api._encoded(artifact)}],
+                }
+            ).encode()
+
+        monkeypatch.setattr(transport, "execute", file_execute)
     service_context = endpoint(
         lambda: cross.Service(roots["coordinator"], peers, initialize=True), roots["coordinator"]
     )
@@ -292,6 +337,15 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
                 service_context.__enter__()
 
             transports = {r: client(roots["coordinator"], peers, r) for r in cross.ROLES}
+            if crash_mode == "files":
+                report = cross.file_scenario(
+                    transports["a"], transports["b"], transports["coordinator"], restart
+                )
+                assert report["file_bytes"] == cross.cross_files.SIZE
+                assert [state for _, state in executions] == [41, 42]
+                assert executions[0][0].is_relative_to(roots["a"])
+                assert executions[1][0].is_relative_to(roots["b"])
+                return
             report = cross.scenario(
                 transports["a"],
                 transports["b"],

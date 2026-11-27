@@ -115,7 +115,11 @@ class Grant:
     def __post_init__(self) -> None:
         _name(self.host)
         _name(self.boot)
-        if not self.sessions or not self.operations or not self.operations <= OPERATIONS:
+        if (
+            not self.sessions
+            or not self.operations
+            or not self.operations <= OPERATIONS | {"status", "retire"}
+        ):
             raise Refused("invalid certificate permissions")
         for session in self.sessions:
             _name(session)
@@ -456,6 +460,31 @@ class Coordinator:
                 raise Refused("owner does not belong to this certificate scope")
             with authority.guard(owner):
                 store = self._store(owner)
+            if operation in {"status", "retire"}:
+                with authority.guard(owner):
+                    state = store.db.execute(
+                        "SELECT state,current_call FROM sessions WHERE id=?", (session,)
+                    ).fetchone()
+                    pending = (
+                        self.scratch_policy is not None
+                        and authority.db.execute(
+                            "SELECT 1 FROM remote_scratch WHERE session=? AND state!='released'",
+                            (session,),
+                        ).fetchone()
+                        is not None
+                    )
+                    if operation == "status":
+                        return {
+                            "active": state["state"] == "active",
+                            "checkpoint": state["current_call"],
+                            "pending": pending,
+                            "scratch": asdict(self.scratch_policy) if self.scratch_policy else None,
+                        }
+                    if pending:
+                        raise Refused("remote scratch requires trusted reconciliation")
+                    store.retire()
+                    store.collect_checkpoints(limit=128)
+                    return {"retired": True}
             if operation in ("begin", "retry"):
                 call = _name(_text(args["call"]))
                 code = _bytes(args["request"], MAX_REQUEST)
@@ -465,6 +494,13 @@ class Coordinator:
                         "SELECT status FROM calls WHERE session=? AND id=?", (session, call)
                     ).fetchone()
                     if existing is None:
+                        if (
+                            store.db.execute(
+                                "SELECT state FROM sessions WHERE id=?", (session,)
+                            ).fetchone()[0]
+                            != "active"
+                        ):
+                            raise Refused("session is retired")
                         scratch = remote_scratch.reserve(authority, owner, call, code)
                         self.boundary("after_remote_scratch_reserve")
                 with authority.guard(owner):

@@ -7,6 +7,7 @@ import os
 import platform
 from pathlib import Path
 
+from maf_sandbox_mxc import startup_identity
 from maf_sandbox_mxc.host_call import digest
 
 VENDORS = ("GenuineIntel", "AuthenticAMD")
@@ -45,7 +46,7 @@ def cpu_vendor() -> str:
 
 def validate_profile(profile: dict) -> None:
     """Refuse incomplete fixture identity, including legacy profiles without CPU provenance."""
-    if not isinstance(profile, dict) or set(profile) != {
+    if not isinstance(profile, dict) or set(profile) - {"startup_tree"} != {
         "helper",
         "startup_index",
         "policy",
@@ -54,7 +55,11 @@ def validate_profile(profile: dict) -> None:
         "cpu_vendor",
     }:
         raise RuntimeError("fixture profile fields differ")
-    for field in ("helper", "startup_index"):
+    for field in (
+        "helper",
+        "startup_index",
+        *(["startup_tree"] if "startup_tree" in profile else []),
+    ):
         value = profile[field]
         if (
             not isinstance(value, str)
@@ -72,7 +77,7 @@ def validate_profile(profile: dict) -> None:
         raise RuntimeError("fixture CPU vendor is missing or unsupported")
 
 
-def record_fixture(bundle: Path, producer_vendor: str) -> None:
+def record_fixture(bundle: Path, producer_vendor: str, *, file_router: bool = False) -> None:
     """Record producer identity only after its fresh native startup controls succeed."""
     if cpu_vendor() != producer_vendor:
         raise RuntimeError("fixture producer CPU vendor changed")
@@ -84,6 +89,8 @@ def record_fixture(bundle: Path, producer_vendor: str) -> None:
         "architecture": platform.machine(),
         "cpu_vendor": producer_vendor,
     }
+    if file_router:
+        profile["startup_tree"] = startup_identity(bundle / "startup")
     validate_profile(profile)
     (bundle / "fixture.json").write_text(
         json.dumps({"binding": binding(), "profile": profile}, indent=2) + "\n",
@@ -107,4 +114,8 @@ def load_fixture(bundle: Path) -> dict:
         bundle / "startup/index.json"
     ):
         raise RuntimeError("fixture content differs from producer record")
+    if "startup_tree" in profile and profile["startup_tree"] != startup_identity(
+        bundle / "startup"
+    ):
+        raise RuntimeError("startup tree differs from producer record")
     return profile
