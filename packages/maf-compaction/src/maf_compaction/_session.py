@@ -128,6 +128,8 @@ logger = logging.getLogger(__name__)
 
 #: The agent key of a registry's views when the host names none.
 DEFAULT_VIEW_AGENT: Final[str] = "agent"
+#: Reads and deletes an invalidation tries before a part that keeps changing raises.
+_INVALIDATE_ATTEMPTS: Final[int] = 3
 
 
 class SessionCompactionRegistry:
@@ -301,19 +303,14 @@ class SessionCompactionRegistry:
     def _view_key(self, session_id: str, part: ViewPart) -> ViewKey:
         return ViewKey(session_id, self.view_agent, part)
 
-    async def _expected(self, session_id: str, part: ViewPart) -> str | None:
-        """The version a write must replace: the one this process observed, absence included.
-
-        Observed when the pass began, or written by this process since. Never refreshed at
-        write time: a part another process published meanwhile must make the write conflict.
-        Read only when this process has observed nothing of the part.
-        """
-        state = self._views.setdefault(session_id, _ViewState())
-        if part not in state.etags:
-            assert self.view_store is not None
+    async def _observe(self, session_id: str) -> None:
+        """Record each stored part's version, absence included, as what this pass writes over."""
+        assert self.view_store is not None
+        etags: dict[ViewPart, str | None] = {}
+        for part in ViewPart:
             stored = await self.view_store.read(self._view_key(session_id, part))
-            state.etags[part] = None if stored is None else stored.etag
-        return state.etags[part]
+            etags[part] = None if stored is None else stored.etag
+        self._views.setdefault(session_id, _ViewState()).etags = etags
 
     async def _load_view(
         self,
@@ -330,8 +327,7 @@ class SessionCompactionRegistry:
         if strategy.carries_view or strategy.has_saved_view:
             known = self._views.get(session_id)
             if known is None or any(part not in known.etags for part in ViewPart):
-                for part in ViewPart:
-                    await self._expected(session_id, part)
+                await self._observe(session_id)
             return
         earlier = await store.read(self._view_key(session_id, ViewPart.EARLIER))
         current = await store.read(self._view_key(session_id, ViewPart.CURRENT))
@@ -346,30 +342,17 @@ class SessionCompactionRegistry:
             reason = "none stored" if earlier is None and current is None else "a part is missing"
             logger.info("Compaction persisted view not offered: %s.", reason)
             return
-        first = PersistedViewPart.from_dict(earlier.data)
-        second = PersistedViewPart.from_dict(current.data)
-        if first is None or second is None:
-            logger.info("Compaction persisted view not offered: a part is unreadable.")
+        # Parsing, hashing and joining the stored layout is history-wide: off the loop.
+        accepted = await off_loop(partial(_accepted_view, strategy, earlier.data, current.data))
+        if isinstance(accepted, str):
+            logger.info("Compaction persisted view not offered: %s.", accepted)
             return
-        if second.config != strategy.persisted_view_binding(
-            layout_text_digest(first.layout), second.layout
-        ):
-            # Decisions or settings changed after the parts were written, or the earlier part
-            # is not the one the current part was written with: an interrupted or overtaken
-            # write.
-            logger.info(
-                "Compaction persisted view not offered: it is bound to other decisions or settings."
-            )
-            return
-        offer = strategy.persisted_view_offer(first.layout, second.layout)
-        if offer is None:
-            logger.info("Compaction persisted view not offered: its parts do not join.")
-            return
+        offer, earlier_digest, earlier_sources = accepted
         strategy.restore_saved_view(offer, source=PASS_MODE_PERSISTED)
         # The stored earlier part is this process's now, so an unchanged one is not rewritten.
         state = self._views[session_id]
-        state.earlier_digest = layout_text_digest(first.layout)
-        state.earlier_sources = first.end
+        state.earlier_digest = earlier_digest
+        state.earlier_sources = earlier_sources
 
     async def _persist_view(
         self,
@@ -380,7 +363,18 @@ class SessionCompactionRegistry:
         store = self.view_store
         if store is None:
             return
-        state = self._views.setdefault(session_id, _ViewState())
+        state = self._views.get(session_id)
+        if state is None or any(part not in state.etags for part in ViewPart):
+            # The versions this pass would write over were not observed before it ran (a store
+            # read failed), so a write could overwrite a view published meanwhile. This
+            # process's view may be the older one: drop it, and the next pass reads first.
+            strategy.forget_carried_view()
+            self._views.pop(session_id, None)
+            logger.info(
+                "Compaction persisted view not written: the stored versions were not observed "
+                "before the pass."
+            )
+            return
         # History-wide work: off the loop, as the pass's own steps are.
         view = await off_loop(
             partial(strategy.persisted_view_parts, unchanged_earlier=state.earlier_digest)
@@ -403,9 +397,7 @@ class SessionCompactionRegistry:
         for part in parts:
             key = self._view_key(session_id, part.part)
             try:
-                etag = await store.write(
-                    key, part.to_dict(), etag=await self._expected(session_id, part.part)
-                )
+                etag = await store.write(key, part.to_dict(), etag=state.etags[part.part])
             except ViewWriteConflict:
                 # Another writer published a newer view. This process's view is now stale: it
                 # must not be written again, so drop it and what was observed, and the next
@@ -419,15 +411,19 @@ class SessionCompactionRegistry:
                 state.earlier_digest = earlier_digest
                 state.earlier_sources = earlier_sources
 
-    async def invalidate_view(self, session_id: str) -> None:
+    async def invalidate_view(self, session: AgentSession | str) -> None:
         """Remove a session's stored view, so its next pass starts from the stored history.
 
         For a host event that makes the view wrong: a branch, a rollback, a deleted or
         relabelled stored message. The view this process carries for the session, and a
         layout waiting under ``saved_view_key``, go too, so nothing resumes or writes the
-        invalidated view again. Raises RuntimeError during the session's active phase, as
-        :meth:`release` does.
+        invalidated view again. Pass the session itself when it may have been released or
+        evicted: its saved layout lives in its state, which a session id alone cannot reach.
+        Each part is deleted at the version stored now, read afresh. Raises RuntimeError during
+        the session's active phase, as :meth:`release` does, and ViewWriteConflict if a part
+        keeps changing while it is deleted.
         """
+        session_id = session if isinstance(session, str) else session.session_id
         if session_id in self._active:
             raise RuntimeError("Cannot invalidate a view during an active compaction phase.")
         stack = self._cache.get(session_id)
@@ -435,15 +431,14 @@ class SessionCompactionRegistry:
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         ):
             stack.strategy.forget_carried_view()
-        owner = self._owners.get(session_id)
-        if owner is not None and self.saved_view_key is not None:
-            owner.state.pop(self.saved_view_key, None)
+        if self.saved_view_key is not None:
+            for owner in (self._owners.get(session_id), session):
+                if isinstance(owner, AgentSession):
+                    owner.state.pop(self.saved_view_key, None)
         store = self.view_store
         if store is not None:
             for part in ViewPart:
-                etag = await self._expected(session_id, part)
-                if etag is not None:
-                    await store.delete(self._view_key(session_id, part), etag=etag)
+                await _delete_stored(store, self._view_key(session_id, part))
         self._views.pop(session_id, None)
         logger.info("Compaction persisted view invalidated by the host.")
 
@@ -571,6 +566,43 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
             )
         else:
             await close(completed=True)
+
+
+def _accepted_view(
+    strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    earlier: dict[str, Any],
+    current: dict[str, Any],
+) -> tuple[dict[str, Any], str, int] | str:
+    """The stored parts as a layout this strategy can resume, its earlier part's digest and
+    source count, or why the view is not offered."""
+    first = PersistedViewPart.from_dict(earlier)
+    second = PersistedViewPart.from_dict(current)
+    if first is None or second is None:
+        return "a part is unreadable"
+    earlier_digest = layout_text_digest(first.layout)
+    binding = strategy.persisted_view_binding(earlier_digest, second.layout)
+    if binding is None or second.config != binding:
+        # Decisions or settings changed after the parts were written, or the earlier part is
+        # not the one the current part was written with: an interrupted or overtaken write.
+        return "it is bound to other decisions or settings"
+    offer = strategy.persisted_view_offer(first.layout, second.layout)
+    if offer is None:
+        return "its parts do not join"
+    return offer, earlier_digest, first.end
+
+
+async def _delete_stored(store: CompactedViewStore, key: ViewKey) -> None:
+    """Delete a part at the version stored now, read afresh, never one observed for a pass."""
+    for _ in range(_INVALIDATE_ATTEMPTS):
+        stored = await store.read(key)
+        if stored is None:
+            return
+        try:
+            await store.delete(key, etag=stored.etag)
+            return
+        except ViewWriteConflict:
+            continue  # published between the read and the delete
+    raise ViewWriteConflict(f"{key.part} view of {key.agent!r} kept changing while invalidated")
 
 
 def _source_count(layout: str) -> int:

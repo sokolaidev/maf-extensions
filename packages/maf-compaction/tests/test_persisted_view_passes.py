@@ -150,11 +150,13 @@ async def test_a_failing_store_never_fails_the_pass(caplog: pytest.LogCaptureFix
     session = AgentSession(session_id="broken")
     registry = _registry(_budget(transcript, 0.6), [], view_store=_Broken())
 
-    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
         sent = await _pass_guarded(registry, session, _Rebuilding(transcript).hand())
 
     assert sent
-    assert sum("view store failed (OSError)" in r.getMessage() for r in caplog.records) == 2
+    # The read fails; with nothing observed the write is not attempted.
+    assert sum("view store failed (OSError)" in r.getMessage() for r in caplog.records) == 1
+    assert any("versions were not observed" in r.getMessage() for r in caplog.records)
 
 
 async def _pass_guarded(registry: Any, session: AgentSession, messages: list[Message]) -> list[Any]:
@@ -355,6 +357,9 @@ async def test_a_pass_resuming_its_own_layout_still_conflicts_with_a_view_publis
             lambda s: setattr(s.tool_results.fallback, "keep_tail_groups", 99), id="fallback"
         ),
         pytest.param(lambda s: s.user_turns.summary_options.update(temperature=0.9), id="options"),
+        pytest.param(
+            lambda s: s.user_turns.summary_options.update(stop=["new"]), id="nested-options"
+        ),
     ],
 )
 async def test_a_view_written_under_other_fallback_or_summary_options_is_not_offered(
@@ -395,3 +400,112 @@ async def test_a_session_moving_between_processes_does_not_rewrite_an_unchanged_
     assert "persisted view restored" in _modes(caplog)
     assert store.writes[ViewPart.CURRENT] == 4
     assert store.writes[ViewPart.EARLIER] < store.writes[ViewPart.CURRENT]
+
+
+async def test_a_pass_whose_pre_pass_read_failed_does_not_write_over_a_view_published_meanwhile(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from maf_compaction._session import _guarded_view_io
+
+    class _Flaky(InMemoryViewStore):
+        down = True
+
+        async def read(self, key: ViewKey) -> Any:
+            if self.down:
+                raise OSError("unreachable")
+            return await super().read(key)
+
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = _Flaky()
+    slow, fast = _registry(budget, [], view_store=store), _registry(budget, [], view_store=store)
+    session = AgentSession(session_id="flaky")
+
+    with slow.activate(session) as stack:
+        strategy = cast(_Composed, stack.strategy)
+        await _guarded_view_io(slow._load_view("flaky", strategy))  # the read fails
+        store.down = False  # the store recovers, and another process publishes
+        await _pass(fast, AgentSession(session_id="flaky"), _Rebuilding(transcript).hand())
+        published = await store.read(ViewKey("flaky", "agent", ViewPart.CURRENT))
+        await apply_compaction(_Rebuilding(transcript).hand(), strategy=_compactor(strategy))
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await slow._persist_view("flaky", strategy)
+        assert not strategy.carries_view
+
+    kept = await store.read(ViewKey("flaky", "agent", ViewPart.CURRENT))
+    assert published is not None and kept is not None and kept.etag == published.etag
+    assert any("versions were not observed" in r.getMessage() for r in caplog.records)
+
+
+async def test_invalidating_a_released_session_clears_its_saved_layout() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(
+        _budget(transcript, 0.6), [], view_store=InMemoryViewStore(), saved_view_key="saved"
+    )
+    session = AgentSession(session_id="released")
+    await _pass(registry, session, _Rebuilding(transcript).hand())
+    registry.release("released")
+    assert "saved" in session.state  # release keeps the saved layout with the session
+
+    await registry.invalidate_view(session)
+
+    assert "saved" not in session.state
+
+
+async def test_invalidation_deletes_the_versions_stored_now_not_those_a_pass_observed() -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="moved-on")
+    first = _registry(budget, [], view_store=store)
+    await _pass(first, session, _Rebuilding(transcript).hand())
+    # Another process publishes newer parts after the first one last saw them.
+    await _pass(
+        _registry(budget, [], view_store=store),
+        AgentSession(session_id="moved-on"),
+        _Rebuilding(transcript).hand(),
+    )
+
+    await first.invalidate_view("moved-on")
+
+    for part in ViewPart:
+        assert await store.read(ViewKey("moved-on", "agent", part)) is None
+
+
+async def test_a_setting_json_cannot_represent_disables_the_persisted_view() -> None:
+    transcript = _transcript(14, 10, 6)
+    store = _CountingStore()
+    session = AgentSession(session_id="opaque")
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+
+    with registry.activate(session) as stack:
+        cast(_Composed, stack.strategy).user_turns.summary_options["opaque"] = object()
+    await _pass(registry, session, _Rebuilding(transcript).hand())
+
+    assert sum(store.writes.values()) == 0
+
+
+async def test_a_stored_view_is_parsed_and_joined_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="restored")
+    await _pass(_registry(budget, [], view_store=store), session, _Rebuilding(transcript).hand())
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    original = _Composed.persisted_view_offer
+
+    def recorded(self: _Composed, earlier: str, current: str) -> Any:
+        threads.append(threading.get_ident())
+        return original(self, earlier, current)
+
+    monkeypatch.setattr(_Composed, "persisted_view_offer", recorded)
+    fresh = _registry(budget, [], view_store=store)
+    with fresh.activate(session) as stack:
+        strategy = cast(_Composed, stack.strategy)
+        await fresh._load_view("restored", strategy)
+        assert strategy.has_saved_view
+
+    assert threads and all(thread != loop_thread for thread in threads)
