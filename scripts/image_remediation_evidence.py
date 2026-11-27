@@ -290,9 +290,7 @@ def acquire(
     if snapshot is None:
         raise ValueError("No completed image release catalogue")
     monitor = (
-        committed_monitor(client, snapshot.catalogue, selected)
-        if use_catalogue_monitor
-        else latest
+        committed_monitor(client, snapshot.catalogue, selected) if use_catalogue_monitor else latest
     )
     if monitor is None:
         raise ValueError("No authoritative monitoring attempt exists")
