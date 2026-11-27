@@ -91,7 +91,8 @@ def test_orchestration_initializes_only_before_first_service_start(tmp_path, mon
     monkeypatch.setattr(cross, "_ready", lambda client: None)
     monkeypatch.setattr(cross, "call", lambda *args, **kwargs: {})
     monkeypatch.setattr(cross, "scenario", scenario)
-    assert cross.orchestrate(tmp_path, tmp_path / "bundle", {}) == {"completed": True}
+    peers = {"a": {"profile": {}}}
+    assert cross.orchestrate(tmp_path, tmp_path / "bundle", peers) == {"completed": True}
     assert ["--initialize" in command for command in commands] == [True, False, False]
 
 
@@ -385,6 +386,15 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
     workflow = yaml.safe_load(path.read_text("utf-8-sig"))
     assert set(workflow[True]) == {"workflow_dispatch"}
+    file_mode = workflow[True]["workflow_dispatch"]["inputs"]["file_router"]
+    assert file_mode["type"] == "boolean" and file_mode["default"] is False
+    builders = [
+        s for s in workflow["jobs"]["fixture"]["steps"] if "cross_fixture" in s.get("run", "")
+    ]
+    assert {s["if"]: "--file-kernel" in s["run"] for s in builders} == {
+        "inputs.file_router": True,
+        "${{ !inputs.file_router }}": False,
+    }
     participants = workflow["jobs"]["participants"]
     assert participants["needs"] == "fixture"
     assert workflow[True]["workflow_dispatch"]["inputs"]["worker_crash"]["default"] is False
