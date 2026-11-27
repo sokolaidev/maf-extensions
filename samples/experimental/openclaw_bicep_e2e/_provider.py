@@ -21,6 +21,26 @@ MAX_REQUESTS = 32
 MAX_COMPLETION_TOKENS = 4096
 
 
+def conversation_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude the pinned Gateway's runtime envelope from fixture turn accounting."""
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if (
+            message.get("role") == "user"
+            and isinstance(content, str)
+            and content.startswith("OpenClaw runtime context:\n")
+        ):
+            require(
+                content.endswith("\nEnd OpenClaw runtime context.")
+                and "sample-turn=" not in content,
+                "Invalid runtime context envelope",
+            )
+            continue
+        result.append(message)
+    return result
+
+
 class Provider:
     def __init__(
         self,
@@ -98,7 +118,7 @@ class Provider:
             self.server.server_close()
 
     def observe(self, body: dict[str, Any]) -> tuple[str, bool]:
-        messages = body["messages"]
+        messages = conversation_messages(body["messages"])
         user = next(message for message in reversed(messages) if message["role"] == "user")
         text = str(user["content"])
         marker = re.search(r"sample-turn=([0-9a-f]{32})(?![0-9a-f])", text)
@@ -120,10 +140,11 @@ class Provider:
                     name = function["name"]
                     self.function_calls[call["id"]] = (
                         name
-                        if name in {"tool_call", "tool_search", "tool_describe", TOOL}
+                        if name
+                        in {"tool_call", "dispatch_action", "tool_search", "tool_describe", TOOL}
                         else "other"
                     )
-                    if function["name"] == "tool_call":
+                    if name in {"tool_call", "dispatch_action"}:
                         args = json.loads(function["arguments"])
                         if args.get("id") in {TOOL, "mcp:bicep:" + TOOL}:
                             self.bicep_identifiers[call["id"]] = (
@@ -152,10 +173,13 @@ class Provider:
         return turn, "Repair the type error" in str(user["content"])
 
     def smoke(self, body: dict[str, Any], turn: str, repair: bool) -> bytes:
-        if body["messages"][-1]["role"] == "tool":
+        if conversation_messages(body["messages"])[-1]["role"] == "tool":
             delta: dict[str, Any] = {"role": "assistant", "content": "Compiler result received."}
             reason = "stop"
         else:
+            offered = {item["function"]["name"] for item in body.get("tools", [])}
+            dispatcher = "dispatch_action" if "dispatch_action" in offered else "tool_call"
+            require("tools" not in body or dispatcher in offered, "Missing tool dispatcher")
             args = {
                 "id": TOOL,
                 "args": {
@@ -169,7 +193,7 @@ class Provider:
                         "index": 0,
                         "id": "call_" + turn,
                         "type": "function",
-                        "function": {"name": "tool_call", "arguments": json.dumps(args)},
+                        "function": {"name": dispatcher, "arguments": json.dumps(args)},
                     }
                 ],
             }

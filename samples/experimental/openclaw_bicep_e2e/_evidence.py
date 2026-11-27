@@ -23,6 +23,23 @@ def digest(source: str) -> str:
     ).hexdigest()
 
 
+def structured_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Read the selected Gateway's structured result projection without accepting prose."""
+    if "details" in result:
+        structured = result["details"]["structuredContent"]
+    else:
+        block = result["content"][0]
+        text = block.get("text")
+        prefix = "structuredContent:\n"
+        require(
+            block.get("type") == "text" and isinstance(text, str) and text.startswith(prefix),
+            "Missing structured result projection",
+        )
+        structured = json.loads(text[len(prefix) :])
+    require(isinstance(structured, dict), "Expected a structured result object")
+    return structured
+
+
 def check_turn(
     records: list[dict[str, Any]], turn: str, *, repaired: bool, image: str, config_hash: str
 ) -> dict[str, Any]:
@@ -42,7 +59,7 @@ def check_turn(
         result = projected["result"]
         require(not result.get("isError", False), "Tool returned an error")
         require(len(result["content"]) == 1, "Expected one projected result item")
-        structured = result["details"]["structuredContent"]
+        structured = structured_result(result)
         require(structured.get("cleanup") == "confirmed", "Cleanup was not confirmed")
         require(structured.get("image") == image, "Wrong compiler image")
         require(structured.get("config_sha256") == config_hash, "Wrong compiler configuration")
@@ -54,7 +71,7 @@ def check_turn(
             require(structured.get("verdict") == "invalid", "Expected an invalid first verdict")
     last = selected[-1]
     source = last["arguments"]["files"][0]["content"]
-    result = last["projected"]["result"]["details"]["structuredContent"]
+    result = structured_result(last["projected"]["result"])
     if repaired:
         require(result["verdict"] == "valid", "Last repair did not validate")
         require(

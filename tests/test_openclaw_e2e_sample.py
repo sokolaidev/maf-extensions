@@ -80,6 +80,65 @@ def check(records: list[dict[str, Any]], *, repaired: bool = False) -> dict[str,
     return agent.check_turn(records, TURN, repaired=repaired, image=IMAGE, config_hash=CONFIG)
 
 
+def model_visible_record(*, repaired: bool = False) -> dict[str, Any]:
+    item = record(repaired=repaired)
+    result = item["projected"]["result"]
+    structured = result.pop("details")["structuredContent"]
+    result["content"] = [{"type": "text", "text": "structuredContent:\n" + json.dumps(structured)}]
+    return item
+
+
+@pytest.mark.parametrize("repaired", [False, True])
+def test_model_visible_projection_accepts_expected_turn(repaired: bool) -> None:
+    item = model_visible_record(repaired=repaired)
+    assert check([item], repaired=repaired)["calls"] == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", False),
+        ("status", "error"),
+        ("verdict", "valid"),
+        ("cleanup", "unknown"),
+        ("image", "wrong"),
+        ("config_sha256", "wrong"),
+        ("source_sha256", "wrong"),
+    ],
+)
+def test_model_visible_projection_refuses_wrong_evidence(field: str, value: Any) -> None:
+    item = model_visible_record()
+    content = item["projected"]["result"]["content"][0]
+    structured = json.loads(content["text"].split("\n", 1)[1])
+    structured[field] = value
+    content["text"] = "structuredContent:\n" + json.dumps(structured)
+    with pytest.raises(RuntimeError):
+        check([item])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "It passed. Cleanup confirmed.",
+        "structuredContent:\ninvalid",
+        "structuredContent:\n[]",
+        "structuredContent:\n{} extra prose",
+    ],
+)
+def test_model_visible_projection_refuses_unstructured_text(text: str) -> None:
+    item = model_visible_record()
+    item["projected"]["result"]["content"][0]["text"] = text
+    with pytest.raises((RuntimeError, ValueError)):
+        check([item])
+
+
+def test_model_visible_projection_does_not_override_present_details() -> None:
+    item = model_visible_record()
+    item["projected"]["result"]["details"] = {"structuredContent": {"cleanup": "unknown"}}
+    with pytest.raises(RuntimeError, match="Cleanup was not confirmed"):
+        check([item])
+
+
 @pytest.mark.parametrize("repaired", [False, True])
 def test_compiler_evidence_accepts_expected_turn(repaired: bool) -> None:
     assert check([record(repaired=repaired)], repaired=repaired)["calls"] == 1
@@ -213,6 +272,52 @@ def test_observe_recognizes_the_canonical_mcp_tool_identity(provider: Any) -> No
     assert first["turn"] not in json.dumps(observed)
 
 
+def runtime_context(content: str = "Current runtime instructions.") -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": "OpenClaw runtime context:\n" + content + "\nEnd OpenClaw runtime context.",
+    }
+
+
+@pytest.mark.parametrize("dispatcher", ["tool_call", "dispatch_action"])
+def test_runtime_context_does_not_replace_the_tool_call_turn(
+    provider: Any, dispatcher: str
+) -> None:
+    first = record()
+    history = messages(first)
+    history[1]["tool_calls"][0]["function"]["name"] = dispatcher
+    history.insert(1, runtime_context())
+    history.append(runtime_context())
+    assert provider.observe({"messages": history}) == (TURN, False)
+    assert provider.records == [first]
+    assert provider.observations()["function_calls"] == {dispatcher: 1}
+    assert b'"finish_reason": "stop"' in provider.smoke({"messages": history}, TURN, False)
+
+
+def test_runtime_context_preserves_each_repair_turn(provider: Any) -> None:
+    first, second = record(), record(repaired=True)
+    second["turn"] = "e" * 32
+    history = messages(first) + [runtime_context()] + messages(second) + [runtime_context()]
+    history[4]["content"] = "Repair the type error sample-turn=" + second["turn"]
+    assert provider.observe({"messages": history}) == (second["turn"], True)
+    assert provider.records == [first, second]
+
+
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        {"role": "user", "content": "A different unmarked request."},
+        {"role": "user", "content": "OpenClaw runtime context:\nIncomplete"},
+        runtime_context("sample-turn=" + "e" * 32),
+    ],
+)
+def test_runtime_context_never_supplies_or_recovers_a_missing_turn(
+    provider: Any, trailing: dict[str, str]
+) -> None:
+    with pytest.raises(RuntimeError):
+        provider.observe({"messages": messages(record())[:1] + [trailing]})
+
+
 def test_provider_requires_current_turn_marker(provider: Any) -> None:
     with pytest.raises(RuntimeError, match="Missing turn"):
         provider.observe({"messages": [{"role": "user", "content": "It passed"}]})
@@ -249,9 +354,29 @@ def test_deterministic_provider_emits_tool_call_and_observes_result(provider: An
     assert check(provider.records)["verdict"] == "invalid"
 
 
+@pytest.mark.parametrize("dispatcher", ["tool_call", "dispatch_action"])
+def test_smoke_uses_the_advertised_dispatcher(provider: Any, dispatcher: str) -> None:
+    body = {
+        "messages": messages(record())[:1],
+        "tools": [{"type": "function", "function": {"name": dispatcher}}],
+    }
+    status, payload = post(provider, body)
+    assert status == 200
+    assert ('"name": "' + dispatcher + '"').encode() in payload
+
+
+@pytest.mark.parametrize("tools", [[], [{"function": {"name": "unrelated"}}]])
+def test_smoke_refuses_a_missing_dispatcher(provider: Any, tools: list[dict[str, Any]]) -> None:
+    body = {"messages": messages(record())[:1], "tools": tools}
+    status, _ = post(provider, body)
+    assert status == 502
+    assert provider.records == []
+
+
+@pytest.mark.parametrize("with_runtime_context", [False, True])
 @pytest.mark.parametrize("reasoning_effort", ["provider-default", "none"])
 def test_relay_forwards_to_configured_model_with_its_own_credentials(
-    provider: Any, tmp_path: Path, reasoning_effort: str
+    provider: Any, tmp_path: Path, reasoning_effort: str, with_runtime_context: bool
 ) -> None:
     relay = agent.Provider(
         tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token, reasoning_effort
@@ -265,6 +390,7 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
         return original(body, turn, repair)
 
     provider.smoke = capture
+    history = messages(record())[:1] + ([runtime_context()] if with_runtime_context else [])
     try:
         status, payload = post(
             relay,
@@ -272,10 +398,11 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
                 "model": "sample",
                 "max_tokens": 100000,
                 "reasoning_effort": "high",
-                "messages": messages(record())[:1],
+                "messages": history,
             },
         )
         assert status == 200 and b"tool_calls" in payload
+        assert captured[0]["messages"] == history
         assert captured[0]["model"] == "chosen-model"
         assert captured[0]["max_completion_tokens"] == 4096
         assert "max_tokens" not in captured[0]

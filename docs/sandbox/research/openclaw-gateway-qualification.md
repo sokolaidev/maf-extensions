@@ -2062,3 +2062,98 @@ The host was Ubuntu image `20261101.360.1`, `Linux-7.0.0-1017-azure-x86_64-with-
 | uvicorn | `0.54.0` |
 
 The deterministic published profile now runs on main pushes, the daily Docker-live schedule and ordinary manual dispatches; explicit model and owner-loss selections retain their separate opt-in jobs. The retained run proves the new entry point on this hosted candidate. Optional model mode is documented and its routing is tested offline, but was not rerun through sample 24. The fifteen-case recovery campaign was not rerun against this transitive resolution. Production operation, other hosts/models, unattended recovery and actual daemon/host loss remain unqualified. Only bounded Markdown is retained; private state and JSON reports stay outside the checkout.
+
+## Newer Gateway Docker assessment (2026-11-27)
+
+[#3005](https://github.com/sokolaidev/maf-extensions/issues/3005) continues the Docker workstream while #2104 waits upstream. The numbered sample remains on OpenClaw 2026.9.7. This assessment selects npm `openclaw@2026.11.10` and holds the published worker, principal Python package pins and compiler image constant; transitive Python resolution is recorded rather than assumed identical. It does not add workload tools, credential delegation or a full sandbox backend.
+
+### Candidate and compatibility findings
+
+The [2026.11.10 release](https://github.com/openclaw/openclaw/releases/tag/v2026.11.10) declares Node `>=24.16.0 <25 || >=26.1.0`; the existing Node 26.8.1 runner satisfies that range. The exact npm tarball is `https://registry.npmjs.org/openclaw/-/openclaw-2026.11.10.tgz`, with integrity `sha512-/FKDjxY1ZdUSXHx1a9b4EUpPRZywM3uv4181g22XImJfp/5+h+fFUZ7B7HthNrdYzq//05zH0Yf7mefzIlWFaQ==`. Installation keeps the sample's existing `--ignore-scripts` followed by the explicit package-local postinstall. Installed package metadata and the npm lock entry are checked separately from the registry selection.
+
+The assessment identified four fixture/configuration differences:
+
+1. The new Gateway refuses the sample's `agents.defaults.heartbeat` key. Its [heartbeat migration documentation](https://github.com/openclaw/openclaw/blob/v2026.11.10/docs/gateway/heartbeat.md) moves heartbeat to automation jobs. This sample starts with fresh private state, so the candidate removes that obsolete setting; it does not migrate an operator's existing jobs or configuration.
+2. The Gateway appends a user-role runtime-context envelope to the model request. Choosing the last user message therefore loses the sample turn marker, and checking only the last message's role misses the preceding tool result. The [runtime-context producer](https://github.com/openclaw/openclaw/blob/v2026.11.10/src/agents/embedded-agent-runner/run/runtime-context-prompt.ts) and [envelope definition](https://github.com/openclaw/openclaw/blob/v2026.11.10/packages/llm-core/src/types.ts) establish the selected version's shape. The provider now excludes that exact closed envelope from its fixture accounting view. It preserves the original messages when forwarding to a real model, refuses malformed envelopes or envelopes containing a sample turn marker, and still refuses ordinary unmarked user requests. This is accounting for the sample's owned prompts, not authentication of message provenance.
+
+3. The model-facing dispatcher is now `dispatch_action`, documented in the tagged [Tool Search contract](https://github.com/openclaw/openclaw/blob/v2026.11.10/docs/tools/tool-search.md). A diagnostic run observed it in the offered tools and returned assistant history; the old observer recognized only `tool_call` and therefore recorded no Bicep result. The fixture now selects the advertised dispatcher and observes both names, while keeping the exact tool identity, source/config/image digests, verdict and cleanup requirements unchanged.
+
+4. `dispatch_action` no longer repeats the target's `details` in model-facing text. Its content still contains the structured JSON projected by [the MCP result adapter](https://github.com/openclaw/openclaw/blob/v2026.11.10/src/agents/mcp-content.ts). The checker reads that exact `structuredContent:` block when `details` is absent; malformed JSON, prose and non-object payloads are refused. If `details` is present it remains authoritative and cannot be bypassed with a different content block. All existing source, compiler, completion, verdict and cleanup predicates still apply.
+
+| Attempt | Observed outcome |
+|---|---|
+| [Main baseline](https://github.com/sokolaidev/maf-extensions/actions/runs/45913393206), `4b5c2efc9c5c6eea3ae6594bfc6d21269378d20f` | OpenClaw 2026.9.7 passed the existing deterministic invalid/valid Docker sample and independent cleanup collector. |
+| [Version-only candidate](https://github.com/sokolaidev/maf-extensions/actions/runs/45919645274), `4ab5007bc883e74b0953b6947e437adcf28bfb65` | Startup failed; no tool result. A subsequent bounded diagnostic run identified the rejected heartbeat key. Cleanup stopped the owned processes and independently found zero owned containers. |
+| [Fresh-state config correction](https://github.com/sokolaidev/maf-extensions/actions/runs/45920375668), `7b8b0141e9b63d725d2a6694e8298d85b5cecf12` | Gateway started, but the first turn failed. Subsequent bounded provider diagnostics identified seven missing-turn errors and zero calls/results; message-shape inspection identified the extra user-role context. Cleanup remained confirmed. |
+
+[Dispatcher diagnostic run 45922929686](https://github.com/sokolaidev/maf-extensions/actions/runs/45922929686) observed the offered `dispatch_action`, `tool_describe` and `tool_search` names and a returned `dispatch_action` call. [Run 45923298765](https://github.com/sokolaidev/maf-extensions/actions/runs/45923298765) then recorded a Bicep result but refused it with `KeyError`; [bounded projection inspection](https://github.com/sokolaidev/maf-extensions/actions/runs/45923599421) confirmed a `{tool, result: {content}}` envelope without `details`. These failed candidates are not counted as acceptance.
+
+The diagnostic reports expose fixed error categories, message roles and marker presence, not prompts, responses, tokens or private logs. Initial proof-job setup failures (missing PyYAML, an unbounded Ruff install and formatting) are not candidate acceptance runs. The final proof uses the repository's Ruff range and the required test dependencies. A shallow-checkout error also prevented the first comparison/gate jobs from restoring the baseline; the corrected jobs fetch that commit explicitly.
+
+
+### Hosted identities and retained observations
+
+The [2026.9.7 comparison job](https://github.com/sokolaidev/maf-extensions/actions/runs/45923801974/job/140260401977) and [2026.11.10 candidate job](https://github.com/sokolaidev/maf-extensions/actions/runs/45923801974/job/140260401608) both passed `published-smoke-v1` at proof source `25e662917a7ea2d4f34fe7bb54527a343c00042a`. Each produced an invalid result then a valid result, one call per turn, expected source/config/image identities and confirmed per-call cleanup. Both stopped the owned processes, released the owner lock and independently observed zero owned containers, with zero cleanup errors. The provider was deterministic; no external model was used. Each focused run passed 86 tests with two Windows-only skips, lint and formatting.
+
+The comparison restores the unchanged 2026.9.7 harness before execution. Both jobs use the same final provider, evidence checker and tests. The 2026.11.10 candidate alone changes the Gateway version and removes the retired heartbeat setting. Only the shared compatibility changes and this record enter the delivery branch.
+
+Both jobs used Ubuntu runner image `20261122.23.1`, `Linux-7.0.0-1020-azure-x86_64-with-glibc2.39`, Docker `28.0.4` / API `1.48`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and worker `Python 3.13.15`. The installed npm candidate lock SHA-256 was `6dde493346e165673622de3aba63a65058e9f5ab6889aa8f7f3afa6b137c1191`; its package version, resolved URL and integrity matched the registry selection.
+
+| Identity | 2026.9.7 comparison | 2026.11.10 candidate |
+|---|---|---|
+| Shared harness SHA-256 | `bc8392eeb0158cca6dc08896f5be358cf3e75a657b8d8c07f04e13df58f39bd6` | `270b1e6edae08bd322e17ae14d43f3851095e56eb82266fa643048073d8ece26` |
+| Private report SHA-256 | `9f898fef5797410a1d5765ad9247a1a058504c7d65882619a6ea6a51bd63a683` | `caef47c623c3a6acf480b9c165e2184806dd1728756276ad6888feb75bffdf27` |
+| Private tool evidence SHA-256 | `74d2c97eba493875af5200bb318f13db1eb5888dae64f30310dae51aeba52ec0` | `e59944452dc84434a47e21f6b0162858859f77c654d3b8c7a40bfb4fdaf90138` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Published worker wheel SHA-256 | `36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1` | Same |
+| Launcher SHA-256 | `423ad7e07f012ccd38359104e1c6cf4acfeb01e3023d4b052f4c4c8c1d5b91ca` | Same |
+
+The compiler registry reference remains `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e`. Installed worker module hashes match the numbered published-sample receipt above. Both jobs resolved the following complete Python inventory; matching versions are not a claim that the whole environments are byte-identical.
+
+| Installed distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.4` |
+| agent-framework-core | `1.24.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| cffi | `2.1.1` |
+| click | `8.5.1` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore2 | `2.16.2` |
+| httpx2 | `2.16.2` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.53.1` |
+| maf-sandbox-bicep | `0.25.1` |
+| maf-sandbox-docker | `0.30.6` |
+| maf-sandbox-mcp | `0.3.1` |
+| mcp | `2.2.0` |
+| mcp-types | `2.2.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.4` |
+| pydantic_core | `2.50.5` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.34` |
+| referencing | `0.37.0` |
+| regex | `2026.11.25` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.7.1` |
+| starlette | `1.7.0` |
+| truststore | `0.10.5` |
+| typing-inspection | `0.4.5` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+Only bounded Markdown artifacts are retained by the proof workflow. Private state, reports and logs remain in the runner's temporary directory. The proof workflow and diagnostic edits are excluded from the delivery branch.
+
+### Reproduction and promotion boundary
+
+Use the numbered [sample 24](../../../samples/24_openclaw_bicep/README.md) on a native Linux Docker host with the fixture fix in this change. In a disposable checkout only, set `OPENCLAW = "2026.11.10"` in the shared harness and remove `"heartbeat": {"every": "0m"}` from its fresh Gateway configuration. Invoke the normal deterministic numbered sample with an output directory outside the checkout, then run `scripts/report_openclaw_hosted.py --published` with the same runner environment. The proof commit and run above retain the exact temporary candidate configuration; that workflow and the version/config changes are not part of the default sample.
+
+[Follow-up #3009](https://github.com/sokolaidev/maf-extensions/issues/3009) owns the separate 2026.11.10 real-model run and bounded owner-loss campaign. Keep the default at 2026.9.7 until those establish their own evidence. Historical model/recovery acceptance does not transfer across this Gateway change or new transitive resolutions. No native MXC behavior, unattended operation, daemon/host loss, prompt-injection resistance or production support is established here.
