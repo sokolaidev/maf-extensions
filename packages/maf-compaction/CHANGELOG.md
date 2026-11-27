@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.5...maf-compaction-v0.20.0) (2026-11-27)
+
+
+### Features
+
+* **compaction:** log each pass's mode and merge events, and each worker's events, at INFO ([#3007](https://github.com/sokolaidev/maf-extensions/issues/3007)) ([38dcbc7](https://github.com/sokolaidev/maf-extensions/commit/38dcbc7f373c1352cd714c5ab39a3a1e8692cd76))
+* **compaction:** persist the view after every pass and resume another process from it ([#3013](https://github.com/sokolaidev/maf-extensions/issues/3013)) ([228b749](https://github.com/sokolaidev/maf-extensions/commit/228b7491d97fdac6ffe6abeafc4a6b3d4b2451ce))
+* **compaction:** the persisted view's two parts and a fenced view store protocol ([#3008](https://github.com/sokolaidev/maf-extensions/issues/3008)) ([51e8107](https://github.com/sokolaidev/maf-extensions/commit/51e81079af399d3b94b0d09d08a6ac9db2cd6003))
+
 ## [0.19.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.19.4...maf-compaction-v0.19.5) (2026-11-26)
 
 
