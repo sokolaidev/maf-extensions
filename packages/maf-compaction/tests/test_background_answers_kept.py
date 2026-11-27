@@ -160,7 +160,14 @@ async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundt
     find_batch = _composed._background_batch_with_sources
 
     def snapshot(messages, groups):
-        return {"groups": groups, "messages": [m.to_dict(exclude={"raw_representation"}) for m in messages]}
+        return {
+            "groups": [(g["start_index"], g["end_index"]) for g in groups],
+            "messages": [(m.message_id, m.role, m.text, {
+                k: v for k, v in m.additional_properties.items()
+                if k not in ("_group", "group_annotation", "__group_annotation__")
+            }) for m in messages[groups[0]["start_index"]:groups[-1]["end_index"] + 1]]
+            if groups else [],
+        }
 
     def key(messages, groups, **kwargs):
         result = source(messages, groups, **kwargs)
