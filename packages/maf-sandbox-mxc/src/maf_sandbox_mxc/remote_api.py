@@ -489,29 +489,25 @@ class Coordinator:
                 call = _name(_text(args["call"]))
                 code = _bytes(args["request"], MAX_REQUEST)
                 scratch = None
-                if operation == "begin" and self.scratch_policy:
-                    existing = store.db.execute(
-                        "SELECT status FROM calls WHERE session=? AND id=?", (session, call)
-                    ).fetchone()
-                    if existing is None:
-                        if (
-                            store.db.execute(
-                                "SELECT state FROM sessions WHERE id=?", (session,)
-                            ).fetchone()[0]
-                            != "active"
-                        ):
-                            raise Refused("session is retired")
-                        scratch = remote_scratch.reserve(authority, owner, call, code)
-                        self.boundary("after_remote_scratch_reserve")
-                with authority.guard(owner):
+                existing = store.db.execute(
+                    "SELECT 1 FROM calls WHERE session=? AND id=?", (session, call)
+                ).fetchone()
+                if existing is None and operation == "begin" and self.scratch_policy:
                     if (
-                        operation == "retry"
-                        and store.db.execute(
-                            "SELECT 1 FROM calls WHERE session=? AND id=?", (session, call)
-                        ).fetchone()
-                        is None
+                        store.db.execute(
+                            "SELECT state FROM sessions WHERE id=?", (session,)
+                        ).fetchone()[0]
+                        != "active"
                     ):
-                        raise Refused("unknown call identity")
+                        raise Refused("session is retired")
+                    scratch = remote_scratch.reserve(authority, owner, call, code)
+                    self.boundary("after_remote_scratch_reserve")
+                with authority.guard(owner):
+                    if existing is None:
+                        if operation == "retry":
+                            raise Refused("unknown call identity")
+                        store.collect_checkpoints()
+                        store.expire()
                     result = store.begin(call, code)
                 if scratch is not None:
                     self.boundary("after_remote_admission")

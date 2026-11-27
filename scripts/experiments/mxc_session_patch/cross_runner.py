@@ -566,7 +566,7 @@ def file_scenario(a, b, admin, restart, *, worker_crash=False, active_guest_cras
     owner_b = call(b, "acquire")["owner"]
     replay = call(b, "replay")
     _require(
-        replay["stdout"] == "41\\n"
+        replay["stdout"] == "41\n"
         and replay["size"] == cross_files.SIZE
         and replay["fresh"] is False,
         "file replay failed",
@@ -576,7 +576,7 @@ def file_scenario(a, b, admin, restart, *, worker_crash=False, active_guest_cras
     )
     following = call(b, "next")
     _require(
-        following["stdout"] == "42\\n" and following["fresh"] is False, "checkpoint restore failed"
+        following["stdout"] == "42\n" and following["fresh"] is False, "checkpoint restore failed"
     )
     last = call(admin, "inspect", owner=owner_b)
     _require(

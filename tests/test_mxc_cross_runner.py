@@ -297,7 +297,7 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
                 {
                     "streams": {
                         "stdout": {
-                            "base64": cross.api._encoded(number + b"\\n"),
+                            "base64": cross.api._encoded(number + b"\n"),
                             "omitted_bytes": 0,
                         },
                         "stderr": {"base64": "", "omitted_bytes": 0},
