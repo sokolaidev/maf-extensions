@@ -73,6 +73,31 @@ jobs:
           for item in list(result.values()):
               if isinstance(item, dict):
                   item["unrecognized_keys"] = [re.findall(r'"([A-Za-z][A-Za-z0-9_.-]{0,60})"', line) for line in item["unrecognized_keys"]][:10]
+          config = json.loads((root / "openclaw.json").read_text()) if (root / "openclaw.json").exists() else {}
+          secret_values = []
+          def secrets(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if key.lower() in ("token", "apikey", "authorization") and isinstance(child, str):
+                          secret_values.append(child)
+                      secrets(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      secrets(child)
+          secrets(config)
+          gateway = (root / "gateway.log").read_text(errors="replace")
+          errors = []
+          for line in gateway.splitlines():
+              if "Error:" not in line:
+                  continue
+              line = line.split("Error:", 1)[1].strip()
+              for value in secret_values:
+                  line = line.replace(value, "<redacted>")
+              line = re.sub(r"https?://\S+", "<url>", line)
+              line = line.replace(str(root), "<private-state>")
+              line = re.sub(r"\b[0-9a-f]{32,}\b", "<id>", line)
+              errors.append(line[:300])
+          result["gateway_error_summaries"] = errors[:4]
           print(json.dumps(result, indent=2))
           PY
       - name: Record installed npm identity
