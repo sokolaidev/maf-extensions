@@ -210,3 +210,17 @@ async def test_a_reader_cannot_delete_a_view_published_after_it_read() -> None:
 
     stored = await store.read(key)
     assert stored is not None and stored.etag == published_by_b
+
+
+@pytest.mark.parametrize(("start", "end"), [(-1, 1), (3, 2), (2, 9)])
+def test_a_part_with_impossible_bounds_is_out_of_range_without_raising(
+    start: int, end: int
+) -> None:
+    messages = _history()
+    width = max(end - start, 0)
+    covered = messages[:width]
+    layout = _layout(covered, [{"source": i} for i in range(len(covered))])
+
+    part = PersistedViewPart(ViewPart.CURRENT, start, end, layout, "cfg")
+
+    assert part.misfit(messages, "cfg") is MisfitReason.RANGE

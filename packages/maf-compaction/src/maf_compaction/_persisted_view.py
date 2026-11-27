@@ -228,7 +228,10 @@ class PersistedViewPart:
         if parsed is None:
             return MisfitReason.LAYOUT
         sources, _, _ = parsed
-        if self.end > len(messages) or len(sources) != self.end - self.start:
+        if (
+            not 0 <= self.start <= self.end <= len(messages)
+            or len(sources) != self.end - self.start
+        ):
             return MisfitReason.RANGE
         covered = messages[self.start : self.end]
         handed = Handed.take(covered)
