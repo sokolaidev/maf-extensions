@@ -14,10 +14,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from inspect import getsource
 
 from openshell_allocation_probe import Client
 from openshell_composition_probe import CompositionProfile, receipt_installed
-from openshell_credential_transport import GUEST_HTTPS, measure_transport
+from openshell_credential_transport import GuestHTTPS, measure_transport
 from openshell_credentials_probe import credential_observation
 from openshell_egress_probe import origin_get
 from openshell_https_probe import control_https
@@ -32,9 +33,11 @@ PROFILE_EDIT_PATHS = ("/provider/first", "/provider/second")
 def guest_program(directory, env_key):
     """Keep the launch reference in memory; control files contain only bounded probe commands."""
     return f"""
-import hashlib, json, os, ssl, time, uuid, urllib.request, urllib.error
+import hashlib, http.client, json, os, ssl, time, uuid, urllib.request, urllib.error
+from urllib.parse import urlsplit
 from pathlib import Path
-{GUEST_HTTPS}
+{getsource(GuestHTTPS)}
+transport = GuestHTTPS()
 directory = Path({directory!r})
 directory.mkdir(exist_ok=True)
 original = os.environ.get({env_key!r}, '')
@@ -69,7 +72,7 @@ while sequence <= 256 and time.monotonic() < deadline:
     headers = {{'Authorization': 'Bearer ' + token}} if token else {{}}
     try:
         if command['operation'] in ('prime', 'hold', 'reuse'):
-            observed = transport_get(command['operation'], command['url'], headers)
+            observed = transport.get(command['operation'], command['url'], headers)
         else:
             with urllib.request.urlopen(urllib.request.Request(command['url'], headers=headers), timeout=5) as response:
                 observed = {{'status': response.status, 'body': response.read(4096).decode()}}
