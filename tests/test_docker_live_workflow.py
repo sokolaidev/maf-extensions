@@ -140,11 +140,19 @@ def test_failure_reporter_serializes_the_shared_tracker_without_locking_workload
 def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
     live = workflow("docker-live.yml")
     option = live[True]["workflow_dispatch"]["inputs"]["openclaw_mode"]
-    assert option["default"] == "smoke" and option["options"] == ["smoke", "model", "owner-loss"]
+    assert option["default"] == "smoke" and option["options"] == [
+        "smoke",
+        "model",
+        "model-restart",
+        "owner-loss",
+    ]
     job = live["jobs"]["openclaw-bicep-model"]
     assert job["if"] == (
         "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "
-        "&& inputs.openclaw_mode == 'model'"
+        '&& contains(fromJSON(\'["model", "model-restart"]\'), inputs.openclaw_mode)'
+    )
+    assert job["env"]["WORKER_RESTART"] == (
+        "${{ inputs.openclaw_mode == 'model-restart' && 'true' || 'false' }}"
     )
     assert job["environment"] == "live-verify"
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
@@ -162,6 +170,12 @@ def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
     assert "$GITHUB_ENV" not in run["run"] and "set -x" not in run["run"]
     report = steps["Record bounded evidence and independently check owner scope"]
     assert report["if"] == "always()" and "--mode model" in report["run"]
+    for step in (run, report):
+        assert (
+            'if [ "$WORKER_RESTART" = true ]; then restart_args+=(--worker-restart); fi'
+            in step["run"]
+        )
+        assert '"${restart_args[@]}"' in step["run"]
     upload = steps["Retain bounded Markdown evidence"]
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-bicep-evidence.md"
