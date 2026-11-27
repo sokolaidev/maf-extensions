@@ -65,6 +65,14 @@ from ._composed import (
 )
 from ._media import MediaTokenEstimator
 from ._nested import find_nested_strategy
+from ._persisted_view import (
+    CompactedViewStore,
+    InMemoryViewStore,
+    StoredView,
+    ViewKey,
+    ViewPart,
+    ViewWriteConflict,
+)
 from ._persistence import SessionPersistence, SessionResponseStream
 from ._preserve import (
     PRESERVE_REASON_KEY,
@@ -162,9 +170,11 @@ __all__ = [
     "USER_SUMMARY_MARKER",
     "AnchoredCompactionStrategy",
     "ChainDecisions",
+    "CompactedViewStore",
     "CompactionStack",
     "CompactionBudgetExceeded",
     "CompactionPendingResultBudgetExceeded",
+    "InMemoryViewStore",
     "MafCompactionExperimentalWarning",
     "MinimumGainAnchoredCompactionStrategy",
     "MediaTokenEstimator",
@@ -176,12 +186,16 @@ __all__ = [
     "SessionPersistence",
     "SessionResponseStream",
     "SessionToolResultRecallMiddleware",
+    "StoredView",
     "SummaryRequestLimiter",
     "SummaryRequestStats",
     "ToolResultAnchoredSummarizationCompactionStrategy",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "ToolResultRecallMiddleware",
     "UserTurnAnchoredSummarizationCompactionStrategy",
+    "ViewKey",
+    "ViewPart",
+    "ViewWriteConflict",
     "any_preserved",
     "find_nested_strategy",
     "find_record_index",
