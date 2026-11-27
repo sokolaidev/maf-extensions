@@ -32,8 +32,7 @@ def conversation_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             and content.startswith("OpenClaw runtime context:\n")
         ):
             require(
-                content.endswith("\nEnd OpenClaw runtime context.")
-                and "sample-turn=" not in content,
+                content.endswith("\nEnd OpenClaw runtime context.") and "sample-turn=" not in content,
                 "Invalid runtime context envelope",
             )
             continue

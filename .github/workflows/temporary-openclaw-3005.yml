@@ -24,9 +24,9 @@ jobs:
           node-version: '26.8.1'
       - name: Check provider regressions
         run: |
-          uv run --no-project --with pytest --with pyyaml --with ruff python -m pytest -q -o addopts='' tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
-          uv run --no-project --with ruff ruff check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
-          uv run --no-project --with ruff ruff format --check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
+          uv run --no-project --with pytest --with pyyaml --with 'ruff>=0.15.20,<0.16' python -m pytest -q -o addopts='' tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
+          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
+          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff format --check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
       - name: Verify exact npm candidate metadata
         run: |
           python3 - <<'PY'
