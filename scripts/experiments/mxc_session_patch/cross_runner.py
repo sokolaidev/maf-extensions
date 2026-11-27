@@ -23,8 +23,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from maf_sandbox_mxc import private_root, remote_control, remote_host
 from maf_sandbox_mxc import remote_api as api
-from maf_sandbox_mxc import remote_control, remote_host
 from maf_sandbox_mxc.remote_authority import Authority
 
 from . import cross_compat, cross_crash, cross_files
@@ -56,13 +56,31 @@ def _fingerprint(pem: str) -> str:
 
 
 def _boot() -> str:
+    if platform.system() == "Windows":
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; "
+                "$id = (Get-CimInstance Win32_ComputerSystemProduct).UUID; "
+                "$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; "
+                "if (-not $boot -or [guid]$id -eq [guid]::Empty) { throw 'No boot identity' }; "
+                "Write-Output ([guid]$id).ToString(); Write-Output $boot.ToFileTimeUtc()",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        return hashlib.sha256(result.stdout.strip()).hexdigest()
     return hashlib.sha256(Path("/proc/sys/kernel/random/boot_id").read_bytes()).hexdigest()
 
 
 def bootstrap(root: Path, bundle: Path, role: str, address: str) -> None:
     """Publish only a certificate and run-bound discovery; the private key stays local."""
-    root.mkdir(parents=True, exist_ok=False)
-    os.chmod(root, 0o700)
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    private_root.prepare(root)
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"mxc-{role}")])
     now = datetime.now(UTC)
@@ -150,15 +168,17 @@ def validate_peers(peers: dict[str, dict], expected: dict) -> None:
         )
     for field in ("address", "boot", "certificate"):
         _require(len({p[field] for p in peers.values()}) == 3, f"roles share a {field}")
-    _require(
-        peers["a"]["profile"]["platform"] == "Linux", "only Linux is qualified by this harness"
-    )
 
 
 def validate_local(bundle: Path, role: str, peer: dict) -> None:
     """Recheck local fixture and CPU before opening an execution or coordinator endpoint."""
     _require(cross_compat.load_fixture(bundle) == peer["profile"], "local fixture profile differs")
     if role != "coordinator":
+        _require(
+            (platform.system(), platform.machine())
+            == (peer["profile"]["platform"], peer["profile"]["architecture"]),
+            "local execution platform differs from admitted profile",
+        )
         _require(
             cross_compat.cpu_vendor() == peer["cpu_vendor"] == peer["profile"]["cpu_vendor"],
             "local execution CPU vendor differs from admitted profile",
@@ -335,7 +355,7 @@ class Worker:
                 else cross_crash.CODE
                 if receipt.call == "crash"
                 else SEED,
-                self.bundle / "helper",
+                cross_compat.helper_path(self.bundle, self.peers[self.role]["profile"]["platform"]),
                 self.bundle / "startup",
                 1024,
             )
@@ -376,7 +396,11 @@ class Worker:
         else:
             code = NEXT if operation == "next" else SEED
             call_id = "seed" if operation == "replay" else operation
-        helper = self.root / "absent-helper" if operation == "replay" else self.bundle / "helper"
+        helper = (
+            self.root / "absent-helper"
+            if operation == "replay"
+            else cross_compat.helper_path(self.bundle, self.peers[self.role]["profile"]["platform"])
+        )
         if host.owner is None:
             raise api.Refused("generation ownership is missing")
         result = host.call(
