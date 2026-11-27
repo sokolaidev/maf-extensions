@@ -3,49 +3,66 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import re
+import ssl
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from openshell_egress_probe import origin_get
 
-GUEST_HTTPS = """
-import http.client
-from urllib.parse import urlsplit
-idle_connection = idle_socket = idle_target = None
-def transport_get(operation, url, headers):
-    global idle_connection, idle_socket, idle_target
-    target = urlsplit(url)
-    if operation == 'reuse':
-        if idle_target != (target.netloc, target.path):
-            raise ValueError('transport target changed')
-        connection = idle_connection
-        if connection.sock is None:
-            return {'closed_before_request': True}
-        if connection.sock is not idle_socket:
-            raise RuntimeError('guest TLS socket replaced')
-    else:
-        connection = http.client.HTTPSConnection(target.hostname, target.port, timeout=30)
-        connection.connect()
-        connection.auto_open = False
-        if operation == 'prime':
-            idle_connection, idle_socket = connection, connection.sock
-            idle_target = (target.netloc, target.path)
-    try:
-        connection.request('GET', target.path + '?' + target.query, headers=headers)
-        response = connection.getresponse()
-        result = {'status': response.status, 'body': response.read(4096).decode()}
-        if operation == 'prime':
-            result['kept_open'] = connection.sock is idle_socket and idle_socket is not None
-        return result
-    except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ssl.SSLEOFError) as exc:
-        connection.close()
-        return {'closed_during_request': type(exc).__name__}
-    finally:
-        if operation != 'prime':
+
+class GuestHTTPS:
+    """Keep the primed TLS socket for one follow-up from the same guest."""
+
+    def __init__(self):
+        self.idle_connection: http.client.HTTPSConnection | None = None
+        self.idle_socket = None
+        self.idle_target = None
+
+    def get(self, operation, url, headers):
+        target = urlsplit(url)
+        if target.scheme != "https" or target.hostname is None or target.port is None:
+            raise ValueError("expected the owned HTTPS origin")
+        if operation == "reuse":
+            connection = self.idle_connection
+            if connection is None or self.idle_target != (target.netloc, target.path):
+                raise ValueError("transport target changed")
+            if connection.sock is None:
+                return {"closed_before_request": True}
+            if connection.sock is not self.idle_socket:
+                raise RuntimeError("guest TLS socket replaced")
+        elif operation in ("prime", "hold"):
+            connection = http.client.HTTPSConnection(target.hostname, target.port, timeout=30)
+            connection.connect()
+            connection.auto_open = 0
+            if operation == "prime":
+                self.idle_connection, self.idle_socket = connection, connection.sock
+                self.idle_target = (target.netloc, target.path)
+        else:
+            raise ValueError("unknown transport operation")
+        try:
+            connection.request("GET", target.path + "?" + target.query, headers=headers)
+            response = connection.getresponse()
+            result = {"status": response.status, "body": response.read(4096).decode()}
+            if operation == "prime":
+                result["kept_open"] = (
+                    connection.sock is self.idle_socket and self.idle_socket is not None
+                )
+            return result
+        except (
+            http.client.RemoteDisconnected,
+            ConnectionResetError,
+            BrokenPipeError,
+            ssl.SSLEOFError,
+        ) as exc:
             connection.close()
-"""
+            return {"closed_during_request": type(exc).__name__}
+        finally:
+            if operation != "prime":
+                connection.close()
 
 
 def attributed_event(events, expected):
