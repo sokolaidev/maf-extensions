@@ -1,29 +1,53 @@
-name: Diagnose compaction CI 3014
+name: Verify compaction final-reply regression
 on:
   push:
     branches: [antsok-proof-ci-3014-compaction]
 permissions:
   contents: read
 jobs:
-  diagnosis:
+  verify:
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        scope: [focused, packages]
+        scope: [focused, packages, gate, mutation]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: '0.12.5'
+          version: '0.13.10'
       - run: uv sync --locked
       - if: matrix.scope == 'packages'
-        run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages --log-level=INFO
+        run: |
+          set -e
+          for attempt in {1..3}; do
+            uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages
+          done
       - if: matrix.scope == 'focused'
         run: |
-          for attempt in {1..10}; do
-            uv run pytest packages/maf-compaction/tests/test_background_answers_kept.py -q --log-level=INFO
+          set -e
+          for attempt in {1..20}; do
+            uv run pytest packages/maf-compaction/tests/test_background_answers_kept.py -q
           done
+      - if: matrix.scope == 'gate'
+        run: uv run poe gate
+      - if: matrix.scope == 'mutation'
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path("packages/maf-compaction/src/maf_compaction/_composed.py")
+          original = path.read_text()
+          needle = "            # The end-of-run pass can still consume a ready answer."
+          assert original.count(needle) == 1
+          path.write_text(original.replace(needle, "            self._ready.clear()\n" + needle))
+          result = subprocess.run(["uv", "run", "pytest", "-q", "packages/maf-compaction/tests/test_background_answers_kept.py", "-k", "no_accepted_background"], text=True, capture_output=True)
+          print(result.stdout)
+          print(result.stderr)
+          assert result.returncode == 1
+          assert "2 failed" in result.stdout
+          assert "assert accepted_batches == prepared_batches" in result.stdout
+          PY

@@ -315,18 +315,23 @@ def test_competing_processes_cannot_overbook_shared_quota(tmp_path):
         with store.SharedStore(root, session, PROFILE, limits):
             pass
     program = """
-import sys, sqlite3
+import sys
 from pathlib import Path
 from maf_sandbox_mxc.shared_store import Limits, SharedStore, Refused
 limits = Limits(200000, int(sys.argv[3]), checkpoint_bytes=1024, result_bytes=128, files=2, retention_seconds=10, grace_seconds=3)
-try:
-    with SharedStore(Path(sys.argv[1]), sys.argv[2], {'runtime':'pinned','policy':'closed','machine':'local'}, limits) as db:
-        print('ready', flush=True)
-        sys.stdin.readline()
+with SharedStore(Path(sys.argv[1]), sys.argv[2], {'runtime':'pinned','policy':'closed','machine':'local'}, limits) as db:
+    # Both contenders must reach the quota check after acquiring the SQLite write lock.
+    db.db.execute("PRAGMA busy_timeout=5000")
+    print('ready', flush=True)
+    sys.stdin.readline()
+    try:
         db.begin('a', b'code')
-    print('reserved')
-except (Refused, sqlite3.OperationalError, OSError):
-    print('refused')
+    except Refused as error:
+        if str(error) != "quota cannot reserve maximum publication":
+            raise
+        print('refused')
+    else:
+        print('reserved')
 """
     children = []
     try:
@@ -346,7 +351,11 @@ except (Refused, sqlite3.OperationalError, OSError):
             assert child.stdin is not None
             child.stdin.write("go\n")
             child.stdin.flush()
-        outputs = [child.communicate(timeout=20)[0].strip() for child in children]
+        outputs = []
+        for child in children:
+            stdout, stderr = child.communicate(timeout=20)
+            assert child.returncode == 0, stderr
+            outputs.append(stdout.strip())
         assert sorted(outputs) == ["refused", "reserved"]
     finally:
         for child in children:
