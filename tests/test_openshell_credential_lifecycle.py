@@ -138,6 +138,7 @@ def test_generation_capture_requires_owned_supervisor_and_redacts_failures(
         "unknown_outcome",
         "no_overlap",
         "wrong_winner_readback",
+        "description",
     ],
 )
 def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkeypatch, fault):
@@ -249,6 +250,16 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, monkey
 
     def record(kind, row):
         state.records.append((kind, deepcopy(row)))
+
+    if fault == "description":
+        profile.update_description(client, record)
+        expected = deepcopy(before)
+        expected.source = expected.scope = ""
+        expected.resource_version = 8
+        expected.description += " (transport observation)"
+        assert state.stored == expected
+        assert state.records[-1][1]["stored_profile_revision"] == 8
+        return
 
     if concurrent:
         monkeypatch.setattr(
@@ -762,6 +773,12 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     from collections import defaultdict
     from urllib.parse import urlsplit
 
+    async def transport(guest, profile, client, mint, ip, host, reconcile, record):
+        assert profile.endpoint_path in probe.PROFILE_EDIT_PATHS
+        assert mint == state.issuer.latest
+        record("transport", {"complete": True})
+
+    monkeypatch.setattr(probe, "measure_transport", transport)
     origin, cleanup = [], []
     state = NS(
         now=1000,
@@ -1055,6 +1072,7 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         assert state.requests == (24 if fault == "generation" else 25)
         result = fixture.report["credentials"]["barriers"][-1]
         assert result["winning_path"] == probe.PROFILE_EDIT_PATHS[0]
+        assert fixture.report["credentials"]["transport"] == [{"complete": True}]
         assert result["ack_to_observation_ns"] > 0
         assert fixture.report["credentials"]["characterization_completed"]
         assert (

@@ -2,6 +2,12 @@
 
 > Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access, filesystem policy, native SFTP and bounded HTTP/HTTPS egress matrices, anonymous provider composition, serial policy revisions, synthetic credential binding, multi-provider static updates, elapsed credential expiry and bounded gateway-managed OAuth refresh were characterized on 2026-10-11. The spike concludes with a defer decision; the current adoption boundary is recorded in the [backend index](../backends/README.md#openshell-evaluation). No suite adapter or runtime is qualified.
 
+## Persistent and in-flight HTTPS during a profile description edit
+
+The owned OAuth fixture opens two independent guest TLS connections to its accepted provider path. The first receives an issuer-matched response and stays idle if the HTTP peer permits reuse. The origin holds the second response after recording its request. The controller conditionally edits the profile description, verifies the complete stored profile and releases the held response. The original guest then attempts a follow-up on the idle connection with automatic reconnection disabled. The origin assigns a connection identifier on accept so the two legs of the forwarding path can be evaluated independently.
+
+The report records the authenticated origin receipts, guest outcomes, and whether the two idle-socket requests reached the origin on the same upstream TLS connection. A peer closing the socket before a follow-up leaves reuse unobserved. The selected path, credential and host are identical in both profile revisions. This measures transport continuity across a stored metadata revision. Authority-changing edits, revocation and disconnect-only handoff remain open.
+
 ## Concurrent conditional provider profile edits
 
 Two controllers submit distinct edits to the fixture’s provider profile using the same stored revision. Each edit selects one GET path on the owned HTTPS origin. The measurement requires overlapping client RPC intervals, one successful update, and one explicit resource-version conflict identifying the accepted revision. It compares the full mutation response and stored profile with the winning edit.
