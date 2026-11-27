@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 from maf_sandbox import (
@@ -32,10 +33,15 @@ from maf_sandbox_mxc._backend import MxcSandbox, MxcSandboxBackend
 from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
 from maf_sandbox_mxc._files import Files
 from maf_sandbox_mxc._state import Catalog, contract
+from maf_sandbox_mxc.coordinator_binding import MxcCoordinatorBinding, RemoteCatalog
 from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.files.transport import GuestProgramError
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.remote_api import Client
+from maf_sandbox_mxc.remote_authority import Owner, Resource
+from maf_sandbox_mxc.remote_host import Host
+from maf_sandbox_mxc.remote_scratch import Policy
 from maf_sandbox_mxc.shared_store import Limits, ScratchLimits, SharedStore
 
 KEY = SandboxKey("scope", "thread", "agent")
@@ -543,6 +549,56 @@ def config(tmp_path):
         Limits(100_000_000, 200_000_000, checkpoint_bytes=1024, result_bytes=40_000_000),
         ScratchLimits(100_000_000, 100_000, 200_000_000),
     )
+
+
+@pytest.fixture
+def binding(config):
+    config = replace(config, persistent=True)
+    profile = {"platform": "Linux", "architecture": "x86_64", "cpu_vendor": "GenuineIntel"}
+    host = Mock(spec=Host)
+    host.config = MxcCoordinatorBinding.session(config, KEY, SPEC, profile)
+    host.session = "session"
+    host.owner = Owner("session", 1, host.config.digest, Resource("host", "boot", "guest"), "token")
+    host.root = config.root
+    host.scratch = Policy(config.scratch.bytes, config.scratch.entries, config.scratch.store_bytes)
+    return config, MxcCoordinatorBinding(Mock(spec=Client), host, KEY, SPEC, profile)
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_owner", "owner_profile", "session_profile", "root", "scratch"]
+)
+def test_coordinator_binding_refuses_incompatible_host(binding, change):
+    config, bound = binding
+    host = bound.host
+    if change == "missing_owner":
+        host.owner = None
+    elif change == "owner_profile":
+        host.owner = replace(host.owner, profile="other")
+    elif change == "session_profile":
+        host.config = replace(host.config, profile={**host.config.profile, "architecture": "other"})
+    elif change == "root":
+        host.root = config.root / "other"
+    else:
+        host.scratch = replace(host.scratch, entries=host.scratch.entries + 1)
+    with pytest.raises(Refused, match="generation differs"):
+        RemoteCatalog(config, bound)
+    assert not bound.client.mock_calls and not host.method_calls
+
+
+@pytest.mark.parametrize("operation", ["acquire", "replay"])
+@pytest.mark.parametrize("change", ["key", "spec"])
+def test_coordinator_binding_refuses_other_scopes_before_contact(binding, operation, change):
+    config, bound = binding
+    catalog = RemoteCatalog(config, bound)
+    key = replace(KEY, thread_id="other") if change == "key" else KEY
+    spec = replace(SPEC, kind="other") if change == "spec" else SPEC
+    with pytest.raises(Refused, match="different key or execution contract"):
+        if operation == "acquire":
+            catalog.acquire(key, spec)
+        else:
+            request = Request(b"pass", (), (), config.files, config.workspace, "call")
+            catalog.replay(key, spec, bound.host.session, "call", request)
+    assert not bound.client.mock_calls and not bound.host.method_calls
 
 
 def test_closed_admission_refuses_unsupported_policy_before_store_creation(config):

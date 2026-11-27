@@ -482,8 +482,7 @@ class Coordinator:
                         }
                     if pending:
                         raise Refused("remote scratch requires trusted reconciliation")
-                    store.retire()
-                    store.collect_checkpoints(limit=128)
+                    store.collect_checkpoints(limit=128, retire=True)
                     return {"retired": True}
             if operation in ("begin", "retry"):
                 call = _name(_text(args["call"]))

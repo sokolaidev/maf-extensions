@@ -1416,6 +1416,21 @@ def test_new_remote_call_reclaims_quota_and_preserves_retry_identities(tmp_path,
             direct(db, "retry", owner=owner, call="old", request=encoded(b"changed"))
 
 
+def test_retirement_refuses_pending_publication_without_changing_state(tmp_path):
+    grants = {FINGERPRINT: replace(GRANT, operations=GRANT.operations | {"status", "retire"})}
+    with coordinator(tmp_path / "db", grants=grants) as db:
+        owner = start(db)
+        with pytest.raises(api.Refused, match="outstanding reservation"):
+            direct(db, "retire", owner=owner)
+        assert direct(db, "status", owner=owner)["active"] is True
+        direct(db, "publish", **publication(owner))
+        assert direct(db, "retire", owner=owner) == {"retired": True}
+        assert direct(db, "status", owner=owner)["active"] is False
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+
+
 def test_bound_worker_retirement_requires_grant_and_reconciled_scratch(tmp_path):
     grants = {FINGERPRINT: replace(GRANT, operations=GRANT.operations | {"status", "retire"})}
     with coordinator(tmp_path / "db", grants=grants, scratch_policy=SCRATCH) as db:

@@ -963,9 +963,13 @@ class SharedStore:
                         pass
 
     def collect_checkpoints(
-        self, limit: int = 1, boundary: Callable[[str], None] = lambda _: None
+        self,
+        limit: int = 1,
+        boundary: Callable[[str], None] = lambda _: None,
+        *,
+        retire: bool = False,
     ) -> int:
-        """Collect a batch of obsolete checkpoints after a full store integrity pass."""
+        """Collect obsolete checkpoints and optionally retire the session atomically."""
         if type(limit) is not int or not 1 <= limit <= 128:
             raise Refused("invalid checkpoint batch limit")
         count = 0
@@ -981,12 +985,15 @@ class SharedStore:
                 raise Refused("outstanding reservation requires explicit recovery")
             accounting.audit(self.db)
             self._audit_checkpoints()
+            if retire:
+                self.db.execute("UPDATE sessions SET state='retired' WHERE id=?", (self.session,))
+            retired = retire or session["state"] == "retired"
             calls = self.db.execute(
                 (
                     "SELECT id FROM calls WHERE session=? AND checkpoint_charge>0 AND "
-                    "(?='retired' OR id!=?) ORDER BY id LIMIT ?"
+                    "(? OR id!=?) ORDER BY id LIMIT ?"
                 ),
-                (self.session, session["state"], session["current_call"], limit),
+                (self.session, retired, session["current_call"], limit),
             ).fetchall()
             boundary("before_collection")
             for call in calls:
