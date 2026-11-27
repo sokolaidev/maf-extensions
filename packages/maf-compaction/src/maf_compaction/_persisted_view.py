@@ -6,9 +6,9 @@ after every pass. Each part is the per-turn saved view's layout (:mod:`._saved_v
 range of stored messages it covers, bound to the compaction configuration that produced it, and
 able to say why it no longer fits a stored history.
 
-A host supplies storage through :class:`CompactedViewStore`. Every write names the version it
-replaces, so two writers -- two replicas, or an advisor and a sub-agent -- cannot overwrite a
-newer view: the loser gets :class:`ViewWriteConflict` and rebuilds.
+A host supplies storage through :class:`CompactedViewStore`. Every write and delete names the
+version it expects, so two writers -- two replicas, or an advisor and a sub-agent -- cannot
+overwrite or remove a newer view: the loser gets :class:`ViewWriteConflict` and rebuilds.
 """
 
 from __future__ import annotations
@@ -83,8 +83,12 @@ class CompactedViewStore(Protocol):
         """
         raise NotImplementedError
 
-    async def delete(self, key: ViewKey) -> None:
-        """Remove the part; removing a missing one is not an error."""
+    async def delete(self, key: ViewKey, *, etag: str) -> None:
+        """Remove the part if the stored version is ``etag``.
+
+        A part already gone is not an error. A newer one -- another writer published after this
+        caller read ``etag`` -- raises :class:`ViewWriteConflict` and stays.
+        """
 
 
 class InMemoryViewStore:
@@ -109,8 +113,13 @@ class InMemoryViewStore:
         self._parts[key] = StoredView(json.loads(json.dumps(data)), new)
         return new
 
-    async def delete(self, key: ViewKey) -> None:
-        self._parts.pop(key, None)
+    async def delete(self, key: ViewKey, *, etag: str) -> None:
+        stored = self._parts.get(key)
+        if stored is None:
+            return
+        if stored.etag != etag:
+            raise ViewWriteConflict(f"{key.part} view of {key.agent!r} changed since it was read")
+        del self._parts[key]
 
 
 def _parse_layout(layout: str) -> tuple[list[list[Any]], list[dict[str, Any]], int] | None:
@@ -147,6 +156,9 @@ def _parse_layout(layout: str) -> tuple[list[list[Any]], list[dict[str, Any]], i
         if not isinstance(item, dict):
             return None
         entry = cast(dict[str, Any], item)
+        if ("insert" in entry) == ("source" in entry):
+            # Exactly one discriminator: the split reads either kind by its key.
+            return None
         if "insert" in entry:
             if not isinstance(entry["insert"], dict):
                 return None

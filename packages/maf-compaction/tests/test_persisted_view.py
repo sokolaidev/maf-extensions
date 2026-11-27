@@ -124,8 +124,8 @@ async def test_a_stale_writer_is_refused_and_parts_are_kept_apart() -> None:
     assert stored is not None and stored.data == {"n": 2} and stored.etag == second
     child_stored = await store.read(child)
     assert child_stored is not None and child_stored.data == {"n": 9}
-    await store.delete(advisor)
-    await store.delete(advisor)
+    await store.delete(advisor, etag=second)
+    await store.delete(advisor, etag=second)
     assert await store.read(advisor) is None
 
 
@@ -136,6 +136,8 @@ async def test_a_stale_writer_is_refused_and_parts_are_kept_apart() -> None:
         '{"sources": [[]], "order": [], "required": 0}',
         '{"sources": [["d", [], [], []]], "order": [{"source": 3}], "required": 0}',
         '{"sources": [], "order": [7], "required": 0}',
+        '{"sources": [["d", [], [], []]], "order": [{"insert": {}, "source": "bad"}], "required": 0}',
+        '{"sources": [], "order": [{}], "required": 0}',
         '{"sources": [], "order": [], "required": -1}',
         "[]",
     ],
@@ -195,3 +197,16 @@ def test_a_summary_naming_a_source_the_order_leaves_out_is_refused(named: tuple[
     order = [*sources[:3], {"insert": _summary(*named)}]
 
     assert split_saved_layout(_layout(messages, order), 2) is None
+
+
+async def test_a_reader_cannot_delete_a_view_published_after_it_read() -> None:
+    store = InMemoryViewStore()
+    key = ViewKey("conversation", "advisor", ViewPart.CURRENT)
+    read_by_a = await store.write(key, {"n": 1}, etag=None)
+    published_by_b = await store.write(key, {"n": 2}, etag=read_by_a)
+
+    with pytest.raises(ViewWriteConflict):
+        await store.delete(key, etag=read_by_a)
+
+    stored = await store.read(key)
+    assert stored is not None and stored.etag == published_by_b
