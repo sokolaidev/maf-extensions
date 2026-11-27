@@ -47,6 +47,11 @@ SPEC = SandboxSpec(
 )
 
 
+def _local(catalog: object) -> Catalog:
+    assert isinstance(catalog, Catalog)
+    return catalog
+
+
 @pytest.mark.parametrize("program_bytes", [65537, 8 * 1024**2])
 @pytest.mark.parametrize("mxc_first", [False, True])
 def test_program_capacity_refusal_allows_router_fallback(config, program_bytes, mxc_first):
@@ -228,7 +233,7 @@ def test_router_restart_recovery_requires_persistence_and_reclaim(config, persis
             async with backend.call_admission(KEY, SPEC, owner="before", timeout=2):
                 sandbox = await SandboxRouter([backend], min_cleanup=cleanup).acquire(KEY, SPEC)
                 original = sandbox.instance_id
-                await backend.work(lambda c: _seed_checkpoint(c, original, "one"))
+                await backend.work(lambda c: _seed_checkpoint(_local(c), original, "one"))
         finally:
             await backend.aclose()
         backend = MxcSandboxBackend(config)
@@ -242,7 +247,8 @@ def test_router_restart_recovery_requires_persistence_and_reclaim(config, persis
                     assert (
                         await backend.work(
                             lambda c: (
-                                c.stores[original]
+                                _local(c)
+                                .stores[original]
                                 .db.execute(
                                     "SELECT current_call FROM sessions WHERE id=?", (original,)
                                 )
@@ -410,15 +416,19 @@ def test_disposal_retries_retired_epochs_with_unresolved_scratch(
             assert not list((config.root / "scratch").iterdir())
             assert (
                 await backend.work(
-                    lambda c: c.sentinel.db.execute("SELECT count(*) FROM launches").fetchone()[0]
+                    lambda c: (
+                        _local(c).sentinel.db.execute("SELECT count(*) FROM launches").fetchone()[0]
+                    )
                 )
                 == 0
             )
             assert (
                 await backend.work(
-                    lambda c: c.sentinel.db.execute("SELECT count(*) FROM reservations").fetchone()[
-                        0
-                    ]
+                    lambda c: (
+                        _local(c)
+                        .sentinel.db.execute("SELECT count(*) FROM reservations")
+                        .fetchone()[0]
+                    )
                 )
                 == 0
             )
