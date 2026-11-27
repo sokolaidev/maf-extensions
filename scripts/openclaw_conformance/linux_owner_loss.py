@@ -62,7 +62,7 @@ def baseline(prepared: Path) -> dict[str, Any]:
     artifact = value["artifact"]
     require(artifact["wheel_sha256"] == WHEEL, "worker_wheel")
     require(all(artifact["versions"].get(k) == v for k, v in VERSIONS.items()), "worker_versions")
-    require(value["openclaw"] == "2026.9.7", "gateway_version")
+    require(value["openclaw"] == "2026.11.10", "gateway_version")
     config_hash = file_hash(prepared / "bicepconfig.json")
     require(
         all(

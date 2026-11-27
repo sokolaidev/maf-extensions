@@ -68,8 +68,12 @@ def projected(case="valid"):
 
 
 @pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
-def test_check_host_identity_and_projection(case):
-    result = checker.verify_outcome(projected(case), case, "config", "image")
+@pytest.mark.parametrize("with_details", [False, True])
+def test_check_host_identity_and_projection(case, with_details):
+    value = projected(case)
+    if not with_details:
+        del value["result"]["details"]
+    result = checker.verify_outcome(value, case, "config", "image")
     assert result["projected_content_items"] == 1
 
 
@@ -4638,3 +4642,82 @@ def test_owner_loss_authorization_requires_inspected_container(denied):
             denied=denied,
             require_container=True,
         )
+
+
+@pytest.mark.parametrize("details", [None, [], {}, {"status": "error"}])
+def test_gateway_text_does_not_bypass_invalid_present_details(details):
+    value = projected()
+    value["result"]["details"] = details
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(value, "valid", "config", "image")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", False),
+        ("verdict", "invalid"),
+        ("status", "incomplete"),
+        ("cleanup", "failed"),
+        ("source_sha256", "other"),
+        ("config_sha256", "other"),
+        ("image", "other"),
+    ],
+)
+def test_gateway_text_only_projection_keeps_binding_checks(field, value):
+    result = projected()
+    structured = result["result"].pop("details")["structuredContent"]
+    structured[field] = value
+    result["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(structured)
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(result, "valid", "config", "image")
+
+
+@pytest.mark.parametrize("dispatcher", ["tool_call", "dispatch_action", None])
+@pytest.mark.parametrize("with_result", [False, True])
+@pytest.mark.parametrize("runtime_context", ["valid", "unclosed", "turn_marker"])
+def test_recovery_provider_gateway_envelope(tmp_path, dispatcher, with_result, runtime_context):
+    evidence = tmp_path / "provider.jsonl"
+    turn = "a" * 32
+    messages = [{"role": "user", "content": f"qualification valid qualification-turn={turn}"}]
+    if with_result:
+        messages.append({"role": "tool", "content": "observed-result"})
+    content = "OpenClaw runtime context:\nopaque"
+    if runtime_context == "turn_marker":
+        content += f" qualification-turn={turn}"
+    if runtime_context != "unclosed":
+        content += "\nEnd OpenClaw runtime context."
+    messages.append({"role": "user", "content": content})
+    with ThreadingHTTPServer(("127.0.0.1", 0), provider.handler(evidence)) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                json.dumps(
+                    {
+                        "messages": messages,
+                        "tools": [{"function": {"name": dispatcher}}] if dispatcher else [],
+                    }
+                ),
+                {"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            body = response.read().decode()
+            accepted = runtime_context == "valid" and (with_result or dispatcher is not None)
+            assert response.status == (200 if accepted else 400)
+            if accepted:
+                rows = checker.records(evidence)
+                assert len(rows) == 1 and rows[0]["turn"] == turn
+                if with_result:
+                    assert rows[0]["tool_result"] == "observed-result"
+                else:
+                    assert f'"name": "{dispatcher}"' in body
+            else:
+                assert not evidence.exists()
+        finally:
+            connection.close()
+            server.shutdown()
+            thread.join(timeout=5)

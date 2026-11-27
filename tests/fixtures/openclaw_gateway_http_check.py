@@ -160,12 +160,13 @@ def verify_outcome(
     require(isinstance(result, dict), "Gateway result must be an object")
     require(result.get("isError", False) is False, "Gateway returned a tool error")
     details = result.get("details")
-    require(isinstance(details, dict), "Gateway result details must be an object")
-    require(details.get("status") != "error", "Gateway returned error details")
-    require(
-        details.get("mcpServer") == "bicep" and details.get("mcpTool") == "bicep_validate",
-        "Gateway projected the wrong MCP route",
-    )
+    if "details" in result:
+        require(isinstance(details, dict), "Gateway result details must be an object")
+        require(details.get("status") != "error", "Gateway returned error details")
+        require(
+            details.get("mcpServer") == "bicep" and details.get("mcpTool") == "bicep_validate",
+            "Gateway projected the wrong MCP route",
+        )
     content = result.get("content")
     require(isinstance(content, list), "Gateway content must be a list")
     require(len(content) == 1, "Gateway duplicated the projected result")
@@ -175,13 +176,13 @@ def verify_outcome(
         and isinstance(content[0].get("text"), str),
         "Gateway must project one text item",
     )
-    structured = details.get("structuredContent")
-    require(isinstance(structured, dict), "Gateway structured content must be an object")
     text = content[0]["text"]
     prefix = "structuredContent:\n"
     require(text.startswith(prefix), "Gateway text lacks the structuredContent projection")
     try:
         mirrored = strict_json(text[len(prefix) :])
+        structured = details.get("structuredContent") if "details" in result else mirrored
+        require(isinstance(structured, dict), "Gateway structured content must be an object")
         same = json.dumps(mirrored, sort_keys=True, allow_nan=False) == json.dumps(
             structured, sort_keys=True, allow_nan=False
         )
