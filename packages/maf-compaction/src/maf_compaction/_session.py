@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import AsyncExitStack, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Final
 from weakref import WeakValueDictionary
 
@@ -29,10 +32,18 @@ from agent_framework import (
 )
 
 from ._composed import (
+    PASS_MODE_PERSISTED,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _RecordMergeWork,  # pyright: ignore[reportPrivateUsage]
 )
 from ._offload import off_loop
+from ._persisted_view import (
+    CompactedViewStore,
+    PersistedViewPart,
+    ViewKey,
+    ViewPart,
+    ViewWriteConflict,
+)
 from ._toolsummary import (
     DEFAULT_RECORD_TARGET_TOKENS,
     RecallGate,
@@ -41,6 +52,7 @@ from ._toolsummary import (
     ToolResultRecallMiddleware,
     make_recall_tool,
 )
+from ._view_digest import layout_text_digest
 
 #: Sessions whose strategy may keep the list its last per-call pass left.
 DEFAULT_MAX_CARRIED_VIEWS: Final[int] = 16
@@ -112,6 +124,14 @@ class _Binding:
     stack: CompactionStack | None
 
 
+logger = logging.getLogger(__name__)
+
+#: The agent key of a registry's views when the host names none.
+DEFAULT_VIEW_AGENT: Final[str] = "agent"
+#: Reads and deletes an invalidation tries before a part that keeps changing raises.
+_INVALIDATE_ATTEMPTS: Final[int] = 3
+
+
 class SessionCompactionRegistry:
     """Cache stacks while treating ``session.state[state_key]`` as authoritative.
 
@@ -122,6 +142,11 @@ class SessionCompactionRegistry:
     put every decision back. That list holds a conversation's messages, so only the
     ``max_carried_views`` most recently used sessions keep one; zero keeps none.
     Set ``saved_view_key`` to a separate session-state key to persist a layout at turn end.
+    Set ``view_store`` to persist the view after every per-call pass instead, in an
+    earlier-turns part and a current-turn part, and to resume a session from it when this
+    process holds no carried view of it (#2995). ``view_agent`` keys this registry's views
+    apart from other agents' views of the same conversation. The store must be trusted
+    storage, as session state is: see :class:`CompactedViewStore`.
     """
 
     def __init__(
@@ -132,6 +157,8 @@ class SessionCompactionRegistry:
         max_cached_sessions: int = 128,
         max_carried_views: int = DEFAULT_MAX_CARRIED_VIEWS,
         saved_view_key: str | None = None,
+        view_store: CompactedViewStore | None = None,
+        view_agent: str = DEFAULT_VIEW_AGENT,
     ) -> None:
         if max_cached_sessions < 0:
             raise ValueError("max_cached_sessions must be non-negative.")
@@ -146,6 +173,10 @@ class SessionCompactionRegistry:
         self.max_cached_sessions = max_cached_sessions
         self.max_carried_views = max_carried_views
         self.saved_view_key = saved_view_key
+        self.view_store = view_store
+        self.view_agent = view_agent
+        # What this process knows of each session's stored view; dropped with the session.
+        self._views: dict[str, _ViewState] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
@@ -211,6 +242,7 @@ class SessionCompactionRegistry:
             while len(self._cache) > self.max_cached_sessions:
                 evicted, _ = self._cache.popitem(last=False)
                 self._owners.pop(evicted, None)
+                self._views.pop(evicted, None)
                 self._discard_merge_work(evicted)
             self._release_carried_views()
 
@@ -236,6 +268,7 @@ class SessionCompactionRegistry:
         self.release_carried_view(session_id)
         self._cache.pop(session_id, None)
         self._owners.pop(session_id, None)
+        self._views.pop(session_id, None)
         self._discard_merge_work(session_id)
 
     def _discard_merge_work(self, session_id: str) -> None:
@@ -266,6 +299,148 @@ class SessionCompactionRegistry:
             self.release_carried_view(session_id)
         else:
             await off_loop(self.release_carried_view, session_id)
+
+    def _view_key(self, session_id: str, part: ViewPart) -> ViewKey:
+        return ViewKey(session_id, self.view_agent, part)
+
+    async def _observe(self, session_id: str) -> None:
+        """Record each stored part's version, absence included, as what this pass writes over."""
+        assert self.view_store is not None
+        etags: dict[ViewPart, str | None] = {}
+        for part in ViewPart:
+            stored = await self.view_store.read(self._view_key(session_id, part))
+            etags[part] = None if stored is None else stored.etag
+        self._views.setdefault(session_id, _ViewState()).etags = etags
+
+    async def _load_view(
+        self,
+        session_id: str,
+        strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ) -> None:
+        """Offer the stored view to a strategy that holds no view of its own (#2995).
+
+        Either way, the versions this pass will write over are observed before it runs.
+        """
+        store = self.view_store
+        if store is None:
+            return
+        if strategy.carries_view or strategy.has_saved_view:
+            known = self._views.get(session_id)
+            if known is None or any(part not in known.etags for part in ViewPart):
+                await self._observe(session_id)
+            return
+        earlier = await store.read(self._view_key(session_id, ViewPart.EARLIER))
+        current = await store.read(self._view_key(session_id, ViewPart.CURRENT))
+        # What this pass will write over, absence included, observed before it runs.
+        self._views[session_id] = _ViewState(
+            etags={
+                ViewPart.EARLIER: None if earlier is None else earlier.etag,
+                ViewPart.CURRENT: None if current is None else current.etag,
+            }
+        )
+        if earlier is None or current is None:
+            reason = "none stored" if earlier is None and current is None else "a part is missing"
+            logger.info("Compaction persisted view not offered: %s.", reason)
+            return
+        # Parsing, hashing and joining the stored layout is history-wide: off the loop.
+        accepted = await off_loop(partial(_accepted_view, strategy, earlier.data, current.data))
+        if isinstance(accepted, str):
+            logger.info("Compaction persisted view not offered: %s.", accepted)
+            return
+        offer, earlier_digest, earlier_sources = accepted
+        strategy.restore_saved_view(offer, source=PASS_MODE_PERSISTED)
+        # The stored earlier part is this process's now, so an unchanged one is not rewritten.
+        state = self._views[session_id]
+        state.earlier_digest = earlier_digest
+        state.earlier_sources = earlier_sources
+
+    async def _persist_view(
+        self,
+        session_id: str,
+        strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ) -> None:
+        """Write the view the pass left: the earlier part only when it changed (#2995)."""
+        store = self.view_store
+        if store is None:
+            return
+        state = self._views.get(session_id)
+        if state is None or any(part not in state.etags for part in ViewPart):
+            # The versions this pass would write over were not observed before it ran (a store
+            # read failed), so a write could overwrite a view published meanwhile. This
+            # process's view may be the older one: drop it, and the next pass reads first.
+            strategy.forget_carried_view()
+            self._views.pop(session_id, None)
+            logger.info(
+                "Compaction persisted view not written: the stored versions were not observed "
+                "before the pass."
+            )
+            return
+        # History-wide work: off the loop, as the pass's own steps are.
+        view = await off_loop(
+            partial(strategy.persisted_view_parts, unchanged_earlier=state.earlier_digest)
+        )
+        if view is None:
+            return
+        earlier, earlier_digest, current, binding = view
+        parts: list[PersistedViewPart] = []
+        if earlier is None and state.earlier_sources is not None:
+            earlier_sources = state.earlier_sources
+        elif earlier is None:
+            return
+        else:
+            earlier_sources = _source_count(earlier)
+            parts.append(
+                PersistedViewPart(ViewPart.EARLIER, 0, earlier_sources, earlier, earlier_digest)
+            )
+        end = earlier_sources + _source_count(current)
+        parts.append(PersistedViewPart(ViewPart.CURRENT, earlier_sources, end, current, binding))
+        for part in parts:
+            key = self._view_key(session_id, part.part)
+            try:
+                etag = await store.write(key, part.to_dict(), etag=state.etags[part.part])
+            except ViewWriteConflict:
+                # Another writer published a newer view. This process's view is now stale: it
+                # must not be written again, so drop it and what was observed, and the next
+                # pass reads the newer view or rebuilds.
+                strategy.forget_carried_view()
+                self._views.pop(session_id, None)
+                logger.info("Compaction persisted view not written: another writer's is newer.")
+                return
+            state.etags[part.part] = etag
+            if part.part is ViewPart.EARLIER:
+                state.earlier_digest = earlier_digest
+                state.earlier_sources = earlier_sources
+
+    async def invalidate_view(self, session: AgentSession | str) -> None:
+        """Remove a session's stored view, so its next pass starts from the stored history.
+
+        For a host event that makes the view wrong: a branch, a rollback, a deleted or
+        relabelled stored message. The view this process carries for the session, and a
+        layout waiting under ``saved_view_key``, go too, so nothing resumes or writes the
+        invalidated view again. Pass the session itself when it may have been released or
+        evicted: its saved layout lives in its state, which a session id alone cannot reach.
+        Each part is deleted at the version stored now, read afresh. Raises RuntimeError during
+        the session's active phase, as :meth:`release` does, and ViewWriteConflict if a part
+        keeps changing while it is deleted.
+        """
+        session_id = session if isinstance(session, str) else session.session_id
+        if session_id in self._active:
+            raise RuntimeError("Cannot invalidate a view during an active compaction phase.")
+        stack = self._cache.get(session_id)
+        if stack is not None and isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        ):
+            stack.strategy.forget_carried_view()
+        if self.saved_view_key is not None:
+            for owner in (self._owners.get(session_id), session):
+                if isinstance(owner, AgentSession):
+                    owner.state.pop(self.saved_view_key, None)
+        store = self.view_store
+        if store is not None:
+            for part in ViewPart:
+                await _delete_stored(store, self._view_key(session_id, part))
+        self._views.pop(session_id, None)
+        logger.info("Compaction persisted view invalidated by the host.")
 
     def _remember_merge_state(self, session: AgentSession) -> None:
         if entry := self._merge_work.get(session.session_id):
@@ -393,6 +568,66 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
             await close(completed=True)
 
 
+def _accepted_view(
+    strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    earlier: dict[str, Any],
+    current: dict[str, Any],
+) -> tuple[dict[str, Any], str, int] | str:
+    """The stored parts as a layout this strategy can resume, its earlier part's digest and
+    source count, or why the view is not offered."""
+    first = PersistedViewPart.from_dict(earlier)
+    second = PersistedViewPart.from_dict(current)
+    if first is None or second is None:
+        return "a part is unreadable"
+    earlier_digest = layout_text_digest(first.layout)
+    binding = strategy.persisted_view_binding(earlier_digest, second.layout)
+    if binding is None or second.config != binding:
+        # Decisions or settings changed after the parts were written, or the earlier part is
+        # not the one the current part was written with: an interrupted or overtaken write.
+        return "it is bound to other decisions or settings"
+    offer = strategy.persisted_view_offer(first.layout, second.layout)
+    if offer is None:
+        return "its parts do not join"
+    return offer, earlier_digest, first.end
+
+
+async def _delete_stored(store: CompactedViewStore, key: ViewKey) -> None:
+    """Delete a part at the version stored now, read afresh, never one observed for a pass."""
+    for _ in range(_INVALIDATE_ATTEMPTS):
+        stored = await store.read(key)
+        if stored is None:
+            return
+        try:
+            await store.delete(key, etag=stored.etag)
+            return
+        except ViewWriteConflict:
+            continue  # published between the read and the delete
+    raise ViewWriteConflict(f"{key.part} view of {key.agent!r} kept changing while invalidated")
+
+
+def _source_count(layout: str) -> int:
+    return len(json.loads(layout)["sources"])
+
+
+async def _guarded_view_io(io: Awaitable[None]) -> None:
+    """Run a view-store read or write; a store failure is logged and never fails the pass."""
+    try:
+        await io
+    except Exception as error:  # noqa: BLE001 - the view is an optimisation, the pass is not
+        logger.warning("Compaction persisted view store failed (%s).", type(error).__name__)
+
+
+@dataclass
+class _ViewState:
+    """What one process knows of one session's stored view."""
+
+    #: Per part, the version a write must replace; None records an observed absence.
+    etags: dict[ViewPart, str | None] = field(default_factory=lambda: {})
+    #: The earlier part this process last wrote, so an unchanged one is not written again.
+    earlier_digest: str | None = None
+    earlier_sources: int | None = None
+
+
 class _RecordMergeChatMiddleware(ChatMiddleware):
     def __init__(self, registry: SessionCompactionRegistry) -> None:
         self.registry = registry
@@ -454,12 +689,21 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                     if isinstance(
                         stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
                     ):
+                        strategy = stack.strategy
                         key = self.registry.saved_view_key
                         if key is not None and (saved := session.state.pop(key, None)) is not None:
-                            stack.strategy.restore_saved_view(saved)
-                        return await stack.strategy.compact_before(
-                            messages, options=context.options or {}
+                            strategy.restore_saved_view(saved)
+                        await _guarded_view_io(
+                            self.registry._load_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
                         )
+                        try:
+                            return await strategy.compact_before(
+                                messages, options=context.options or {}
+                            )
+                        finally:
+                            await _guarded_view_io(
+                                self.registry._persist_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
+                            )
                     return await stack.strategy(messages)
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}

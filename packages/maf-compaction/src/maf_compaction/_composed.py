@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from math import ceil, isfinite
 from time import monotonic
+from types import CodeType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import Message
@@ -66,6 +67,7 @@ from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts, structural_counter
 from ._merge_coverage import LossyMerge, MergeCoverage
 from ._offload import off_loop, steps_locked
+from ._persisted_view import join_layouts, source_turn_boundary, split_layout_data
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -95,7 +97,13 @@ from ._record_replay import (
     source_members,
 )
 from ._request import RequestOverhead
-from ._saved_view import resume_saved_view, save_view
+from ._saved_view import _VERSION as SAVED_VIEW_VERSION  # pyright: ignore[reportPrivateUsage]
+from ._saved_view import (
+    _layout_data,  # pyright: ignore[reportPrivateUsage]
+    _layout_digest,  # pyright: ignore[reportPrivateUsage]
+    resume_saved_view,
+    save_view,
+)
 from ._shed import durable_message_id, positional_shed_sources, unique_shed_groups
 from ._summary_input import (
     async_bounded_prefix_extent,
@@ -128,6 +136,7 @@ from ._toolsummary import (
     consolidatable_record_groups,
     covered_tools,
     find_record_index,
+    identify_record,
     record_anchor_position,
     record_bodies,
     reshape_payloads,
@@ -148,6 +157,7 @@ from ._usersummary import (
 from ._usersummary import (
     _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
 )
+from ._view_digest import canonical_json, json_digest, streamed_layout_digest
 
 if TYPE_CHECKING:
     from agent_framework import ChatResponse, TokenizerProtocol
@@ -296,6 +306,60 @@ class _PreparedMerge:
 MERGE_EVENT_REASON_FIELD: Final[str] = "reason"
 PASS_MODE_CARRIED: Final[str] = "carried view"
 PASS_MODE_SAVED: Final[str] = "saved view"
+#: A view read back from the host's view store (#2995).
+PASS_MODE_PERSISTED: Final[str] = "persisted view"
+#: Where a persisted view's binding carries the configuration fingerprint.
+_VIEW_CONFIGURATION_KEY: Final[str] = "configuration"
+
+
+def _code_shape(code: CodeType) -> list[Any]:
+    """A code object's instructions, names and constants, stable across processes.
+
+    Nested code objects are taken apart the same way, since their repr holds an address; a
+    frozenset's members are sorted, since their order follows string hash randomization. The
+    file name and line numbers are left out, so moving a function does not change it.
+    """
+
+    def constant(value: Any) -> Any:
+        if isinstance(value, CodeType):
+            return _code_shape(value)
+        if isinstance(value, frozenset):
+            return sorted(repr(member) for member in cast(frozenset[Any], value))
+        if isinstance(value, tuple):
+            return [constant(member) for member in cast(tuple[Any, ...], value)]
+        return repr(value)
+
+    return [code.co_code.hex(), list(code.co_names), [constant(c) for c in code.co_consts]]
+
+
+def _callable_fingerprint(value: Any) -> Any:
+    """A callable setting by qualified name and, for a Python function, its code and captures.
+
+    Two lambdas share the name ``<lambda>``, so the name alone would let a view written under
+    one prompt rewriter resume under another. A function's defaults and the plain values its
+    closure captures count too; a captured object counts by its type.
+    """
+    name = f"{value.__module__}.{value.__qualname__}"
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    if not isinstance(code, CodeType):
+        return name
+
+    def captured(item: Any) -> Any:
+        if item is None or isinstance(item, (str, int, float, bool)):
+            return item
+        return f"{type(item).__module__}.{type(item).__qualname__}"
+
+    cells = cast(tuple[Any, ...] | None, getattr(function, "__closure__", None)) or ()
+    defaults = cast(tuple[Any, ...] | None, getattr(function, "__defaults__", None)) or ()
+    return {
+        "name": name,
+        "code": _code_shape(code),
+        "defaults": [captured(item) for item in defaults],
+        "closure": [captured(cell.cell_contents) for cell in cells],
+    }
+
+
 PASS_MODE_RESTORED: Final[str] = "restored"
 PASS_MODE_CONTINUED: Final[str] = "continued"
 PASS_MODE_FULL: Final[str] = "full"
@@ -303,7 +367,9 @@ PASS_MODE_FULL: Final[str] = "full"
 PASS_MODE_UNDECIDED: Final[str] = "undecided"
 
 
-def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
+def _pass_mode(
+    *, carried: bool, saved: bool, resumed: Any, saved_source: str = PASS_MODE_SAVED
+) -> str:
     """How a pass came by the list it starts from, for the pass's summary line.
 
     ``carried`` is the view the previous call's pass left in memory, ``saved`` a turn's saved
@@ -311,12 +377,12 @@ def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
     decision back.
     """
     if resumed is not None:
-        source = PASS_MODE_CARRIED if carried else PASS_MODE_SAVED
+        source = PASS_MODE_CARRIED if carried else saved_source
         return f"{source} {PASS_MODE_RESTORED if resumed.restored else PASS_MODE_CONTINUED}"
     if carried:
         return f"{PASS_MODE_FULL} ({PASS_MODE_CARRIED} declined)"
     if saved:
-        return f"{PASS_MODE_FULL} ({PASS_MODE_SAVED} declined)"
+        return f"{PASS_MODE_FULL} ({saved_source} declined)"
     return f"{PASS_MODE_FULL} (nothing carried or saved)"
 
 
@@ -1384,6 +1450,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # ``_carryover``. Process-local, and never part of ``session_state``.
         self._carried: CarriedView | None = None
         self._saved_view: dict[str, Any] | None = None
+        self._saved_view_source = PASS_MODE_SAVED
         self._calls_resumed = 0
         # Every phase of the pass in hand has run, and only the budget verdict is left.
         self._settled = False
@@ -2110,6 +2177,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Whether the list the last per-call pass left is being kept for the next call."""
         return self._carried is not None
 
+    @property
+    def has_saved_view(self) -> bool:
+        """Whether a saved layout waits for the next pass to match it to history."""
+        return self._saved_view is not None
+
     def forget_carried_view(self) -> None:
         """Release the list kept for the next call; the next pass puts its decisions back.
 
@@ -2120,10 +2192,132 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._carried = None
         self._saved_view = None
 
-    def restore_saved_view(self, saved: dict[str, Any]) -> None:
-        """Offer a layout from trusted session storage for the next pass to match to history."""
+    def restore_saved_view(self, saved: dict[str, Any], *, source: str = PASS_MODE_SAVED) -> None:
+        """Offer a layout from trusted session storage for the next pass to match to history.
+
+        ``source`` names where it came from in the pass's summary line.
+        """
         self._carried = None
         self._saved_view = saved
+        self._saved_view_source = source
+
+    def persisted_view_parts(
+        self, *, unchanged_earlier: str | None = None
+    ) -> tuple[str | None, str, str, str] | None:
+        """The carried view cut at the turn boundary, keeping the view (#2995).
+
+        Returns the earlier-turns layout, its digest, the current-turn layout and the current
+        part's binding (:meth:`persisted_view_binding`), or None when the view cannot be
+        represented, as :meth:`take_saved_view` would refuse it. The earlier layout is None when
+        its digest is ``unchanged_earlier``: it is hashed as a stream and serialized only when
+        it changed. The decisions are built once and each part serialized at most once, from the
+        layout mapping: on a long conversation the layout is several MiB.
+        """
+        carried = self._carried
+        if carried is None:
+            return None
+        decisions = self.session_state()
+        if (
+            carried.decisions_before_storage is not None
+            and carried.decisions_before_storage != decisions
+        ):
+            return None
+        data = _layout_data(carried)
+        if data is None:
+            return None
+        parts = split_layout_data(data, source_turn_boundary(carried.states))
+        del data
+        if parts is None:
+            return None
+        try:
+            earlier_digest = streamed_layout_digest(parts[0])
+            earlier = None if earlier_digest == unchanged_earlier else canonical_json(parts[0])
+            current = canonical_json(parts[1])
+        except (TypeError, ValueError, RecursionError):
+            return None
+        del parts
+        binding = self._view_binding(decisions, earlier_digest, current)
+        if binding is None:
+            return None
+        return earlier, earlier_digest, current, binding
+
+    def _view_binding(
+        self, decisions: dict[str, Any], earlier_digest: str, current: str
+    ) -> str | None:
+        fingerprint = self.configuration_fingerprint()
+        if fingerprint is None:
+            return None
+        bound = {**decisions, _VIEW_CONFIGURATION_KEY: fingerprint}
+        return _layout_digest(bound, f"{earlier_digest}\n{current}")
+
+    def configuration_fingerprint(self) -> str | None:
+        """A digest of the settings and prompts that shape a view, for binding a persisted one.
+
+        Every public setting of this strategy, its two halves and the tool-result half's
+        fallback that is a plain value, a mapping or a sequence (nested values included), the
+        qualified name and code of a callable one (:func:`_callable_fingerprint`), and the
+        fallback's type; clients and tokenizers are not
+        settings of a view. None when a setting holds a value JSON cannot represent: such a
+        strategy neither writes nor accepts a persisted view, rather than bind it to settings
+        that were left out. Decisions are snapshots of what was done, so a process configured
+        differently can restore the same decisions: the fingerprint is what refuses a view
+        written under other prompts or limits.
+        """
+
+        def plain(value: Any) -> bool:
+            return value is None or isinstance(value, (str, int, float, bool))
+
+        def settings(part: Any) -> dict[str, Any]:
+            found: dict[str, Any] = {}
+            attributes = cast(dict[str, Any], vars(part))
+            for name, value in attributes.items():
+                if name.startswith("_"):
+                    continue
+                if plain(value):
+                    found[name] = value
+                elif isinstance(value, Mapping):
+                    found[name] = dict(cast(Mapping[Any, Any], value))
+                elif isinstance(value, (list, tuple)):
+                    found[name] = list(cast(list[Any], value))
+                elif callable(value) and hasattr(value, "__qualname__"):
+                    found[name] = _callable_fingerprint(value)
+            return found
+
+        fallback = self.tool_results.fallback
+        try:
+            return json_digest(
+                {
+                    "composed": settings(self),
+                    "tool_results": settings(self.tool_results),
+                    "fallback": {
+                        "type": f"{type(fallback).__module__}.{type(fallback).__qualname__}",
+                        **settings(fallback),
+                    },
+                    "user_turns": settings(self.user_turns),
+                }
+            )
+        except (TypeError, ValueError, RecursionError):
+            return None
+
+    def persisted_view_binding(self, earlier_digest: str, current: str) -> str | None:
+        """What binds a current-turn part to these decisions and to its earlier-turns part.
+
+        Every decision is bound, as the saved view binds them, but only through the current part,
+        which is rewritten after every pass anyway; the earlier part is named by its digest.
+        None when the settings cannot be fingerprinted (:meth:`configuration_fingerprint`).
+        """
+        return self._view_binding(self.session_state(), earlier_digest, current)
+
+    def persisted_view_offer(self, earlier: str, current: str) -> dict[str, Any] | None:
+        """The two parts joined into one saved layout, bound to these decisions, or None."""
+        joined = join_layouts(earlier, current)
+        if joined is None:
+            return None
+        return {
+            "version": SAVED_VIEW_VERSION,
+            "layout": joined,
+            "digest": _layout_digest(self.session_state(), joined),
+        }
 
     def take_saved_view(self) -> dict[str, Any] | None:
         """Release the kept list and return its portable layout when it can be represented."""
@@ -2184,7 +2378,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if resumed is not None and resumed.restored:
             self._calls_resumed += 1
         mode = _pass_mode(
-            carried=carried is not None, saved=saved_view is not None, resumed=resumed
+            carried=carried is not None,
+            saved=saved_view is not None,
+            resumed=resumed,
+            saved_source=self._saved_view_source,
         )
         self._pass_mode = mode
         # Handed back as the last pass left it, the list is no account of the stored messages.
@@ -2973,6 +3170,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     replacement = build_record_message(later.text)
                     identity = (LINEAGE_KEY, later.sources.split(":")[1])
                     replacement.additional_properties[LINEAGE_KEY] = identity[1]
+                    identify_record(replacement)
                     affected.add(identity)
                     fingerprints.add(ReplayView([replacement]).message_key(0))
                 required_outputs.update(
@@ -3144,6 +3342,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if edit.text is not None and edit.sources.startswith("v2:"):
                 replacement = build_record_message(edit.text)
                 replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+                identify_record(replacement)
                 identity = replacement_identity(replacement)
                 assert identity is not None
                 merges[identity] = (index, replacement)
@@ -3218,6 +3417,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return reshape_replacements(view.messages, groups)
         replacement = build_record_message(edit.text)
         replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+        identify_record(replacement)
         return [(groups[-1], replacement)]
 
     @staticmethod
@@ -4803,6 +5003,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             # Only the foreground journals an edit against the authoritative history.
             replacement = build_record_message(text)
             replacement.additional_properties[LINEAGE_KEY] = source_lineage(messages, groups)
+            identify_record(replacement)
             for group in groups:
                 set_excluded(messages[int(group["end_index"])], excluded=True)
             messages.insert(int(groups[-1]["end_index"]) + 1, replacement)
