@@ -185,4 +185,3 @@ def check_container_events(
     require(len(creates) == 2 and creates.keys() == destroys.keys(), "Unexpected execution count")
     require(all(creates[key] < destroys[key] for key in creates), "Invalid disposal order")
     return {"created": len(creates), "destroyed": len(destroys)}
-

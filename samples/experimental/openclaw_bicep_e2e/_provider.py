@@ -336,4 +336,3 @@ class Provider:
             "bicep_identifiers": dict(Counter(self.bicep_identifiers.values())),
             "observed_bicep_results": len(self.records),
         }
-

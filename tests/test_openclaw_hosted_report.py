@@ -215,4 +215,3 @@ def test_model_profile_refuses_incomplete_turns(field, value):
     result = model_sample()
     result["turns"][1][field] = value
     assert not report.observations(result, "model")[1]
-
