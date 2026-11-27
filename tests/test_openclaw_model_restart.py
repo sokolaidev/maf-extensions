@@ -214,4 +214,3 @@ def test_collector_refuses_incomplete_recovery(mutation: str) -> None:
     else:
         result["events"][1]["time_ns"] = result["events"][0]["time_ns"]
     assert not recovery_accepted(result)
-

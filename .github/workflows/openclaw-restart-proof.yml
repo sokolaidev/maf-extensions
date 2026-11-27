@@ -18,7 +18,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest -q tests/test_openclaw_model_restart.py tests/test_openclaw_e2e_sample.py tests/test_openclaw_hosted_report.py tests/test_openclaw_published_sample.py
       - run: uv run ruff check .
-      - run: uv run ruff format --check .
+      - run: uv run ruff format --check --diff .
       - run: uv run poe types
       - run: uv run poe security
   openclaw-bicep-model:

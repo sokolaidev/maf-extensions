@@ -818,4 +818,3 @@ def test_supervisor_does_not_add_installed_bytecode(
         errors = controller.close()
     assert errors == []
     assert not list(site.rglob("*.pyc"))
-
