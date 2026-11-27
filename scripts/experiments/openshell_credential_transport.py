@@ -132,8 +132,8 @@ async def measure_transport(guest, profile, client, mint, ip, host, reconcile, r
     ):
         raise RuntimeError("idle HTTPS connection did not return its control response")
     row.update(idle_guest=primed, idle_origin=idle)
-    await guest.command(operation="hold", url=url + "held", source="edited")
     try:
+        await guest.command(operation="hold", url=url + "held", source="edited")
         deadline = time.monotonic() + 10
         while True:
             arrivals = await reconcile()
