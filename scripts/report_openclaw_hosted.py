@@ -23,7 +23,9 @@ def command(*args: str) -> str:
     return subprocess.check_output(args, text=True, timeout=30, stderr=subprocess.DEVNULL).strip()
 
 
-def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str, Any], bool]:
+def observations(
+    report: dict[str, Any], mode: str = "smoke", *, worker_restart: bool = False
+) -> tuple[dict[str, Any], bool]:
     """Require the requested profile, observed compiler results and complete cleanup."""
     flags = ("passed", "owned_empty", "owner_lock_released", "processes_stopped")
     public = {key: report.get(key) for key in (*flags, "mode", "actual_model", "openclaw", "image")}
@@ -97,14 +99,78 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
                 ]
             )
         )
+    recovery = report.get("recovery")
+    if worker_restart:
+        if isinstance(recovery, dict):
+            public["recovery"] = {
+                key: recovery.get(key)
+                for key in ("profile", "attempts", "failed_attempts", "same_turn_retry")
+            }
+            public["recovery"]["containers"] = {
+                key: recovery.get("containers", {}).get(key) for key in ("created", "destroyed")
+            }
+            public["recovery"]["events"] = [
+                {
+                    key: event.get(key)
+                    for key in ("event", "time_ns", "call", "turn", "message_sha256")
+                    if key in event
+                }
+                for event in recovery.get("events", [])
+                if isinstance(event, dict)
+            ]
+        accepted = accepted and mode == "model" and recovery_accepted(recovery)
+        accepted = accepted and [turn["calls"] for turn in turns] == [1, 1]
+    else:
+        accepted = accepted and recovery is None
     return public, accepted
 
 
-def collect(root: Path, mode: str = "smoke") -> tuple[dict[str, Any], bool]:
+def recovery_accepted(recovery: Any) -> bool:
+    """Require the bounded fault sequence and two disposed compiler executions."""
+    if not isinstance(recovery, dict):
+        return False
+    events = recovery.get("events", [])
+    names = [
+        "worker_stopped",
+        "failure_observed",
+        "worker_ready",
+        "retry_selected",
+        "repair_selected",
+    ]
+    if (
+        not isinstance(events, list)
+        or not all(isinstance(event, dict) for event in events)
+        or [event.get("event") for event in events] != names
+    ):
+        return False
+    stamps = [event.get("time_ns") for event in events]
+    if not all(type(stamp) is int for stamp in stamps) or stamps != sorted(set(stamps)):
+        return False
+    identities = [events[index].get("call") for index in (0, 1, 3, 4)]
+    turns = [events[index].get("turn") for index in (0, 1, 3, 4)]
+    hashes = [*identities, *turns, events[1].get("message_sha256")]
+    return (
+        recovery.get("profile") == "pre-admission-worker-restart-v1"
+        and type(recovery.get("attempts")) is int
+        and recovery["attempts"] == 3
+        and type(recovery.get("failed_attempts")) is int
+        and recovery["failed_attempts"] == 1
+        and recovery.get("same_turn_retry") is True
+        and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes)
+        and identities[0] == identities[1]
+        and len(set(identities)) == 3
+        and turns[0] == turns[1] == turns[2] != turns[3]
+        and recovery.get("containers") == {"created": 2, "destroyed": 2}
+    )
+
+
+def collect(
+    root: Path, mode: str = "smoke", *, worker_restart: bool = False
+) -> tuple[dict[str, Any], bool]:
     """Join sample results to an independent owner-scoped Docker inventory."""
     report_path = root / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    public, accepted = observations(report, mode)
+    public, accepted = observations(report, mode, worker_restart=worker_restart)
     public["report_sha256"] = digest(report_path)
     try:
         owner = (root / "owner/owner").read_text(encoding="utf-8").strip()
@@ -115,6 +181,35 @@ def collect(root: Path, mode: str = "smoke") -> tuple[dict[str, Any], bool]:
         )
         public["independent_owned_container_count"] = len(containers.split())
         public["tool_evidence_sha256"] = digest(root / "tool-evidence.jsonl")
+        if worker_restart:
+            event_path = root / "docker-events.jsonl"
+            public["docker_events_sha256"] = digest(event_path)
+            events = [json.loads(line) for line in event_path.read_text().splitlines()]
+            ready = report["recovery"]["events"][2]["time_ns"]
+            created, destroyed = {}, {}
+            for event in events:
+                if event.get("Action") not in {"create", "destroy"}:
+                    continue
+                actor, stamp = event["Actor"], event["timeNano"]
+                if (
+                    event["Type"] != "container"
+                    or actor["Attributes"]["maf-sandbox.scope"] != "openclaw-bicep-" + owner
+                    or type(stamp) is not int
+                    or stamp <= ready
+                    or not re.fullmatch(r"[0-9a-f]{64}", actor["ID"])
+                ):
+                    raise ValueError("Invalid compiler event")
+                selected = created if event["Action"] == "create" else destroyed
+                if actor["ID"] in selected:
+                    raise ValueError("Duplicate compiler event")
+                selected[actor["ID"]] = stamp
+            accepted = (
+                accepted
+                and len(created) == 2
+                and created.keys() == destroyed.keys()
+                and all(created[key] < destroyed[key] for key in created)
+            )
+            public["independent_compiler_executions"] = len(created)
         return public, accepted and not containers
     except Exception as exc:
         public["collection_error_type"] = type(exc).__name__
@@ -126,6 +221,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("smoke", "model"), default="smoke")
+    parser.add_argument("--worker-restart", action="store_true")
     parser.add_argument(
         "--published", action="store_true", help="Collect the numbered published sample"
     )
@@ -154,13 +250,17 @@ def main() -> int:
             command("docker", "version", "--format", "{{json .Server}}")
         )
         evidence["sample_sha256"] = digest(Path("samples/experimental/openclaw_bicep_e2e/agent.py"))
+        evidence["harness_sha256"] = {
+            path.name: digest(path)
+            for path in sorted(Path("samples/experimental/openclaw_bicep_e2e").glob("*.py"))
+        }
         if args.published:
             evidence["launcher_sha256"] = digest(Path("samples/24_openclaw_bicep/agent.py"))
             evidence["profile"] = (
                 "published-smoke-v1" if args.mode == "smoke" else "published-model-v1"
             )
         root = Path(os.environ["RUNNER_TEMP"]) / "openclaw-bicep-private"
-        observed, accepted = collect(root, args.mode)
+        observed, accepted = collect(root, args.mode, worker_restart=args.worker_restart)
         evidence.update(observed)
         evidence["worker_python"] = command(str(root / "worker/bin/python"), "--version")
         evidence["qualified"] = accepted
