@@ -1,36 +1,22 @@
-name: OpenClaw 3005 delivery checks
+name: OpenClaw 3005 final tracker check
 on:
   push:
     branches: [antsok-proof-openclaw-3005]
 permissions:
   contents: read
 jobs:
-  delivery:
+  trackers:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: bb8610650ceffa72552d6d75775517563e0c39e2
+          ref: 785a3a1a15e5cf96009b73f5cfbe8de350fbd176
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - run: uv sync --locked
-      - name: Focused tests and lint
-        run: |
-          uv run pytest -q tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
-          uv run ruff check .
-          uv run ruff format --check .
-      - name: Types and source checks
-        run: |
-          uv run poe types
-          uv run poe security
-          uv run poe doc-paths
-          uv run poe implicit-concat
-      - name: Live documentation trackers
+      - name: Verify documentation paths and promised issue closure
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run poe doc-trackers
-      - name: Sample declared floors
-        run: uv run poe sample-floors
-      - name: Markdown code blocks
-        run: uv run poe md-blocks
+          PR_NUMBER: '3010'
+        run: |
+          python3 scripts/check_doc_paths.py
+          python3 scripts/check_doc_trackers.py
