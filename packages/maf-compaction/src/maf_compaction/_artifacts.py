@@ -53,7 +53,7 @@ WRITTEN_RECORD_PREFIX: Final[str] = f"{RECORD_MARKER} {RECORD_PREAMBLE}"
 WRITTEN_RECORD_KEY: Final[str] = "maf_compaction_written_record"
 #: Prefix and digest length of the durable id a written record is given (``identify_record``).
 RECORD_ID_PREFIX: Final[str] = "rec_"
-RECORD_ID_DIGEST_CHARS: Final[int] = 32
+RECORD_ID_DIGEST_CHARS: Final[int] = 16
 
 
 def shed_note_text(texts: list[str], group_count: int) -> str:

@@ -84,7 +84,9 @@ async def test_first_call_with_a_fresh_strategy_matches_full_replay(durable: boo
     handed = host.hand()
     expected = await _call(control, _reload(handed))
     assert await _call(restored, _reload(handed), json.loads(json.dumps(saved))) == expected
-    assert restored.calls_resumed == int(durable)
+    # Records carry durable ids (#2996), so the layout resumes on a transcript numbered by
+    # position too; the comparison with a full replay above is what makes that safe.
+    assert restored.calls_resumed == 1
 
 
 #: Large enough for a full replay of the summarized history to fit, so the two can be compared.
@@ -588,13 +590,6 @@ async def test_direct_restoration_keeps_the_ids_full_replay_assigns(tail_size: i
     saved = first.take_saved_view()
     assert saved
     history.extend(Message("user", [f"Tail {i}"]) for i in range(tail_size))
-    if tail_size == 2:
-        messages = _reload(history)
-        before = [m.to_dict() for m in messages]
-        assert (
-            resume_saved_view(saved, first.session_state(), messages, Handed.take(messages)) is None
-        )
-        assert [m.to_dict() for m in messages] == before
     outputs = []
     for warm in (False, True):
         strategy = _strategy(_Summarizer(), budget=budget, policy="shed")
@@ -604,7 +599,9 @@ async def test_direct_restoration_keeps_the_ids_full_replay_assigns(tail_size: i
         messages = _reload(history)
         await strategy.compact_before(messages, options={})
         if warm:
-            assert strategy.calls_resumed == int(tail_size == 1)
+            # Records carry durable ids (#2996): a tail numbered by position no longer collides
+            # with the records' numbers, so the layout resumes and must send what replay sends.
+            assert strategy.calls_resumed == 1
         outputs.append(
             [
                 (m.message_id, m.role, m.to_dict()["contents"])

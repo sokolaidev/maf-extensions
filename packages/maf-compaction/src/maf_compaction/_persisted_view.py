@@ -261,6 +261,39 @@ def turn_boundary(messages: list[Message]) -> int:
     return 0
 
 
+def join_layouts(earlier: str, current: str) -> str | None:
+    """The one layout :func:`split_saved_layout` cut into ``earlier`` and ``current``.
+
+    The current part's source positions are counted from the boundary again. Returns None when
+    either part is malformed.
+    """
+    first, second = _parse_layout(earlier), _parse_layout(current)
+    if first is None or second is None:
+        return None
+    sources, order, required = first
+    later_sources, later_order, later_required = second
+    shift = len(sources)
+    joined_order = [
+        *order,
+        *(
+            {**entry, "source": int(entry["source"]) + shift} if "source" in entry else entry
+            for entry in later_order
+        ),
+    ]
+    joined_required = shift + later_required if later_required else required
+    return canonical_json(
+        {"sources": [*sources, *later_sources], "order": joined_order, "required": joined_required}
+    )
+
+
+def source_turn_boundary(states: list[tuple[Any, ...]]) -> int:
+    """:func:`turn_boundary` over a carried view's source states, whose first field is the role."""
+    for index in range(len(states) - 1, -1, -1):
+        if str(states[index][0]) == _USER_ROLE:
+            return index
+    return 0
+
+
 def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> list[int] | None:
     """The source positions an inserted summary or note names as what it stands for.
 
@@ -351,6 +384,8 @@ __all__ = [
     "ViewKey",
     "ViewPart",
     "ViewWriteConflict",
+    "join_layouts",
+    "source_turn_boundary",
     "split_saved_layout",
     "turn_boundary",
 ]

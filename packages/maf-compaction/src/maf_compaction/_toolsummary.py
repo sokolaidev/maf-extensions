@@ -1416,12 +1416,15 @@ def identify_record(message: Message) -> Message:
     could key or match the record. The id is a digest of the record's source link (its lineage,
     or the identity of the record it reshapes) and its text, so a pass that derives the same
     record again, or a background worker that writes the same answer, gives it the same id.
-    An id already set is kept.
+    An id already set is kept. A record with no source link keeps none: its text alone does not
+    tell two records apart, so the framework's numbering stays in place for it.
     """
     if message.message_id:
         return message
     properties = message.additional_properties
-    anchor = properties.get(LINEAGE_KEY) or properties.get(STANDS_IN_KEY) or ""
+    anchor = properties.get(LINEAGE_KEY) or properties.get(STANDS_IN_KEY)
+    if not anchor:
+        return message
     digest = hashlib.sha256(f"{anchor}\n{message.text}".encode()).hexdigest()
     message.message_id = f"{RECORD_ID_PREFIX}{digest[:RECORD_ID_DIGEST_CHARS]}"
     return message

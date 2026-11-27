@@ -66,6 +66,7 @@ from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts, structural_counter
 from ._merge_coverage import LossyMerge, MergeCoverage
 from ._offload import off_loop, steps_locked
+from ._persisted_view import join_layouts, source_turn_boundary, split_saved_layout
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -95,7 +96,12 @@ from ._record_replay import (
     source_members,
 )
 from ._request import RequestOverhead
-from ._saved_view import resume_saved_view, save_view
+from ._saved_view import _VERSION as SAVED_VIEW_VERSION  # pyright: ignore[reportPrivateUsage]
+from ._saved_view import (
+    _layout_digest,  # pyright: ignore[reportPrivateUsage]
+    resume_saved_view,
+    save_view,
+)
 from ._shed import durable_message_id, positional_shed_sources, unique_shed_groups
 from ._summary_input import (
     async_bounded_prefix_extent,
@@ -297,6 +303,8 @@ class _PreparedMerge:
 MERGE_EVENT_REASON_FIELD: Final[str] = "reason"
 PASS_MODE_CARRIED: Final[str] = "carried view"
 PASS_MODE_SAVED: Final[str] = "saved view"
+#: A view read back from the host's view store (#2995).
+PASS_MODE_PERSISTED: Final[str] = "persisted view"
 PASS_MODE_RESTORED: Final[str] = "restored"
 PASS_MODE_CONTINUED: Final[str] = "continued"
 PASS_MODE_FULL: Final[str] = "full"
@@ -304,7 +312,9 @@ PASS_MODE_FULL: Final[str] = "full"
 PASS_MODE_UNDECIDED: Final[str] = "undecided"
 
 
-def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
+def _pass_mode(
+    *, carried: bool, saved: bool, resumed: Any, saved_source: str = PASS_MODE_SAVED
+) -> str:
     """How a pass came by the list it starts from, for the pass's summary line.
 
     ``carried`` is the view the previous call's pass left in memory, ``saved`` a turn's saved
@@ -312,12 +322,12 @@ def _pass_mode(*, carried: bool, saved: bool, resumed: Any) -> str:
     decision back.
     """
     if resumed is not None:
-        source = PASS_MODE_CARRIED if carried else PASS_MODE_SAVED
+        source = PASS_MODE_CARRIED if carried else saved_source
         return f"{source} {PASS_MODE_RESTORED if resumed.restored else PASS_MODE_CONTINUED}"
     if carried:
         return f"{PASS_MODE_FULL} ({PASS_MODE_CARRIED} declined)"
     if saved:
-        return f"{PASS_MODE_FULL} ({PASS_MODE_SAVED} declined)"
+        return f"{PASS_MODE_FULL} ({saved_source} declined)"
     return f"{PASS_MODE_FULL} (nothing carried or saved)"
 
 
@@ -1385,6 +1395,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # ``_carryover``. Process-local, and never part of ``session_state``.
         self._carried: CarriedView | None = None
         self._saved_view: dict[str, Any] | None = None
+        self._saved_view_source = PASS_MODE_SAVED
         self._calls_resumed = 0
         # Every phase of the pass in hand has run, and only the budget verdict is left.
         self._settled = False
@@ -2111,6 +2122,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Whether the list the last per-call pass left is being kept for the next call."""
         return self._carried is not None
 
+    @property
+    def has_saved_view(self) -> bool:
+        """Whether a saved layout waits for the next pass to match it to history."""
+        return self._saved_view is not None
+
     def forget_carried_view(self) -> None:
         """Release the list kept for the next call; the next pass puts its decisions back.
 
@@ -2121,10 +2137,53 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._carried = None
         self._saved_view = None
 
-    def restore_saved_view(self, saved: dict[str, Any]) -> None:
-        """Offer a layout from trusted session storage for the next pass to match to history."""
+    def restore_saved_view(self, saved: dict[str, Any], *, source: str = PASS_MODE_SAVED) -> None:
+        """Offer a layout from trusted session storage for the next pass to match to history.
+
+        ``source`` names where it came from in the pass's summary line.
+        """
         self._carried = None
         self._saved_view = saved
+        self._saved_view_source = source
+
+    def persisted_view_layouts(self) -> tuple[str, str] | None:
+        """The carried view's layout cut at the turn boundary, keeping the view (#2995).
+
+        Returns the earlier-turns and current-turn layouts, or None when the view cannot be
+        represented, as :meth:`take_saved_view` would refuse it.
+        """
+        carried = self._carried
+        if carried is None:
+            return None
+        decisions = self.session_state()
+        if (
+            carried.decisions_before_storage is not None
+            and carried.decisions_before_storage != decisions
+        ):
+            return None
+        saved = save_view(carried, decisions)
+        if saved is None:
+            return None
+        return split_saved_layout(saved["layout"], source_turn_boundary(carried.states))
+
+    def persisted_view_binding(self, earlier_digest: str, current: str) -> str:
+        """What binds a current-turn part to these decisions and to its earlier-turns part.
+
+        Every decision is bound, as the saved view binds them, but only through the current part,
+        which is rewritten after every pass anyway; the earlier part is named by its digest.
+        """
+        return _layout_digest(self.session_state(), f"{earlier_digest}\n{current}")
+
+    def persisted_view_offer(self, earlier: str, current: str) -> dict[str, Any] | None:
+        """The two parts joined into one saved layout, bound to these decisions, or None."""
+        joined = join_layouts(earlier, current)
+        if joined is None:
+            return None
+        return {
+            "version": SAVED_VIEW_VERSION,
+            "layout": joined,
+            "digest": _layout_digest(self.session_state(), joined),
+        }
 
     def take_saved_view(self) -> dict[str, Any] | None:
         """Release the kept list and return its portable layout when it can be represented."""
@@ -2185,7 +2244,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if resumed is not None and resumed.restored:
             self._calls_resumed += 1
         mode = _pass_mode(
-            carried=carried is not None, saved=saved_view is not None, resumed=resumed
+            carried=carried is not None,
+            saved=saved_view is not None,
+            resumed=resumed,
+            saved_source=self._saved_view_source,
         )
         self._pass_mode = mode
         # Handed back as the last pass left it, the list is no account of the stored messages.
