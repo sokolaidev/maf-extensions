@@ -309,6 +309,8 @@ A successful run returns while admitted requests finish on the cached stack. The
 
 The worker inherits the context variables bound when the agent enters the record-merge middleware. Bind `observe_record_merges` and any conversation logging tags in an outer agent middleware to observe background requests, prepared answers and cleanup, including when another task reads or closes the stream.
 
+Without an observer, the counts still reach the log at INFO. Each `compact_before` pass logs `Compaction pass: mode=<mode>; merge events: <name>=<count> ...`, and each background worker logs `Compaction background worker finished: merge events: ...` when it ends. A reason code is part of the name, as in `batch_skipped[sources_not_durable]=13`. The mode says how the pass came by its list: `carried view restored` or `carried view continued` (the previous call's view, kept in memory), `saved view restored` or `saved view continued` (a turn's saved layout), or `full (...)` with why neither applied, and `undecided` for a pass that failed or was cancelled before choosing. An event sent between passes, such as `worker_started`, is counted in the next pass's line. Names and counts only, never values. Some events, such as `survey` and `answer_prepared`, are sent only while an observer is attached, so they appear in these lines only then.
+
 Snapshots written before `split_merges` existed treat every counted refused merge as eligible for retries in smaller halves, including refusals that were no smaller. A present, empty `split_merges` list keeps its explicit meaning: none are eligible. Refusals without a source count remain ambiguous and are discarded on restore.
 
 ### Sharing summarizer capacity
