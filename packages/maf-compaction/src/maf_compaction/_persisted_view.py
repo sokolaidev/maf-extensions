@@ -16,15 +16,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 from agent_framework import Message
+from agent_framework._compaction import GROUP_ANNOTATION_KEY, SUMMARY_OF_MESSAGE_IDS_KEY
 
-from ._view_digest import canonical_json, content_digest
+from ._carryover import Handed
+from ._saved_view import _flags, _state  # pyright: ignore[reportPrivateUsage]
+from ._view_digest import canonical_json, json_digest
 
 #: Format of a serialized :class:`PersistedViewPart`; a part of another version is not read.
 VIEW_PART_VERSION: Final[int] = 1
 _USER_ROLE: Final[str] = "user"
+#: A layout source: digest, accepted states, accepted flags, accepted link digests.
+_SOURCE_FIELDS: Final[int] = 4
 
 
 class ViewPart(StrEnum):
@@ -41,6 +46,8 @@ class MisfitReason(StrEnum):
     CONFIG = "config"
     RANGE = "range"
     DIGEST = "digest"
+    IDENTITY = "identity"
+    LAYOUT = "layout"
 
 
 @dataclass(frozen=True)
@@ -69,18 +76,16 @@ class CompactedViewStore(Protocol):
 
     async def read(self, key: ViewKey) -> StoredView | None:
         """Return the stored part, or None when there is none."""
-        ...
 
     async def write(self, key: ViewKey, data: dict[str, Any], *, etag: str | None) -> str:
         """Store ``data`` if the stored version is ``etag`` (None: nothing stored yet).
 
         Returns the new version. Raises :class:`ViewWriteConflict` otherwise.
         """
-        ...
+        raise NotImplementedError
 
     async def delete(self, key: ViewKey) -> None:
         """Remove the part; removing a missing one is not an error."""
-        ...
 
 
 class InMemoryViewStore:
@@ -107,6 +112,52 @@ class InMemoryViewStore:
 
     async def delete(self, key: ViewKey) -> None:
         self._parts.pop(key, None)
+
+
+def _parse_layout(layout: str) -> tuple[list[list[Any]], list[dict[str, Any]], int] | None:
+    """A layout's sources, order and required count, or None for anything malformed.
+
+    Each source is ``[digest, accepted states, accepted flags, accepted link digests]``; each
+    order entry is an ``insert`` mapping or a ``source`` index inside the sources.
+    """
+    try:
+        data = json.loads(layout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    data = cast(dict[str, Any], data)
+    sources, order, required = data.get("sources"), data.get("order"), data.get("required")
+    if not isinstance(sources, list) or not isinstance(order, list):
+        return None
+    if not isinstance(required, int) or isinstance(required, bool) or required < 0:
+        return None
+    checked_sources = cast(list[Any], sources)
+    checked_order = cast(list[Any], order)
+    for source in checked_sources:
+        if not isinstance(source, list):
+            return None
+        fields = cast(list[Any], source)
+        if not (
+            len(fields) == _SOURCE_FIELDS
+            and isinstance(fields[0], str)
+            and all(isinstance(field, list) for field in fields[1:])
+        ):
+            return None
+    for item in checked_order:
+        if not isinstance(item, dict):
+            return None
+        entry = cast(dict[str, Any], item)
+        if "insert" in entry:
+            if not isinstance(entry["insert"], dict):
+                return None
+            continue
+        position = entry.get("source")
+        if not isinstance(position, int) or isinstance(position, bool):
+            return None
+        if not 0 <= position < len(checked_sources):
+            return None
+    return checked_sources, cast(list[dict[str, Any]], checked_order), required
 
 
 @dataclass(frozen=True)
@@ -146,68 +197,114 @@ class PersistedViewPart:
                 str(data["layout"]),
                 str(data["config"]),
             )
-            json.loads(part.layout)
         except (KeyError, TypeError, ValueError):
+            return None
+        if _parse_layout(part.layout) is None:
             return None
         return part if 0 <= part.start <= part.end else None
 
     def misfit(self, messages: list[Message], config: str) -> MisfitReason | None:
         """Why this part does not fit ``messages`` under ``config``, or None when it does.
 
-        Each stored message the part covers must still have the contents the layout recorded.
+        Each stored message the part covers must still be the one the layout recorded: the same
+        contents, and a host state, flags and links the layout accepted -- what
+        :func:`~._saved_view._match` checks before it resumes a saved view. An identical text
+        under another id, role, author or links does not fit.
         """
         if self.config != config:
             return MisfitReason.CONFIG
-        if self.end > len(messages):
+        parsed = _parse_layout(self.layout)
+        if parsed is None:
+            return MisfitReason.LAYOUT
+        sources, _, _ = parsed
+        if self.end > len(messages) or len(sources) != self.end - self.start:
             return MisfitReason.RANGE
-        try:
-            sources = json.loads(self.layout)["sources"]
-        except (KeyError, TypeError, ValueError):
-            return MisfitReason.VERSION
-        if len(sources) != self.end - self.start:
-            return MisfitReason.RANGE
-        for offset, source in enumerate(sources):
-            if content_digest(messages[self.start + offset].contents) != source[0]:
+        covered = messages[self.start : self.end]
+        handed = Handed.take(covered)
+        for offset, (digest, accepted, flags, known_links) in enumerate(sources):
+            if handed.digests[offset] != digest:
                 return MisfitReason.DIGEST
+            properties = covered[offset].additional_properties
+            if (
+                _state(handed.states[offset]) not in accepted
+                or list(_flags(properties)) not in flags
+                or json_digest(handed.links[offset]) not in known_links
+            ):
+                return MisfitReason.IDENTITY
         return None
 
 
 def turn_boundary(messages: list[Message]) -> int:
-    """Index of the message the current turn starts at: the last user message, or 0."""
+    """Index of the message the current turn starts at: the last user message, or 0.
+
+    For :func:`split_saved_layout`, pass the list the layout was saved from: there each handed
+    message is one source, so the index is a source index. A later history can hold stored
+    copies of inserted messages, which are not sources, and its indexes can differ.
+    """
     for index in range(len(messages) - 1, -1, -1):
         if messages[index].role == _USER_ROLE:
             return index
     return 0
 
 
-def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
-    """Cut a saved-view layout at stored message ``boundary`` into earlier and current layouts.
+def _covered_positions(insert: dict[str, Any], positions: dict[str, int]) -> list[int]:
+    """The source positions an inserted summary or note names as what it stands for."""
+    properties: Any = insert.get("additional_properties")
+    if not isinstance(properties, dict):
+        return []
+    group: Any = cast(dict[str, Any], properties).get(GROUP_ANNOTATION_KEY)
+    if not isinstance(group, dict):
+        return []
+    ids: Any = cast(dict[str, Any], group).get(SUMMARY_OF_MESSAGE_IDS_KEY)
+    if not isinstance(ids, list):
+        return []
+    named = cast(list[Any], ids)
+    return [positions[mid] for mid in named if isinstance(mid, str) and mid in positions]
 
-    Sources before the boundary go to the earlier part, the rest to the current part with their
-    positions counted from the boundary. An inserted message (a record, summary or note) goes
-    with the part of the source entry before it, or with the earlier part when none precedes it.
-    Returns None for a malformed layout or a boundary outside it.
+
+def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
+    """Cut a saved-view layout at source ``boundary`` into earlier and current layouts.
+
+    ``boundary`` is a source index -- :func:`turn_boundary` over the list the layout was saved
+    from. Sources before it go to the earlier part, the rest to the current part with their
+    positions counted from it. An inserted message that names the sources it stands for (a user
+    summary, which is inserted before them, or a note) goes with the part holding them. One
+    that names none (a written record, inserted after its sources) goes with the part of the
+    source entry before it, or the earlier part when none precedes it.
+
+    Returns None for a malformed layout, a boundary outside it, or an insert that stands for
+    sources on both sides of the boundary, which neither part can hold alone.
     """
-    try:
-        data = json.loads(layout)
-        sources, order, required = data["sources"], data["order"], int(data["required"])
-    except (KeyError, TypeError, ValueError):
+    parsed = _parse_layout(layout)
+    if parsed is None:
         return None
+    sources, order, required = parsed
     if not 0 <= boundary <= len(sources):
         return None
+    positions = {
+        str(entry["id"]): int(entry["source"])
+        for entry in order
+        if "source" in entry and isinstance(entry.get("id"), str)
+    }
     earlier_order: list[dict[str, Any]] = []
     current_order: list[dict[str, Any]] = []
     in_current = False
-    try:
-        for entry in order:
-            if "source" in entry:
-                in_current = int(entry["source"]) >= boundary
-                if in_current:
-                    current_order.append({**entry, "source": int(entry["source"]) - boundary})
-                    continue
+    for entry in order:
+        if "source" in entry:
+            in_current = int(entry["source"]) >= boundary
+            if in_current:
+                current_order.append({**entry, "source": int(entry["source"]) - boundary})
+            else:
+                earlier_order.append(entry)
+            continue
+        covered = _covered_positions(entry["insert"], positions)
+        if covered:
+            sides = {position >= boundary for position in covered}
+            if len(sides) > 1:
+                return None
+            (current_order if sides.pop() else earlier_order).append(entry)
+        else:
             (current_order if in_current else earlier_order).append(entry)
-    except (TypeError, ValueError):
-        return None
     earlier = {
         "sources": sources[:boundary],
         "order": earlier_order,

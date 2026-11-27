@@ -6,7 +6,9 @@ import json
 
 import pytest
 from agent_framework import Content, Message
+from agent_framework._compaction import GROUP_ANNOTATION_KEY, SUMMARY_OF_MESSAGE_IDS_KEY
 
+from maf_compaction._carryover import Handed
 from maf_compaction._persisted_view import (
     VIEW_PART_VERSION,
     InMemoryViewStore,
@@ -18,7 +20,8 @@ from maf_compaction._persisted_view import (
     split_saved_layout,
     turn_boundary,
 )
-from maf_compaction._view_digest import canonical_json, content_digest
+from maf_compaction._saved_view import _flags, _state
+from maf_compaction._view_digest import canonical_json, json_digest
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +36,17 @@ def _history() -> list[Message]:
 
 
 def _layout(messages: list[Message], order: list[dict], required: int = 0) -> str:
-    sources = [[content_digest(m.contents), [], [], []] for m in messages]
+    """A layout recording each message as save_view does: digest, state, flags and links."""
+    handed = Handed.take(messages)
+    sources = [
+        [
+            handed.digests[i],
+            [_state(handed.states[i])],
+            [list(_flags(m.additional_properties))],
+            [json_digest(handed.links[i])],
+        ]
+        for i, m in enumerate(messages)
+    ]
     return canonical_json({"sources": sources, "order": order, "required": required})
 
 
@@ -114,3 +127,62 @@ async def test_a_stale_writer_is_refused_and_parts_are_kept_apart() -> None:
     await store.delete(advisor)
     await store.delete(advisor)
     assert await store.read(advisor) is None
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        '{"sources": null, "order": [], "required": 0}',
+        '{"sources": [[]], "order": [], "required": 0}',
+        '{"sources": [["d", [], [], []]], "order": [{"source": 3}], "required": 0}',
+        '{"sources": [], "order": [7], "required": 0}',
+        '{"sources": [], "order": [], "required": -1}',
+        "[]",
+    ],
+)
+def test_a_malformed_layout_is_rejected_everywhere_without_raising(layout: str) -> None:
+    part = PersistedViewPart(ViewPart.CURRENT, 0, 1, layout, "cfg")
+
+    assert PersistedViewPart.from_dict(part.to_dict()) is None
+    assert part.misfit(_history(), "cfg") is MisfitReason.LAYOUT
+    assert split_saved_layout(layout, 0) is None
+
+
+@pytest.mark.parametrize("change", ["id", "role"])
+def test_the_same_text_under_another_identity_does_not_fit(change: str) -> None:
+    messages = _history()
+    part = _part(messages, 2, 4)
+    replaced = messages[3]
+    if change == "id":
+        messages[3] = Message("assistant", replaced.contents, message_id="other-branch")
+    else:
+        messages[3] = Message("user", replaced.contents, message_id=replaced.message_id)
+
+    assert part.misfit(messages, "cfg") is MisfitReason.IDENTITY
+
+
+def _summary(*ids: str) -> dict:
+    return {
+        "role": "user",
+        "contents": [{"type": "text", "text": "summary"}],
+        "additional_properties": {GROUP_ANNOTATION_KEY: {SUMMARY_OF_MESSAGE_IDS_KEY: list(ids)}},
+    }
+
+
+def test_a_summary_inserted_before_its_sources_goes_with_the_part_holding_them() -> None:
+    messages = _history()
+    sources = [{"source": i, "id": m.message_id} for i, m in enumerate(messages)]
+    order = [sources[0], sources[1], {"insert": _summary("u2", "a2")}, sources[2], sources[3]]
+
+    earlier, current = split_saved_layout(_layout(messages, order), 2) or ("", "")
+
+    assert {"insert": _summary("u2", "a2")} not in json.loads(earlier)["order"]
+    assert json.loads(current)["order"][0] == {"insert": _summary("u2", "a2")}
+
+
+def test_a_summary_standing_for_sources_on_both_sides_is_refused() -> None:
+    messages = _history()
+    sources = [{"source": i, "id": m.message_id} for i, m in enumerate(messages)]
+    order = [sources[0], {"insert": _summary("a1", "u2")}, *sources[1:]]
+
+    assert split_saved_layout(_layout(messages, order), 2) is None
