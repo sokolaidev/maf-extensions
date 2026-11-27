@@ -22,6 +22,7 @@ from test_session import Model, build_stack
 from maf_compaction import (
     SessionCompactionRegistry,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    observe_record_merges,
 )
 
 pytestmark = pytest.mark.anyio
@@ -113,9 +114,10 @@ async def test_a_discarded_ready_answer_says_so_in_the_log(caplog):
 class _LoopModel(Model):
     """ROUNDS tool calls a run, then a text reply; a pinned recall is answered as Model does."""
 
-    def __init__(self):
+    def __init__(self, before_final_reply):
         super().__init__()
         self.in_run = 0
+        self.before_final_reply = before_final_reply
 
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
         choice = options.get("tool_choice")
@@ -145,6 +147,8 @@ class _LoopModel(Model):
             return ResponseStream(updates(), finalizer=lambda _: response)
 
         async def answer():
+            if self.in_run == 0:
+                await self.before_final_reply()
             return response
 
         return answer()
@@ -152,9 +156,16 @@ class _LoopModel(Model):
 
 @pytest.mark.parametrize("roundtrip", [False, True], ids=["same session", "saved and loaded"])
 async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundtrip):
-    """Each run's last background answer used to be thrown away by its final reply, so the next
-    run asked the same batch again; it is now applied by the end-of-run pass."""
-    summarizer = _Summarizer()
+    """Answers ready at the final reply survive later runs, including a session round trip."""
+    release = asyncio.Event()
+    ready_at_final = 0
+
+    class Summarizer(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            await release.wait()
+            return await super().get_response(messages, **kwargs)
+
+    summarizer = Summarizer()
 
     def build():
         stack = build_stack(summarizer, budget=100_000)
@@ -174,12 +185,32 @@ async def test_no_accepted_background_merge_is_asked_again_in_a_later_run(roundt
         """Look up one fact."""
         return "lookup complete"
 
-    agent = background_harness(registry, _LoopModel(), lookup)
-    for run in range(RUNS):
-        await agent.run(f"Continue {run}.", session=session)
-        if roundtrip:
-            session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+    async def finish_background():
+        nonlocal ready_at_final
+        work = registry._merge_work[session.session_id][1]
+        release.set()
+        if work._task is not None:
+            await asyncio.wait_for(running(work), timeout=10)
+        ready_at_final += len(work._ready)
 
+    agent = background_harness(registry, _LoopModel(finish_background), lookup)
+    events = []
+    with observe_record_merges(
+        lambda phase, event, details: events.append((phase, event, details))
+    ):
+        for run in range(RUNS):
+            release.clear()
+            await asyncio.wait_for(agent.run(f"Continue {run}.", session=session), timeout=10)
+            if roundtrip:
+                session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+
+    assert ready_at_final, "the premise: answers were ready before a final reply"
+    prepared_batches = Counter(d["batch"] for _, e, d in events if e == "answer_prepared")
+    accepted_batches = Counter(
+        d["batch"] for p, e, d in events if p == "apply" and e == "answer_accepted"
+    )
+    assert accepted_batches == prepared_batches
+    assert sum(accepted_batches.values()) == len(summarizer.merges)
     asked = Counter(summarizer.merges)
     assert asked, "the premise: the runs merged records"
     assert max(asked.values()) == 1, {body[:40]: n for body, n in asked.items() if n > 1}
