@@ -80,6 +80,65 @@ def check(records: list[dict[str, Any]], *, repaired: bool = False) -> dict[str,
     return agent.check_turn(records, TURN, repaired=repaired, image=IMAGE, config_hash=CONFIG)
 
 
+def model_visible_record(*, repaired: bool = False) -> dict[str, Any]:
+    item = record(repaired=repaired)
+    result = item["projected"]["result"]
+    structured = result.pop("details")["structuredContent"]
+    result["content"] = [{"type": "text", "text": "structuredContent:\n" + json.dumps(structured)}]
+    return item
+
+
+@pytest.mark.parametrize("repaired", [False, True])
+def test_model_visible_projection_accepts_expected_turn(repaired: bool) -> None:
+    item = model_visible_record(repaired=repaired)
+    assert check([item], repaired=repaired)["calls"] == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", False),
+        ("status", "error"),
+        ("verdict", "valid"),
+        ("cleanup", "unknown"),
+        ("image", "wrong"),
+        ("config_sha256", "wrong"),
+        ("source_sha256", "wrong"),
+    ],
+)
+def test_model_visible_projection_refuses_wrong_evidence(field: str, value: Any) -> None:
+    item = model_visible_record()
+    content = item["projected"]["result"]["content"][0]
+    structured = json.loads(content["text"].split("\n", 1)[1])
+    structured[field] = value
+    content["text"] = "structuredContent:\n" + json.dumps(structured)
+    with pytest.raises(RuntimeError):
+        check([item])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "It passed. Cleanup confirmed.",
+        "structuredContent:\ninvalid",
+        "structuredContent:\n[]",
+        "structuredContent:\n{} extra prose",
+    ],
+)
+def test_model_visible_projection_refuses_unstructured_text(text: str) -> None:
+    item = model_visible_record()
+    item["projected"]["result"]["content"][0]["text"] = text
+    with pytest.raises((RuntimeError, ValueError)):
+        check([item])
+
+
+def test_model_visible_projection_does_not_override_present_details() -> None:
+    item = model_visible_record()
+    item["projected"]["result"]["details"] = {"structuredContent": {"cleanup": "unknown"}}
+    with pytest.raises(RuntimeError, match="Cleanup was not confirmed"):
+        check([item])
+
+
 @pytest.mark.parametrize("repaired", [False, True])
 def test_compiler_evidence_accepts_expected_turn(repaired: bool) -> None:
     assert check([record(repaired=repaired)], repaired=repaired)["calls"] == 1
