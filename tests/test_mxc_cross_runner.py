@@ -227,13 +227,7 @@ def _active_command(helper, startup, work, request):
     ]
 
 
-@pytest.mark.parametrize("crash_mode", ["none", "captured", "active", "files"])
-def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
-    roots, bundle, peers = participants
-    if crash_mode == "files":
-        cross.cross_compat.record_fixture(bundle, "GenuineIntel", file_router=True)
-        for peer in peers.values():
-            peer["profile"] = cross.cross_compat.load_fixture(bundle)
+def _redirect_clients(monkeypatch):
     addresses = {}
     original_client = cross._client
 
@@ -243,6 +237,108 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
         return result
 
     monkeypatch.setattr(cross, "_client", client)
+    return addresses
+
+
+def _file_profile(bundle, peers):
+    cross.cross_compat.record_fixture(bundle, "GenuineIntel", file_router=True)
+    for peer in peers.values():
+        peer["profile"] = cross.cross_compat.load_fixture(bundle)
+
+
+@pytest.mark.parametrize("failure", ["guest", "cancel", "timeout"])
+def test_file_call_failure_requires_trusted_cleanup_before_reuse(
+    participants, monkeypatch, failure
+):
+    from maf_sandbox_mxc import coordinator_binding
+    from maf_sandbox_mxc.files import transport
+
+    roots, bundle, peers = participants
+    _file_profile(bundle, peers)
+    addresses = _redirect_clients(monkeypatch)
+    cancel = threading.Event()
+    now = 0.0
+    monkeypatch.setattr(coordinator_binding, "time", SimpleNamespace(monotonic=lambda: now))
+    result = json.dumps(
+        {"streams": {name: {"base64": "", "omitted_bytes": 0} for name in ("stdout", "stderr")}}
+    ).encode()
+
+    def execute(helper, base, work, request, *, restoring, before_spawn, before_start, **kwargs):
+        nonlocal now
+        _native_substitute(
+            helper,
+            base,
+            work,
+            cross.NEXT if restoring else cross.SEED,
+            1024,
+            before_spawn=before_spawn,
+            before_start=before_start,
+            checkpoint_limits=kwargs["checkpoint_limits"],
+        )
+        if request.call_directory == "failed":
+            if failure == "guest":
+                raise transport.GuestProgramError(result)
+            if failure == "cancel":
+                cancel.set()
+            else:
+                now += 11
+        return result
+
+    monkeypatch.setattr(transport, "execute", execute)
+    with endpoint(
+        lambda: cross.Service(roots["coordinator"], peers, initialize=True), roots["coordinator"]
+    ) as (_, server):
+        addresses["coordinator"] = server
+        with endpoint(lambda: cross.Worker(roots["a"], bundle, "a", peers), roots["a"]) as (
+            worker,
+            address,
+        ):
+            addresses["a"] = address
+            admin = cross._client(roots["coordinator"], peers, "coordinator")
+            owner = cross.call(cross._client(roots["coordinator"], peers, "a"), "acquire")["owner"]
+            host = worker.hosts["session"]
+            files = cross.cross_files
+            profile = peers["a"]["profile"]
+            config = files.config(host.root, bundle, profile, host.config.limits, host.scratch)
+            catalog = files.RemoteCatalog(
+                config,
+                files.MxcCoordinatorBinding(worker.transport, host, files.KEY, files.SPEC, profile),
+            )
+
+            def run(call):
+                request = files.Request(b"pass", (), (), config.files, config.workspace, call)
+                return catalog.execute(host.session, call, request, cancel, 10)
+
+            def inspect():
+                return cross.call(admin, "inspect", owner=owner)
+
+            assert run("before") == result
+            cross.call(admin, "reconcile", receipt=inspect()["receipts"][0])
+            message = "guest program failed" if failure == "guest" else "cancelled or timed out"
+            with pytest.raises(cross.api.Refused, match=message):
+                run("failed")
+            state = inspect()
+            (receipt,) = state["receipts"]
+            assert state["current_call"] == "before" and receipt["call"] == "failed"
+            failed = files.Request(b"pass", (), (), config.files, config.workspace, "failed")
+            with pytest.raises(cross.api.Refused, match="explicit recovery"):
+                catalog.replay(files.KEY, files.SPEC, host.session, "failed", failed)
+            cancel.clear()
+            with pytest.raises(cross.api.Refused, match="reconciliation"):
+                run("after")
+            cross.call(admin, "reconcile", receipt=receipt)
+            assert inspect()["receipts"] == []
+            assert run("after") == result
+            assert inspect()["current_call"] == "after"
+
+
+@pytest.mark.parametrize("crash_mode", ["none", "captured", "active", "files"])
+def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
+    roots, bundle, peers = participants
+    if crash_mode == "files":
+        _file_profile(bundle, peers)
+    addresses = _redirect_clients(monkeypatch)
+    client = cross._client
     monkeypatch.setattr(cross.api, "MAX_FRAME", 100_000)
     executions = []
 
