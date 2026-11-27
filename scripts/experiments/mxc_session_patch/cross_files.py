@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -18,6 +20,7 @@ from maf_sandbox import (
 from maf_sandbox_mxc import MxcCoordinatorBinding, MxcSandboxBackend, MxcSandboxConfig
 from maf_sandbox_mxc.coordinator_binding import RemoteCatalog
 from maf_sandbox_mxc.files.request import Request
+from maf_sandbox_mxc.remote_api import Client
 from maf_sandbox_mxc.remote_authority import Authority
 from maf_sandbox_mxc.shared_store import ScratchLimits
 
@@ -33,6 +36,47 @@ SPEC = SandboxSpec(
 SIZE = 7 << 20
 SEED = f"counter = 41\nwith open('proof.bin','wb') as f:\n f.write(b'x' * {SIZE})\nprint(counter)"
 NEXT = "counter += 1\nprint(counter)"
+
+
+@contextmanager
+def phase(name: str):
+    """Report fixed qualification stages without recording transport or guest data."""
+    start = time.monotonic()
+    print(f"MXC next: {name} started", flush=True)
+    try:
+        yield
+    except Exception as error:
+        cause = error.__cause__
+        detail = f" from {type(cause).__name__}" if cause is not None else ""
+        print(
+            f"MXC next: {name} failed after {time.monotonic() - start:.2f}s "
+            f"({type(error).__name__}{detail})",
+            flush=True,
+        )
+        raise
+    print(f"MXC next: {name} completed after {time.monotonic() - start:.2f}s", flush=True)
+
+
+class NextCallClient(Client):
+    """Observe the replacement worker's real coordinator calls in the qualification job."""
+
+    def call(self, operation, session, **arguments):
+        if operation == "status":
+            with phase("status"):
+                return super().call(operation, session, **arguments)
+        return super().call(operation, session, **arguments)
+
+    def call_result(self, *args, **kwargs):
+        with phase("admission"):
+            return super().call_result(*args, **kwargs)
+
+    def restore(self, *args, **kwargs):
+        with phase("restore"):
+            return super().restore(*args, **kwargs)
+
+    def publish(self, *args, **kwargs):
+        with phase("publication"):
+            return super().publish(*args, **kwargs)
 
 
 def config(root: Path, bundle: Path, profile: dict, limits, scratch) -> MxcSandboxConfig:
@@ -59,10 +103,13 @@ async def exercise(worker, operation: str, host) -> dict:
         host.config.limits,
         host.scratch,
     )
+    client = worker.transport
+    if operation == "next":
+        client = NextCallClient(client.address, client.context, client.hostname)
     backend = MxcSandboxBackend(
         cfg,
         coordinator=MxcCoordinatorBinding(
-            worker.transport, host, KEY, SPEC, worker.peers[worker.role]["profile"]
+            client, host, KEY, SPEC, worker.peers[worker.role]["profile"]
         ),
     )
     router = SandboxRouter([backend], min_cleanup=Cleanup.RECLAIM)

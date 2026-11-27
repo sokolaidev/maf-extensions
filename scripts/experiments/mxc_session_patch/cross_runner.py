@@ -346,6 +346,9 @@ class Worker:
             "next",
             "stale",
         }:
+            if operation == "next":
+                with cross_files.phase("router call"):
+                    return asyncio.run(cross_files.exercise(self, operation, host))
             return asyncio.run(cross_files.exercise(self, operation, host))
         if operation in {"crash", "active-crash"}:
             if self.role != "a" or session != "session":
@@ -574,7 +577,21 @@ def file_scenario(a, b, admin, restart, *, worker_crash=False, active_guest_cras
     _require(
         not call(admin, "inspect", owner=owner_b)["receipts"], "replay admitted a new execution"
     )
-    following = call(b, "next")
+    try:
+        following = call(b, "next")
+    except (OSError, api.Refused):
+        try:
+            observed = call(admin, "inspect", owner=owner_b)
+        except (OSError, api.Refused):
+            print("MXC next: coordinator state unavailable", flush=True)
+        else:
+            current = observed["current_call"]
+            checkpoint = current if current in ("seed", "next") else "other"
+            pending = any(r["call"] == "next" for r in observed["receipts"])
+            print(
+                f"MXC next: coordinator checkpoint={checkpoint} next_scratch={pending}", flush=True
+            )
+        raise
     _require(
         following["stdout"] == "42\n" and following["fresh"] is False, "checkpoint restore failed"
     )

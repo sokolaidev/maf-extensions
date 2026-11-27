@@ -332,11 +332,34 @@ def test_file_call_failure_requires_trusted_cleanup_before_reuse(
             assert inspect()["current_call"] == "after"
 
 
-@pytest.mark.parametrize("crash_mode", ["none", "captured", "active", "files"])
-def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
+def _fail_next_transport(monkeypatch, peers, failure):
+    handle = cross.Service.dispatch
+    host_b = cross._fingerprint(peers["b"]["certificate"])
+
+    def dispatch(self, fingerprint, request, connection=None):
+        affected = fingerprint == host_b and request["operation"] == failure
+        if affected and failure == "restore":
+            raise OSError("simulated restore failure")
+        result = handle(self, fingerprint, request, connection)
+        if affected and failure == "publish":
+            assert connection is not None
+            connection.shutdown(cross.socket.SHUT_RDWR)
+        return result
+
+    monkeypatch.setattr(cross.Service, "dispatch", dispatch)
+
+
+@pytest.mark.parametrize(
+    "crash_mode", ["none", "captured", "active", "files", "files-restore", "files-publish"]
+)
+def test_three_endpoints_restore_replay_fence_and_reconcile(
+    participants, monkeypatch, capsys, crash_mode
+):
     roots, bundle, peers = participants
-    if crash_mode == "files":
+    if crash_mode.startswith("files"):
         _file_profile(bundle, peers)
+        if crash_mode in {"files-restore", "files-publish"}:
+            _fail_next_transport(monkeypatch, peers, crash_mode.split("-")[1])
     addresses = _redirect_clients(monkeypatch)
     client = cross._client
     monkeypatch.setattr(cross.api, "MAX_FRAME", 100_000)
@@ -366,7 +389,7 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
         ],
     )
     monkeypatch.setattr(cross.remote_host, "execute", execute)
-    if crash_mode == "files":
+    if crash_mode.startswith("files"):
         from maf_sandbox_mxc.files import transport
 
         def file_execute(
@@ -434,7 +457,25 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
                 service_context.__enter__()
 
             transports = {r: client(roots["coordinator"], peers, r) for r in cross.ROLES}
-            if crash_mode == "files":
+            if crash_mode.startswith("files"):
+                if crash_mode in {"files-restore", "files-publish"}:
+                    with pytest.raises(cross.api.Refused):
+                        cross.file_scenario(
+                            transports["a"], transports["b"], transports["coordinator"], restart
+                        )
+                    output = capsys.readouterr().out
+                    assert "MXC next: admission completed" in output
+                    if crash_mode == "files-restore":
+                        assert "MXC next: restore failed" in output
+                        assert "MXC next: publication started" not in output
+                        assert "checkpoint=seed next_scratch=True" in output
+                        assert [state for _, state in executions] == [41]
+                    else:
+                        assert "MXC next: restore completed" in output
+                        assert "MXC next: publication failed" in output
+                        assert "checkpoint=next next_scratch=True" in output
+                        assert [state for _, state in executions] == [41, 42]
+                    return
                 report = cross.file_scenario(
                     transports["a"], transports["b"], transports["coordinator"], restart
                 )
