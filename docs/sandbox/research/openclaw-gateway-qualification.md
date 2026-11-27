@@ -2065,7 +2065,7 @@ The deterministic published profile now runs on main pushes, the daily Docker-li
 
 ## Newer Gateway Docker assessment (2026-11-27)
 
-[#3005](https://github.com/sokolaidev/maf-extensions/issues/3005) continues the Docker workstream while #2104 waits upstream. The numbered sample remains on OpenClaw 2026.9.7. This assessment selects npm `openclaw@2026.11.10` and holds the published worker, principal Python package pins and compiler image constant; transitive Python resolution is recorded rather than assumed identical. It does not add workload tools, credential delegation or a full sandbox backend.
+[#3005](https://github.com/sokolaidev/maf-extensions/issues/3005) continues the Docker workstream while #2104 waits upstream. At the start of this assessment, the numbered sample remained on OpenClaw 2026.9.7. This assessment selects npm `openclaw@2026.11.10` and holds the published worker, principal Python package pins and compiler image constant; transitive Python resolution is recorded rather than assumed identical. It does not add workload tools, credential delegation or a full sandbox backend.
 
 ### Candidate and compatibility findings
 
@@ -2156,4 +2156,72 @@ Only bounded Markdown artifacts are retained by the proof workflow. Private stat
 
 Use the numbered [sample 24](../../../samples/24_openclaw_bicep/README.md) on a native Linux Docker host with the fixture fix in this change. In a disposable checkout only, set `OPENCLAW = "2026.11.10"` in the shared harness and remove `"heartbeat": {"every": "0m"}` from its fresh Gateway configuration. Invoke the normal deterministic numbered sample with an output directory outside the checkout, then run `scripts/report_openclaw_hosted.py --published` with the same runner environment. The proof commit and run above retain the exact temporary candidate configuration; that workflow and the version/config changes are not part of the default sample.
 
-[Follow-up #3009](https://github.com/sokolaidev/maf-extensions/issues/3009) owns the separate 2026.11.10 real-model run and bounded owner-loss campaign. Keep the default at 2026.9.7 until those establish their own evidence. Historical model/recovery acceptance does not transfer across this Gateway change or new transitive resolutions. No native MXC behavior, unattended operation, daemon/host loss, prompt-injection resistance or production support is established here.
+At this assessment's completion, [follow-up #3009](https://github.com/sokolaidev/maf-extensions/issues/3009) owned the separate 2026.11.10 real-model run and bounded owner-loss campaign, with the default held at 2026.9.7. The [subsequent qualification below](#newer-gateway-model-and-recovery-qualification-2026-11-27) records their outcomes and promotion. Historical model/recovery acceptance does not transfer across this Gateway change or new transitive resolutions. No native MXC behavior, unattended operation, daemon/host loss, prompt-injection resistance or production support is established here.
+
+## Newer Gateway model and recovery qualification (2026-11-27)
+
+[#3009](https://github.com/sokolaidev/maf-extensions/issues/3009) evaluates OpenClaw 2026.11.10 with the published worker 0.3.1, the six principal Python pins and immutable compiler from the assessment above. Fresh Gateway configuration omits the retired heartbeat setting. The model and recovery profiles remain separate; neither proves a model retry after an injected fault.
+
+### Fresh baseline and real-model execution
+
+[Run 46016688274](https://github.com/sokolaidev/maf-extensions/actions/runs/46016688274), attempt 1, passed both the numbered deterministic sample and the real-model profile at source `0865a6e4c2b557056ef9f72a59db96ab2d1022db`. Each produced the expected invalid then valid Bicep result, one call per turn, matching source/configuration/compiler identities, confirmed per-call cleanup, stopped service processes, a released owner lock and independently observed zero owned containers.
+
+The model profile used the existing live-verify Azure OpenAI configuration with reasoning disabled. It forwarded all six requests, observed two Bicep results through canonical identifiers, recorded two `dispatch_action` calls and two `tool_describe` calls, and reported no provider errors. Endpoint and model identities are hashed; credentials, prompts and responses are not published.
+
+Both runs used Ubuntu image `20261122.23.1`, `Linux-7.0.0-1020-azure-x86_64-with-glibc2.39`, Docker `28.0.4` / API `1.48`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and worker `Python 3.13.15`. The complete 37-distribution inventory and four installed worker hashes exactly match the newer Gateway assessment above; matching versions are not a claim of byte-identical full environments.
+
+| Identity | SHA-256 |
+|---|---|
+| Shared harness | `270b1e6edae08bd322e17ae14d43f3851095e56eb82266fa643048073d8ece26` |
+| Deterministic report | `caef47c623c3a6acf480b9c165e2184806dd1728756276ad6888feb75bffdf27` |
+| Deterministic tool evidence | `b901cb847aa3c9167ff610e0dccad819086bebbe68595812d60089d1bcf51259` |
+| Model report | `747c79bec49a07c2e530205ef72d43bf335a5bfdc10df6dec5e8438adf5a3b4d` |
+| Model tool evidence | `33c4dd7378cece8eb8d471e02f6fc15a53964a60ce14ab0ef91a88e6dd2811cf` |
+| Model endpoint | `308241e7111832947f4614c87b2bb7f8a135c63fbac6cf5fce09ffa744c635de` |
+| Requested model | `9a7e60cd1c7bb9d5493832103af02aca05272564b29e49852a9a0b5d8d96ec2c` |
+| Returned model | `b8be814ffed8fd2f3fc7c660d5f2038c33c02a1d0ed3a6a31e542bb97c23813a` |
+
+### Recovery preparation and rejected attempts
+
+The first recovery attempt in run 46016688274 passed its fresh deterministic baseline but stopped in the control case with `parent_failure: FileNotFoundError`, unconfirmed independent cleanup and an incomplete case inventory. The bounded report does not establish recovery or complete case cleanup. Its installed npm lock SHA-256 was `6dde493346e165673622de3aba63a65058e9f5ab6889aa8f7f3afa6b137c1191`, and its published worker, transitive inventory and compiler identities matched the model run.
+
+The recovery campaign has its own deterministic provider and projection checker. Those fixtures now recognize the closed runtime-context envelope, select the advertised dispatcher and accept the exact structured-text projection when details are absent. Present details remain authoritative, and source, configuration, image, completion, verdict and cleanup checks remain mandatory. The earlier model sample bytes and published wheel are unchanged by these fixture corrections.
+
+Proof setup attempts 46017169529 and 46017360910 did not execute a recovery campaign: focused pytest first lacked the fixture import path, then a job-wide import-path setting disrupted type resolution. The corrected workflow scopes that setting to pytest. These setup failures are not candidate acceptance evidence.
+
+### Accepted recovery campaign and promotion
+
+[Run 46017844621](https://github.com/sokolaidev/maf-extensions/actions/runs/46017844621), attempt 1, passed a fresh installed baseline and all fifteen Linux v5 cases at source `95bd9fb24f9fa24bb7d9c33d0379c1645c5fd7dc`. Independent collection returned `qualified: true` for campaign `de5f1433d834493197fca4a98c75a518`. Every case confirmed cleanup without emergency removal, preserved the unrelated-owner sentinel until its explicit teardown, and passed the unchanged fault-specific evaluator. Case execution total was 452.686 seconds, excluding setup and collection.
+
+The recovery candidate matches the model run's complete Python distribution inventory, installed worker module hashes, published wheel, Gateway version and compiler/configuration identities. Its fresh runtime inventory contains 45908 files and remained unchanged through the campaign. The qualification-source difference from the model run is confined to recovery fixtures and their version assertion; the shared model harness and provider bytes are unchanged.
+
+| Recovery identity | SHA-256 |
+|---|---|
+| Runner source fingerprint | `d2328971d140dfd302c31827fe0efc17b498c58db98610492ba2d60575e07181` |
+| Installed runtime fingerprint | `d84bf418f4b950f804939b44710da0ff391a4b9520fb179e851c80026d3f67f0` |
+| npm lock | `6dde493346e165673622de3aba63a65058e9f5ab6889aa8f7f3afa6b137c1191` |
+| Baseline report | `caef47c623c3a6acf480b9c165e2184806dd1728756276ad6888feb75bffdf27` |
+| Baseline tool evidence | `067356df57b5f64aa7cf281653401ca61b2fd3b4424de642a8612f12d22c2f64` |
+| Retained Markdown artifact ZIP | `ce2262b50dd58c889bd531bfa063faf15836539748e7c468276130f762db91b4` |
+
+| Case | Seconds | Independent result |
+|---|---:|---|
+| `control` | 19.050 | Passed; cleanup confirmed |
+| `gateway-pre_admission` | 28.628 | Passed; cleanup confirmed |
+| `gateway-active` | 30.298 | Passed; cleanup confirmed |
+| `gateway-response` | 27.997 | Passed; cleanup confirmed |
+| `gateway-cleanup` | 27.705 | Passed; cleanup confirmed |
+| `client-pre_admission` | 23.855 | Passed; cleanup confirmed |
+| `client-active` | 28.089 | Passed; cleanup confirmed |
+| `client-response` | 29.037 | Passed; cleanup confirmed |
+| `client-cleanup` | 28.823 | Passed; cleanup confirmed |
+| `worker-pre_admission` | 32.018 | Passed; cleanup confirmed |
+| `worker-active` | 33.410 | Passed; cleanup confirmed |
+| `worker-response` | 37.458 | Passed; cleanup confirmed |
+| `worker-cleanup` | 35.733 | Passed; cleanup confirmed |
+| `worker-unavailable` | 33.924 | Passed; cleanup confirmed |
+| `worker-denied` | 36.659 | Passed; cleanup confirmed |
+
+The removal-denied case used the existing private TLS daemon image `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1`, Docker `29.8.2` with `overlay2`, and `go version go1.27.3 linux/amd64`. The daemon remained unchanged. Its authorization-plugin source SHA-256 is `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4` and compiled binary SHA-256 is `923dbc7fe663de0a65a3ee53dff51cb5b38c8a3f7d6f5c1ced5172bb5a725e05`. The unavailable case still covers loss of the replacement worker's Docker connection; neither case establishes actual host or daemon loss.
+
+These selected hosted results support promoting the shared sample and Linux recovery assertion to 2026.11.10. The numbered sample inherits that pin. Historical Windows conformance, credential delegation, native MXC, additional workload tools, model retries after faults, unattended recovery and production operation gain no new qualification. Only bounded Markdown artifacts are retained; private JSON, logs, tokens and sessions remain outside the checkout. Temporary proof workflows are excluded from the delivery.
