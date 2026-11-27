@@ -1,10 +1,11 @@
-"""Linux fixture and execution-host admission for the cross-runner experiment."""
+"""Native fixture and execution-host admission for the cross-runner experiment."""
 
 from __future__ import annotations
 
 import json
 import os
 import platform
+import subprocess
 from pathlib import Path
 
 from maf_sandbox_mxc import startup_identity
@@ -18,10 +19,39 @@ def binding() -> dict[str, str]:
     return {key: os.environ[key] for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")}
 
 
+def helper_path(bundle: Path, system: str) -> Path:
+    """Select the executable recorded by the fixture producer."""
+    return bundle / ("helper.exe" if system == "Windows" else "helper")
+
+
+def windows_cpu_vendors() -> list[str]:
+    """Read the vendor reported for each processor package."""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Processor -ErrorAction Stop).Manufacturer",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.splitlines()
+
+
 def cpu_vendor() -> str:
-    """Require one recognized vendor across every processor on this Linux x86-64 host."""
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise RuntimeError("CPU admission requires Linux x86_64")
+    """Require one recognized vendor across every processor on the execution host."""
+    host = platform.system(), platform.machine()
+    if host == ("Windows", "AMD64"):
+        vendors = windows_cpu_vendors()
+        if not vendors or len(set(vendors)) != 1 or vendors[0] not in VENDORS:
+            raise RuntimeError("CPU vendors are missing, mixed or unsupported")
+        return vendors[0]
+    if host != ("Linux", "x86_64"):
+        raise RuntimeError("unsupported execution platform or architecture")
     try:
         content = Path("/proc/cpuinfo").read_text(encoding="ascii")
     except (OSError, UnicodeError) as error:
@@ -67,12 +97,13 @@ def validate_profile(profile: dict) -> None:
             or any(c not in "0123456789abcdef" for c in value)
         ):
             raise RuntimeError("fixture digest is invalid")
-    if (profile["policy"], profile["platform"], profile["architecture"]) != (
-        "closed",
-        "Linux",
-        "x86_64",
+    if profile["policy"] != "closed" or (profile["platform"], profile["architecture"]) not in (
+        ("Linux", "x86_64"),
+        ("Windows", "AMD64"),
     ):
-        raise RuntimeError("fixture requires closed Linux x86_64 execution")
+        raise RuntimeError("unsupported fixture platform, architecture or policy")
+    if profile["platform"] == "Windows" and "startup_tree" not in profile:
+        raise RuntimeError("Windows qualification requires the file-router fixture")
     if profile["cpu_vendor"] not in VENDORS:
         raise RuntimeError("fixture CPU vendor is missing or unsupported")
 
@@ -82,7 +113,7 @@ def record_fixture(bundle: Path, producer_vendor: str, *, file_router: bool = Fa
     if cpu_vendor() != producer_vendor:
         raise RuntimeError("fixture producer CPU vendor changed")
     profile = {
-        "helper": digest(bundle / "helper"),
+        "helper": digest(helper_path(bundle, platform.system())),
         "startup_index": digest(bundle / "startup/index.json"),
         "policy": "closed",
         "platform": platform.system(),
@@ -110,9 +141,9 @@ def load_fixture(bundle: Path) -> dict:
         raise RuntimeError("fixture belongs to another run or source")
     profile = fixture["profile"]
     validate_profile(profile)
-    if profile["helper"] != digest(bundle / "helper") or profile["startup_index"] != digest(
-        bundle / "startup/index.json"
-    ):
+    if profile["helper"] != digest(helper_path(bundle, profile["platform"])) or profile[
+        "startup_index"
+    ] != digest(bundle / "startup/index.json"):
         raise RuntimeError("fixture content differs from producer record")
     if "startup_tree" in profile and profile["startup_tree"] != startup_identity(
         bundle / "startup"
