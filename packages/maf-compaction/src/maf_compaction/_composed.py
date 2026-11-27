@@ -66,7 +66,7 @@ from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts, structural_counter
 from ._merge_coverage import LossyMerge, MergeCoverage
 from ._offload import off_loop, steps_locked
-from ._persisted_view import join_layouts, source_turn_boundary, split_saved_layout
+from ._persisted_view import join_layouts, source_turn_boundary, split_layout_data
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -98,6 +98,7 @@ from ._record_replay import (
 from ._request import RequestOverhead
 from ._saved_view import _VERSION as SAVED_VIEW_VERSION  # pyright: ignore[reportPrivateUsage]
 from ._saved_view import (
+    _layout_data,  # pyright: ignore[reportPrivateUsage]
     _layout_digest,  # pyright: ignore[reportPrivateUsage]
     resume_saved_view,
     save_view,
@@ -155,6 +156,7 @@ from ._usersummary import (
 from ._usersummary import (
     _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
 )
+from ._view_digest import canonical_json, streamed_layout_digest
 
 if TYPE_CHECKING:
     from agent_framework import ChatResponse, TokenizerProtocol
@@ -2146,11 +2148,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._saved_view = saved
         self._saved_view_source = source
 
-    def persisted_view_layouts(self) -> tuple[str, str] | None:
-        """The carried view's layout cut at the turn boundary, keeping the view (#2995).
+    def persisted_view_parts(
+        self, *, unchanged_earlier: str | None = None
+    ) -> tuple[str | None, str, str, str] | None:
+        """The carried view cut at the turn boundary, keeping the view (#2995).
 
-        Returns the earlier-turns and current-turn layouts, or None when the view cannot be
-        represented, as :meth:`take_saved_view` would refuse it.
+        Returns the earlier-turns layout, its digest, the current-turn layout and the current
+        part's binding (:meth:`persisted_view_binding`), or None when the view cannot be
+        represented, as :meth:`take_saved_view` would refuse it. The earlier layout is None when
+        its digest is ``unchanged_earlier``: it is hashed as a stream and serialized only when
+        it changed. The decisions are built once and each part serialized at most once, from the
+        layout mapping: on a long conversation the layout is several MiB.
         """
         carried = self._carried
         if carried is None:
@@ -2161,10 +2169,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             and carried.decisions_before_storage != decisions
         ):
             return None
-        saved = save_view(carried, decisions)
-        if saved is None:
+        data = _layout_data(carried)
+        if data is None:
             return None
-        return split_saved_layout(saved["layout"], source_turn_boundary(carried.states))
+        parts = split_layout_data(data, source_turn_boundary(carried.states))
+        del data
+        if parts is None:
+            return None
+        earlier_digest = streamed_layout_digest(parts[0])
+        earlier = None if earlier_digest == unchanged_earlier else canonical_json(parts[0])
+        current = canonical_json(parts[1])
+        del parts
+        binding = _layout_digest(decisions, f"{earlier_digest}\n{current}")
+        return earlier, earlier_digest, current, binding
 
     def persisted_view_binding(self, earlier_digest: str, current: str) -> str:
         """What binds a current-turn part to these decisions and to its earlier-turns part.

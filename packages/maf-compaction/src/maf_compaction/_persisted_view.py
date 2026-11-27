@@ -132,6 +132,11 @@ def _parse_layout(layout: str) -> tuple[list[list[Any]], list[dict[str, Any]], i
         data = json.loads(layout)
     except (TypeError, ValueError):
         return None
+    return _checked_layout(data)
+
+
+def _checked_layout(data: Any) -> tuple[list[list[Any]], list[dict[str, Any]], int] | None:
+    """:func:`_parse_layout` for a layout already parsed, or built and not yet serialized."""
     if not isinstance(data, dict):
         return None
     data = cast(dict[str, Any], data)
@@ -332,6 +337,27 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
     parsed = _parse_layout(layout)
     if parsed is None:
         return None
+    parts = _split_checked(parsed, boundary)
+    if parts is None:
+        return None
+    return canonical_json(parts[0]), canonical_json(parts[1])
+
+
+def split_layout_data(
+    data: dict[str, Any], boundary: int
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """:func:`split_saved_layout` on a layout mapping, without serializing the whole of it.
+
+    A pass's layout is several MiB on a long conversation; serializing it to split it and
+    serializing each part again held three copies at once.
+    """
+    parsed = _checked_layout(data)
+    return None if parsed is None else _split_checked(parsed, boundary)
+
+
+def _split_checked(
+    parsed: tuple[list[list[Any]], list[dict[str, Any]], int], boundary: int
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
     sources, order, required = parsed
     if not 0 <= boundary <= len(sources):
         return None
@@ -371,7 +397,7 @@ def split_saved_layout(layout: str, boundary: int) -> tuple[str, str] | None:
         "order": current_order,
         "required": max(required - boundary, 0),
     }
-    return canonical_json(earlier), canonical_json(current)
+    return earlier, current
 
 
 __all__ = [
@@ -386,6 +412,7 @@ __all__ = [
     "ViewWriteConflict",
     "join_layouts",
     "source_turn_boundary",
+    "split_layout_data",
     "split_saved_layout",
     "turn_boundary",
 ]

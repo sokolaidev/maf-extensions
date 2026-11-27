@@ -51,7 +51,7 @@ from ._toolsummary import (
     ToolResultRecallMiddleware,
     make_recall_tool,
 )
-from ._view_digest import json_digest
+from ._view_digest import layout_text_digest
 
 #: Sessions whose strategy may keep the list its last per-call pass left.
 DEFAULT_MAX_CARRIED_VIEWS: Final[int] = 16
@@ -175,6 +175,7 @@ class SessionCompactionRegistry:
         # digest it last wrote, so an unchanged earlier part is not written again.
         self._view_etags: dict[tuple[str, ViewPart], str] = {}
         self._earlier_written: dict[str, str] = {}
+        self._earlier_sources: dict[str, int] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
@@ -331,7 +332,7 @@ class SessionCompactionRegistry:
             logger.info("Compaction persisted view not offered: a part is unreadable.")
             return
         if second.config != strategy.persisted_view_binding(
-            json_digest(first.layout), second.layout
+            layout_text_digest(first.layout), second.layout
         ):
             # Decisions changed after the parts were written, or the earlier part is not the
             # one the current part was written with: an interrupted or overtaken write.
@@ -352,18 +353,19 @@ class SessionCompactionRegistry:
         store = self.view_store
         if store is None:
             return
-        layouts = strategy.persisted_view_layouts()
-        if layouts is None:
+        written = self._earlier_written.get(session_id)
+        view = strategy.persisted_view_parts(unchanged_earlier=written)
+        if view is None:
             return
-        earlier, current = layouts
-        earlier_digest = json_digest(earlier)
-        earlier_sources = _source_count(earlier)
+        earlier, earlier_digest, current, binding = view
         parts: list[PersistedViewPart] = []
-        if self._earlier_written.get(session_id) != earlier_digest:
+        if earlier is None:
+            earlier_sources = self._earlier_sources[session_id]
+        else:
+            earlier_sources = _source_count(earlier)
             parts.append(
                 PersistedViewPart(ViewPart.EARLIER, 0, earlier_sources, earlier, earlier_digest)
             )
-        binding = strategy.persisted_view_binding(earlier_digest, current)
         end = earlier_sources + _source_count(current)
         parts.append(PersistedViewPart(ViewPart.CURRENT, earlier_sources, end, current, binding))
         for part in parts:
@@ -374,11 +376,13 @@ class SessionCompactionRegistry:
                 # Another writer published a newer view; the next load reads that one.
                 self._view_etags.pop((session_id, part.part), None)
                 self._earlier_written.pop(session_id, None)
+                self._earlier_sources.pop(session_id, None)
                 logger.info("Compaction persisted view not written: another writer's is newer.")
                 return
             self._view_etags[(session_id, part.part)] = etag
             if part.part is ViewPart.EARLIER:
                 self._earlier_written[session_id] = earlier_digest
+                self._earlier_sources[session_id] = earlier_sources
 
     async def invalidate_view(self, session_id: str) -> None:
         """Remove a session's stored view, so its next pass starts from the stored history.
@@ -396,6 +400,7 @@ class SessionCompactionRegistry:
                 await store.delete(key, etag=etag)
             self._view_etags.pop((session_id, part), None)
         self._earlier_written.pop(session_id, None)
+        self._earlier_sources.pop(session_id, None)
         logger.info("Compaction persisted view invalidated by the host.")
 
     def _remember_merge_state(self, session: AgentSession) -> None:
