@@ -34,7 +34,7 @@ async def _pass(registry: Any, session: AgentSession, messages: list[Message]) -
 
     async def compact(messages: list[Message]) -> bool:
         with registry.activate(session) as stack:
-            strategy: _Composed = stack.strategy
+            strategy = cast(_Composed, stack.strategy)
             await registry._load_view(session.session_id, strategy)
             try:
                 return await strategy.compact_before(messages, options={})
@@ -163,7 +163,7 @@ async def _pass_guarded(registry: Any, session: AgentSession, messages: list[Mes
 
     async def compact(messages: list[Message]) -> bool:
         with registry.activate(session) as stack:
-            strategy: _Composed = stack.strategy
+            strategy = cast(_Composed, stack.strategy)
             await _guarded_view_io(registry._load_view(session.session_id, strategy))
             try:
                 return await strategy.compact_before(messages, options={})
@@ -205,7 +205,7 @@ async def test_a_view_published_during_a_pass_makes_its_write_conflict_and_drop_
     session, other = AgentSession(session_id="race"), AgentSession(session_id="race")
 
     with slow.activate(session) as stack:
-        strategy: _Composed = stack.strategy
+        strategy = cast(_Composed, stack.strategy)
         await slow._load_view("race", strategy)  # observes nothing stored
         await _pass(fast, other, _Rebuilding(transcript).hand())  # publishes meanwhile
         published = await store.read(ViewKey("race", "agent", ViewPart.CURRENT))
@@ -241,10 +241,11 @@ async def test_a_view_written_under_other_settings_is_not_offered(
     reconfigured = _registry(budget, [], view_store=store)
 
     with reconfigured.activate(session) as stack:
-        stack.strategy.user_turns.prompt = "Summarize differently."
+        reconfiguring = cast(_Composed, stack.strategy)
+        reconfiguring.user_turns.prompt = "Summarize differently."
         with caplog.at_level(logging.INFO, logger=_LOGGER):
-            await reconfigured._load_view("settings", stack.strategy)
-        assert not stack.strategy.has_saved_view
+            await reconfigured._load_view("settings", reconfiguring)
+        assert not reconfiguring.has_saved_view
 
     assert any("other decisions or settings" in r.getMessage() for r in caplog.records)
 
