@@ -6,9 +6,13 @@ permissions:
   contents: read
 jobs:
   openclaw-bicep:
-    name: OpenClaw Gateway-to-Docker on native Linux
+    name: OpenClaw ${{ matrix.gateway }} Gateway-to-Docker
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        gateway: ['2026.9.7', '2026.11.10']
     env:
       BICEP_IMAGE: ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
     steps:
@@ -22,19 +26,22 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.8.1'
+      - name: Restore the default Gateway for the baseline
+        if: matrix.gateway == '2026.9.7'
+        run: git show 4b5c2efc9c5c6eea3ae6594bfc6d21269378d20f:samples/experimental/openclaw_bicep_e2e/agent.py > samples/experimental/openclaw_bicep_e2e/agent.py
       - name: Check provider regressions
         run: |
           uv run --no-project --with pytest --with pyyaml --with 'ruff>=0.15.20,<0.16' python -m pytest -q -o addopts='' tests/test_openclaw_e2e_sample.py tests/test_openclaw_published_sample.py
           uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
-          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff format --check samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
+          uv run --no-project --with 'ruff>=0.15.20,<0.16' ruff format --check --diff samples/experimental/openclaw_bicep_e2e/_provider.py tests/test_openclaw_e2e_sample.py
       - name: Verify exact npm candidate metadata
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
           from pathlib import Path
-          with urllib.request.urlopen("https://registry.npmjs.org/openclaw/2026.11.10", timeout=30) as response:
+          with urllib.request.urlopen("https://registry.npmjs.org/openclaw/${{ matrix.gateway }}", timeout=30) as response:
               package = json.load(response)
-          assert package["version"] == "2026.11.10"
+          assert package["version"] == "${{ matrix.gateway }}"
           selected = {key: package[key] for key in ("name", "version", "engines", "dist")}
           text = "# Selected npm candidate\n\n\x60\x60\x60json\n" + json.dumps(selected, indent=2) + "\n\x60\x60\x60\n"
           (Path(os.environ["RUNNER_TEMP"]) / "openclaw-candidate.md").write_text(text)
@@ -106,10 +113,35 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: openclaw-bicep-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openclaw-bicep-${{ matrix.gateway }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/openclaw-bicep-evidence.md
             ${{ runner.temp }}/openclaw-candidate.md
           if-no-files-found: error
           retention-days: 30
 
+
+  pre-pr:
+    name: Repository gate for delivery files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Restore normal sample pins and omit the temporary proof workflow
+        run: |
+          git show 4b5c2efc9c5c6eea3ae6594bfc6d21269378d20f:samples/experimental/openclaw_bicep_e2e/agent.py > samples/experimental/openclaw_bicep_e2e/agent.py
+          rm .github/workflows/temporary-openclaw-3005.yml
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz
+      - run: uv sync --locked
+      - name: Full local-equivalent gate
+        run: uv run poe gate
+      - name: Sample declared floors
+        if: always()
+        run: uv run poe sample-floors
+      - name: Markdown code blocks
+        if: always()
+        run: uv run poe md-blocks
