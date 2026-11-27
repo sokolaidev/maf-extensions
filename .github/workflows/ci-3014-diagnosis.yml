@@ -17,4 +17,4 @@ jobs:
           version: '0.12.5'
           python-version: '3.14.4'
       - run: uv sync --locked
-      - run: uv run pytest packages/maf-compaction/tests/test_background_answers_kept.py -q -n auto --log-level=INFO
+      - run: uv run python -m pytest -q -n auto -p scripts.offline_test_shards --offline-group packages --log-level=INFO
