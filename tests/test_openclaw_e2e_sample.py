@@ -22,7 +22,10 @@ SAMPLE = Path(__file__).resolve().parents[1] / "samples/experimental/openclaw_bi
 
 
 def load_sample() -> Any:
-    saved = {name: sys.modules.get(name) for name in ("_evidence", "_provider", "_windows_job")}
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("_evidence", "_provider", "_windows_job", "_worker_restart")
+    }
     sys.path.insert(0, str(SAMPLE))
     try:
         for name in saved:
@@ -815,3 +818,4 @@ def test_supervisor_does_not_add_installed_bytecode(
         errors = controller.close()
     assert errors == []
     assert not list(site.rglob("*.pyc"))
+

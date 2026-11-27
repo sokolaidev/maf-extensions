@@ -9,6 +9,7 @@ import re
 import secrets
 import threading
 from collections import Counter
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,9 @@ class Provider:
         self.response_models: set[str] = set()
         self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
+        self.before_request: Callable[[dict[str, Any]], None] | None = None
+        self.before_response: Callable[[dict[str, Any], bytes], None] | None = None
+        self.ignored_calls: set[str] = set()
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -81,12 +85,16 @@ class Provider:
                     provider.requests += 1
                     require(provider.requests <= MAX_REQUESTS, "Model request budget exhausted")
                     body = json.loads(raw)
+                    if provider.before_request is not None:
+                        provider.before_request(body)
                     turn, repair = provider.observe(body)
                     payload = (
                         provider.forward(body)
                         if provider.upstream
                         else provider.smoke(body, turn, repair)
                     )
+                    if provider.before_response is not None:
+                        provider.before_response(body, payload)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Content-Length", str(len(payload)))
@@ -154,6 +162,8 @@ class Provider:
                             call_turns[call["id"]] = current_turn
             if message["role"] == "tool" and message.get("tool_call_id") in calls:
                 call_id = message["tool_call_id"]
+                if call_id in self.ignored_calls:
+                    continue
                 text = message["content"]
                 projected = json.loads(text[text.index("{") : text.rindex("}") + 1])
                 fingerprint = json.dumps([calls[call_id], projected], sort_keys=True)
@@ -326,3 +336,4 @@ class Provider:
             "bicep_identifiers": dict(Counter(self.bicep_identifiers.values())),
             "observed_bicep_results": len(self.records),
         }
+

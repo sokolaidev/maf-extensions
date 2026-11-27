@@ -17,7 +17,7 @@ on:
       openclaw_mode:
         description: "OpenClaw provider (model uses live-verify Azure OpenAI and incurs inference charges)"
         type: choice
-        options: [smoke, model, owner-loss]
+        options: [smoke, model, model-restart, owner-loss]
         default: smoke
 
 permissions:
@@ -377,7 +377,7 @@ jobs:
 
   openclaw-bicep-model:
     name: OpenClaw real-model Gateway-to-Docker
-    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && inputs.openclaw_mode == 'model'
+    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && contains(fromJSON('["model", "model-restart"]'), inputs.openclaw_mode)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     environment: live-verify
@@ -385,6 +385,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      WORKER_RESTART: ${{ inputs.openclaw_mode == 'model-restart' && 'true' || 'false' }}
       BICEP_IMAGE: ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -440,19 +441,23 @@ jobs:
           test -n "$OPENAI_API_KEY"
           printf '::add-mask::%s\n' "$OPENAI_API_KEY"
           export OPENAI_API_KEY
+          restart_args=()
+          if [ "$WORKER_RESTART" = true ]; then restart_args+=(--worker-restart); fi
           uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
-            --mode model --reasoning-effort none --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl" \
+            --mode model "${restart_args[@]}" --reasoning-effort none --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl" \
             --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
       - name: Record bounded evidence and independently check owner scope
         if: always()
         run: |
-          python3 scripts/report_openclaw_hosted.py --mode model --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
+          restart_args=()
+          if [ "$WORKER_RESTART" = true ]; then restart_args+=(--worker-restart); fi
+          python3 scripts/report_openclaw_hosted.py --mode model "${restart_args[@]}" --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
           cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain bounded Markdown evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: openclaw-bicep-model-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openclaw-bicep-${{ inputs.openclaw_mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/openclaw-bicep-evidence.md
           if-no-files-found: error
           retention-days: 30
@@ -554,3 +559,4 @@ jobs:
           --reproduce 'Re-run the linked attempt, or dispatch docker-live.yml against the failing commit. Inspect the first failed step for setup, registry, daemon, or test failures.'
           --expected 'All Docker live checks pass.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-document maf-sandbox-antivirus maf-sandbox-drawio maf-sandbox-mcp
+
