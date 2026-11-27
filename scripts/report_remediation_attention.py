@@ -51,6 +51,9 @@ def artifact_names(kind: str, run_id: str, attempt: str, available: Collection[s
         snapshot = f"chrome-update-attention-{run_id}-{attempt}"
         if snapshot in available:
             return [snapshot]
+        preparation = f"chrome-update-preparation-{run_id}-{attempt}"
+        if preparation in available:
+            return [preparation, f"chrome-update-delivery-{run_id}-{attempt}"]
         return [f"chrome-update-{run_id}-{attempt}", f"chrome-update-delivery-{run_id}-{attempt}"]
     prefix = "platform-remediation" if kind == "platform" else "remediation"
     return [
@@ -103,8 +106,11 @@ def collect(kind: str, repo: str, run_id: str, attempt: str) -> tuple[dict, dict
             continue
         artifact = available[name]
         limit = MAX_ARTIFACT
-        if name == f"chrome-update-{run_id}-{attempt}":
-            # Older Chrome attempts bundled the authenticated Debian package with the receipt.
+        if name in {
+            f"chrome-update-{run_id}-{attempt}",
+            f"chrome-update-delivery-{run_id}-{attempt}",
+        }:
+            # Full Chrome qualification archives include the authenticated Debian package.
             limit += MAX_PACKAGE
         if artifact["size_in_bytes"] > limit:
             raise ValueError("Notification artifact exceeds size limit")
@@ -233,8 +239,24 @@ def pending(values: dict, kind: str) -> list[dict]:
         )
     if kind == "chrome" and not delivered:
         requirement = values.get("delivery-requirement.json", {})
+        receipt = values.get("receipt.json", {})
+        if requirement.get("kind") != "security" and values.get("deferral.json"):
+            rows.append(
+                {
+                    "profile": "document-export",
+                    "id": "Chrome update pending",
+                    "severity": "unknown",
+                    "component": "chrome",
+                    "installed": receipt.get("before", "see evidence"),
+                    "fix": {"versions": []},
+                    "reason": (
+                        "Delivery is pending fresh source and monitoring evidence; "
+                        "security eligibility has not been established. Monitor completion "
+                        "and the daily schedule retry automatically. Inspect repeated deferrals."
+                    ),
+                }
+            )
         if requirement.get("kind") == "security":
-            receipt = values.get("receipt.json", {})
             advisories = requirement.get("findings") or [
                 {
                     "id": identifier,

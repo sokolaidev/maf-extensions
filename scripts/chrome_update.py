@@ -121,7 +121,7 @@ def acquire(root: Path, work: Path, client: GitHub) -> dict[str, Any]:
         "after": selected["version"],
     }
     write(work / "discovery.json", result)
-    outputs({"updates": str(changed).lower()})
+    outputs({"updates": str(changed).lower(), "source": source})
     print(json.dumps(result), flush=True)
     return result
 
@@ -233,7 +233,11 @@ def build(root: Path, work: Path) -> dict[str, Any]:
 def declared_requirement(reason: str | None, justification: str) -> dict[str, str] | None:
     """Derive security requirements from evidence and retain manual package assertions."""
     event = os.environ.get("GITHUB_EVENT_NAME")
-    if event == "schedule" and reason in (None, "none") and not justification.strip():
+    if (
+        event in {"schedule", "workflow_run"}
+        and reason in (None, "none")
+        and not justification.strip()
+    ):
         return None
     if event == "workflow_dispatch" and reason == "security":
         return None
@@ -316,6 +320,13 @@ def main() -> None:
             print(json.dumps(result), flush=True)
     except (EvidenceChanging, HistoryAdvanced) as error:
         deferred(args.work, error, args.command)
+        if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with Path(summary).open("a", encoding="utf-8") as output:
+                output.write(
+                    "\nChrome delivery remains pending. Monitor completion and the daily "
+                    "schedule retry against fresh main and evidence; no PR was delivered "
+                    "by this phase.\n"
+                )
         outputs({"updates": "false", "deliver": "false"})
 
 

@@ -541,14 +541,35 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
         "actions": "read",
         "attestations": "read",
     }
-    steps = job["steps"]
+    assert "concurrency" not in job
+    assert "poe gate" in "\n".join(step.get("run", "") for step in job["steps"])
+    assert not any(step.get("id") == "app" for step in job["steps"])
+    delivery = workflow["jobs"]["delivery"]
+    assert delivery["needs"] == "update"
+    assert delivery["concurrency"] == {
+        "group": "container-security-catalogue",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
+    assert delivery["steps"][0]["with"]["ref"] == "${{ needs.update.outputs.source }}"
+    assert workflow["concurrency"]["queue"] == "max"
+    assert workflow[True]["workflow_run"] == {
+        "workflows": ["Container image monitor"],
+        "types": ["completed"],
+        "branches": ["main"],
+    }
+    assert "pull_request" not in workflow[True]
+    assert "head_repository.full_name == github.repository" in job["if"]
+    assert "workflow_run.conclusion" not in job["if"]
+    steps = delivery["steps"]
     app = next(i for i, step in enumerate(steps) if step.get("id") == "app")
     before = "\n".join(step.get("run", "") for step in steps[:app])
-    assert "chrome_update.py build" in before and "poe gate" in before
+    assert "chrome_update.py authorize" in before
     assert next(i for i, step in enumerate(steps) if step.get("id") == "retain") < app
     assert "inputs.deliver" in steps[app]["if"]
     assert "github.event_name == 'workflow_dispatch'" in steps[app]["if"]
     assert "github.event_name == 'schedule'" in steps[app]["if"]
+    assert "github.event_name == 'workflow_run'" in steps[app]["if"]
     assert "steps.authorize.outputs.deliver == 'true'" in steps[app]["if"]
     authorize = next(i for i, step in enumerate(steps) if step.get("id") == "authorize")
     retain = next(i for i, step in enumerate(steps) if step.get("id") == "retain")
@@ -557,6 +578,7 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
     assert "inputs.deliver" in steps[authorize]["if"]
     assert "refs/heads/main" in job["if"]
     assert "contents: write" not in json.dumps(job["permissions"])
+    assert delivery["permissions"] == job["permissions"]
 
 
 @pytest.fixture
@@ -720,6 +742,7 @@ def retain_security(work, receipt, directory):
     "event,reason,justification",
     [
         ("schedule", None, ""),
+        ("workflow_run", None, ""),
         ("workflow_dispatch", "security", ""),
         ("workflow_dispatch", "security", " \t"),
         ("workflow_dispatch", "security", "CVE-test"),
@@ -817,6 +840,7 @@ def test_security_acquisition_uses_the_authenticated_document_export_scope(
     monkeypatch.setattr(security.monitoring, "acquire_with_retry", acquire)
     result = security.acquire(FakeGitHub(), ROOT, tmp_path / "work", "157.0.8103.38-1", VERSION)
     assert calls[0]["selected_profiles"] == ["document-export"]
+    assert calls[0]["use_catalogue_monitor"] is True
     assert result["findings"][0]["id"] == "CVE-2026-130910"
 
 

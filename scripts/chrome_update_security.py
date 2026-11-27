@@ -83,6 +83,7 @@ def acquire(client: GitHub, root: Path, directory: Path, before: str, after: str
         root,
         directory,
         selected_profiles=[PROFILE],
+        use_catalogue_monitor=True,
         planner=lambda _root, paths: plan(paths, before, after),
     )
     if result is None:

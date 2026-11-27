@@ -384,7 +384,7 @@ def test_chrome_notification_snapshot_includes_evidence_even_when_delivery_is_sk
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/chrome-image-update.yml").read_text("utf-8")
     )
-    steps = workflow["jobs"]["update"]["steps"]
+    steps = workflow["jobs"]["delivery"]["steps"]
     snapshot = next(
         step
         for step in steps
@@ -394,7 +394,7 @@ def test_chrome_notification_snapshot_includes_evidence_even_when_delivery_is_sk
     assert steps.index(snapshot) > next(
         i for i, step in enumerate(steps) if step.get("id") == "deliver"
     )
-    assert snapshot["if"] == "always() && steps.acquire.outcome == 'success'"
+    assert snapshot["if"] == "always()"
     assert snapshot["with"]["if-no-files-found"] == "error"
     assert set(snapshot["with"]["path"].splitlines()) == {
         "${{ runner.temp }}/chrome-update/" + name
