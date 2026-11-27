@@ -320,9 +320,18 @@ class SessionCompactionRegistry:
         session_id: str,
         strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ) -> None:
-        """Offer the stored view to a strategy that holds no view of its own (#2995)."""
+        """Offer the stored view to a strategy that holds no view of its own (#2995).
+
+        Either way, the versions this pass will write over are observed before it runs.
+        """
         store = self.view_store
-        if store is None or strategy.carries_view or strategy.has_saved_view:
+        if store is None:
+            return
+        if strategy.carries_view or strategy.has_saved_view:
+            known = self._views.get(session_id)
+            if known is None or any(part not in known.etags for part in ViewPart):
+                for part in ViewPart:
+                    await self._expected(session_id, part)
             return
         earlier = await store.read(self._view_key(session_id, ViewPart.EARLIER))
         current = await store.read(self._view_key(session_id, ViewPart.CURRENT))
@@ -357,6 +366,10 @@ class SessionCompactionRegistry:
             logger.info("Compaction persisted view not offered: its parts do not join.")
             return
         strategy.restore_saved_view(offer, source=PASS_MODE_PERSISTED)
+        # The stored earlier part is this process's now, so an unchanged one is not rewritten.
+        state = self._views[session_id]
+        state.earlier_digest = layout_text_digest(first.layout)
+        state.earlier_sources = first.end
 
     async def _persist_view(
         self,

@@ -314,3 +314,84 @@ async def test_after_invalidation_the_next_pass_rebuilds(
     assert _modes(caplog) == ["full (nothing carried or saved)"]
     with registry.activate(session), pytest.raises(RuntimeError, match="active compaction phase"):
         await registry.invalidate_view("rebuilt")
+
+
+async def test_a_pass_resuming_its_own_layout_still_conflicts_with_a_view_published_meanwhile(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="reuse")
+    await _pass(_registry(budget, [], view_store=store), session, _Rebuilding(transcript).hand())
+    slow, fast = _registry(budget, [], view_store=store), _registry(budget, [], view_store=store)
+
+    with slow.activate(session) as stack:
+        strategy = cast(_Composed, stack.strategy)
+        # A layout of its own is pending, so the stored view is not loaded; the versions this
+        # pass will write over must still be observed now.
+        earlier = await store.read(ViewKey("reuse", "agent", ViewPart.EARLIER))
+        current = await store.read(ViewKey("reuse", "agent", ViewPart.CURRENT))
+        assert earlier is not None and current is not None
+        offer = strategy.persisted_view_offer(earlier.data["layout"], current.data["layout"])
+        assert offer is not None
+        strategy.restore_saved_view(offer)
+        await slow._load_view("reuse", strategy)
+        await _pass(fast, AgentSession(session_id="reuse"), _Rebuilding(transcript).hand())
+        published = await store.read(ViewKey("reuse", "agent", ViewPart.CURRENT))
+        await apply_compaction(_Rebuilding(transcript).hand(), strategy=_compactor(strategy))
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await slow._persist_view("reuse", strategy)
+
+    kept = await store.read(ViewKey("reuse", "agent", ViewPart.CURRENT))
+    assert published is not None and kept is not None and kept.etag == published.etag
+    assert any("another writer's is newer" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "reconfigure",
+    [
+        pytest.param(
+            lambda s: setattr(s.tool_results.fallback, "keep_tail_groups", 99), id="fallback"
+        ),
+        pytest.param(lambda s: s.user_turns.summary_options.update(temperature=0.9), id="options"),
+    ],
+)
+async def test_a_view_written_under_other_fallback_or_summary_options_is_not_offered(
+    reconfigure: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="nested")
+    await _pass(_registry(budget, [], view_store=store), session, _Rebuilding(transcript).hand())
+    reconfigured = _registry(budget, [], view_store=store)
+
+    with reconfigured.activate(session) as stack:
+        reconfiguring = cast(_Composed, stack.strategy)
+        reconfigure(reconfiguring)
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await reconfigured._load_view("nested", reconfiguring)
+        assert not reconfiguring.has_saved_view
+
+    assert any("other decisions or settings" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_session_moving_between_processes_does_not_rewrite_an_unchanged_earlier_part(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = _CountingStore()
+    session = AgentSession(session_id="handoff")
+    host = _Rebuilding(transcript)
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        for call in range(1, 5):
+            # A fresh process each call: nothing carried, the view comes from the store.
+            await _pass(_registry(budget, [], view_store=store), session, host.hand())
+            host.answered(call)
+
+    assert "persisted view restored" in _modes(caplog)
+    assert store.writes[ViewPart.CURRENT] == 4
+    assert store.writes[ViewPart.EARLIER] < store.writes[ViewPart.CURRENT]

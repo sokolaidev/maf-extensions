@@ -2199,12 +2199,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def configuration_fingerprint(self) -> str:
         """A digest of the settings and prompts that shape a view, for binding a persisted one.
 
-        Every public setting of this strategy and its two halves that is a plain value, and the
-        qualified name of a callable one; clients and tokenizers are not settings of a view.
+        Every public setting of this strategy, its two halves and the tool-result half's
+        fallback that is a plain value or a mapping of plain values, the qualified name of a
+        callable one, and the fallback's type; clients and tokenizers are not settings of a view.
         Decisions are snapshots of what was done, so a process configured differently can
         restore the same decisions: the fingerprint is what refuses a view written under other
         prompts or limits.
         """
+
+        def plain(value: Any) -> bool:
+            return value is None or isinstance(value, (str, int, float, bool))
 
         def settings(part: Any) -> dict[str, Any]:
             found: dict[str, Any] = {}
@@ -2212,16 +2216,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for name, value in attributes.items():
                 if name.startswith("_"):
                     continue
-                if value is None or isinstance(value, (str, int, float, bool)):
+                if plain(value):
                     found[name] = value
+                elif isinstance(value, Mapping):
+                    options = cast(Mapping[Any, Any], value)
+                    found[name] = {str(key): item for key, item in options.items() if plain(item)}
                 elif callable(value) and hasattr(value, "__qualname__"):
                     found[name] = f"{value.__module__}.{value.__qualname__}"
             return found
 
+        fallback = self.tool_results.fallback
         return json_digest(
             {
                 "composed": settings(self),
                 "tool_results": settings(self.tool_results),
+                "fallback": {
+                    "type": f"{type(fallback).__module__}.{type(fallback).__qualname__}",
+                    **settings(fallback),
+                },
                 "user_turns": settings(self.user_turns),
             }
         )
