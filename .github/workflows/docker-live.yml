@@ -451,8 +451,10 @@ jobs:
         run: |
           restart_args=()
           if [ "$WORKER_RESTART" = true ]; then restart_args+=(--worker-restart); fi
-          python3 scripts/report_openclaw_hosted.py --mode model "${restart_args[@]}" --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
-          cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          python3 scripts/report_openclaw_hosted.py --mode model "${restart_args[@]}" --output "$RUNNER_TEMP/openclaw-bicep-evidence.md" || status=$?
+          cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - name: Retain bounded Markdown evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
