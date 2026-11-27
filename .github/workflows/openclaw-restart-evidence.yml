@@ -1,0 +1,18 @@
+name: Read bounded OpenClaw recovery evidence
+on:
+  push:
+    branches: [antsok-proof-3024-evidence]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read retained Markdown only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 46082045619 --repo sokolaidev/maf-extensions --name openclaw-bicep-model-restart-46082045619-1 --dir "$RUNNER_TEMP/bounded"
+          cat "$RUNNER_TEMP/bounded/openclaw-bicep-evidence.md"
