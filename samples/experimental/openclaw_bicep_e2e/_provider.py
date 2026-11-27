@@ -23,7 +23,7 @@ MAX_COMPLETION_TOKENS = 4096
 
 def conversation_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Exclude the pinned Gateway's runtime envelope from fixture turn accounting."""
-    result = []
+    result: list[dict[str, Any]] = []
     for message in messages:
         content = message.get("content")
         if (

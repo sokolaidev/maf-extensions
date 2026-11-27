@@ -213,7 +213,6 @@ def test_observe_recognizes_the_canonical_mcp_tool_identity(provider: Any) -> No
     assert first["turn"] not in json.dumps(observed)
 
 
-
 def runtime_context(content: str = "Current runtime instructions.") -> dict[str, str]:
     return {
         "role": "user",
