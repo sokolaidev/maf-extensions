@@ -42,7 +42,6 @@ class ViewPart(StrEnum):
 class MisfitReason(StrEnum):
     """Why a persisted part no longer fits a stored history."""
 
-    VERSION = "version"
     CONFIG = "config"
     RANGE = "range"
     DIGEST = "digest"
