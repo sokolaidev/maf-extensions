@@ -1,0 +1,52 @@
+name: OpenClaw 3009 complete gate
+on:
+  push:
+    branches: [antsok-proof-openclaw-3009-final]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 6926b311989a2cbf00c4f738b74519815d6d1def
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.12.5'
+          python-version: '3.13.15'
+      - run: uv sync --locked
+
+      - name: Reproduce unchanged-main interim limit failure
+        run: |
+          set +e
+          uv run pytest -q 'tests/test_terraform_dependencies.py::test_response_head_refused_before_accumulation[interim]' > "$RUNNER_TEMP/baseline.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/baseline.txt"
+          test "$result" -eq 1
+          grep -q 'got more than 100 interim responses' "$RUNNER_TEMP/baseline.txt"
+          grep -q '1 failed' "$RUNNER_TEMP/baseline.txt"
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.12.5'
+          python-version: '3.13.15'
+      - run: uv sync --locked
+
+      - run: uv run pytest -q -n auto
+      - run: uv run poe lint
+      - run: uv run poe format
+      - run: uv run poe security
+      - run: uv run poe types-packages
+      - run: uv run poe types
+      - run: uv run poe doc-paths
+      - run: uv run poe implicit-concat
