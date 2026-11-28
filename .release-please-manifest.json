@@ -20,5 +20,5 @@
   "packages/maf-sandbox-document": "0.6.0",
   "packages/maf-sandbox-azure-pricing": "0.4.0",
   "packages/maf-sandbox-antivirus": "0.3.0",
-  "packages/maf-sandbox-mxc": "0.2.0"
+  "packages/maf-sandbox-mxc": "0.3.0"
 }
