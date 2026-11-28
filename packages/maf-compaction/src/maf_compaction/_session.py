@@ -31,6 +31,7 @@ from agent_framework import (
     TokenizerProtocol,
 )
 
+from ._carryover import _is_transient  # pyright: ignore[reportPrivateUsage]
 from ._composed import (
     PASS_MODE_PERSISTED,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -177,6 +178,9 @@ class SessionCompactionRegistry:
         self.view_agent = view_agent
         # What this process knows of each session's stored view; dropped with the session.
         self._views: dict[str, _ViewState] = {}
+        # Per session, how many sources the running turn's first pass was handed: what the
+        # host has stored. Dropped with the turn's carried view.
+        self._handed: dict[str, int] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
@@ -243,6 +247,7 @@ class SessionCompactionRegistry:
                 evicted, _ = self._cache.popitem(last=False)
                 self._owners.pop(evicted, None)
                 self._views.pop(evicted, None)
+                self._handed.pop(evicted, None)
                 self._discard_merge_work(evicted)
             self._release_carried_views()
 
@@ -269,6 +274,7 @@ class SessionCompactionRegistry:
         self._cache.pop(session_id, None)
         self._owners.pop(session_id, None)
         self._views.pop(session_id, None)
+        self._handed.pop(session_id, None)
         self._discard_merge_work(session_id)
 
     def _discard_merge_work(self, session_id: str) -> None:
@@ -278,7 +284,11 @@ class SessionCompactionRegistry:
             entry[1].cancel()
 
     def release_carried_view(self, session_id: str) -> None:
-        """Release a turn's kept list, saving its layout when a saved_view_key is configured."""
+        """Release a turn's kept list, saving its layout when a saved_view_key is configured.
+
+        The turn's count of handed messages goes too: the next pass starts a turn of its own.
+        """
+        self._handed.pop(session_id, None)
         stack = self._cache.get(session_id)
         if stack is None or not isinstance(
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
@@ -354,12 +364,37 @@ class SessionCompactionRegistry:
         state.earlier_digest = earlier_digest
         state.earlier_sources = earlier_sources
 
+    def _note_handed(
+        self,
+        session_id: str,
+        strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        handed: list[Message],
+    ) -> int:
+        """How many sources the running turn was handed, set by its first pass.
+
+        The first pass's sources are all messages the host handed it; a later pass's sources go
+        on with the messages the run itself produced. ``handed`` is the list this pass was
+        handed, counted when the pass kept no view to count from.
+        """
+        if session_id not in self._handed:
+            counted = strategy.carried_source_count
+            self._handed[session_id] = (
+                counted if counted is not None else sum(not _is_transient(m) for m in handed)
+            )
+        return self._handed[session_id]
+
     async def _persist_view(
         self,
         session_id: str,
         strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        *,
+        handed_sources: int | None = None,
     ) -> None:
-        """Write the view the pass left: the earlier part only when it changed (#2995)."""
+        """Write the view the pass left: the earlier part only when it changed (#2995).
+
+        ``handed_sources`` keeps the view to what the host handed the turn
+        (:meth:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.persisted_view_parts`).
+        """
         store = self.view_store
         if store is None:
             return
@@ -377,7 +412,11 @@ class SessionCompactionRegistry:
             return
         # History-wide work: off the loop, as the pass's own steps are.
         view = await off_loop(
-            partial(strategy.persisted_view_parts, unchanged_earlier=state.earlier_digest)
+            partial(
+                strategy.persisted_view_parts,
+                unchanged_earlier=state.earlier_digest,
+                handed_sources=handed_sources,
+            )
         )
         if view is None:
             return
@@ -696,13 +735,19 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                         await _guarded_view_io(
                             self.registry._load_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
                         )
+                        handed = list(messages)
                         try:
                             return await strategy.compact_before(
                                 messages, options=context.options or {}
                             )
                         finally:
+                            handed_sources = self.registry._note_handed(  # pyright: ignore[reportPrivateUsage]
+                                session.session_id, strategy, handed
+                            )
                             await _guarded_view_io(
-                                self.registry._persist_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
+                                self.registry._persist_view(  # pyright: ignore[reportPrivateUsage]
+                                    session.session_id, strategy, handed_sources=handed_sources
+                                )
                             )
                     return await stack.strategy(messages)
 

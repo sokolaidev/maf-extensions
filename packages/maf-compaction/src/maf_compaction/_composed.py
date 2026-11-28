@@ -310,6 +310,30 @@ PASS_MODE_SAVED: Final[str] = "saved view"
 PASS_MODE_PERSISTED: Final[str] = "persisted view"
 #: Where a persisted view's binding carries the configuration fingerprint.
 _VIEW_CONFIGURATION_KEY: Final[str] = "configuration"
+#: The records' bookkeeping for a pending record request: what that record should hold. It moves
+#: when a model answer adds a tool group, after the pass that wrote a view, and shapes later record
+#: judgments, never what a view keeps or inserts, so a persisted view is not bound to it.
+_UNBOUND_RECORD_DECISIONS: Final[tuple[str, ...]] = (
+    "value_targets",
+    "value_target_anchor",
+    "value_target_groups",
+)
+
+
+def _view_decisions(state: dict[str, Any]) -> dict[str, Any]:
+    """A strategy's session state without what a persisted view is not bound to."""
+    decisions = state.get("decisions")
+    if not isinstance(decisions, dict):
+        return state
+    records = cast(dict[str, Any], decisions).get("records")
+    if not isinstance(records, dict):
+        return state
+    kept = {
+        key: value
+        for key, value in cast(dict[str, Any], records).items()
+        if key not in _UNBOUND_RECORD_DECISIONS
+    }
+    return {**state, "decisions": {**cast(dict[str, Any], decisions), "records": kept}}
 
 
 def _code_shape(code: CodeType) -> list[Any]:
@@ -2201,8 +2225,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._saved_view = saved
         self._saved_view_source = source
 
+    @property
+    def carried_source_count(self) -> int | None:
+        """How many handed messages the carried view accounts for, or None when it holds none."""
+        return None if self._carried is None else len(self._carried.contents)
+
     def persisted_view_parts(
-        self, *, unchanged_earlier: str | None = None
+        self, *, unchanged_earlier: str | None = None, handed_sources: int | None = None
     ) -> tuple[str | None, str, str, str] | None:
         """The carried view cut at the turn boundary, keeping the view (#2995).
 
@@ -2212,20 +2241,32 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         its digest is ``unchanged_earlier``: it is hashed as a stream and serialized only when
         it changed. The decisions are built once and each part serialized at most once, from the
         layout mapping: on a long conversation the layout is several MiB.
+
+        ``handed_sources`` limits the view to the first that many sources: the messages the
+        host handed the run, which it has stored. A message the run produced reaches the next
+        turn as the host stored it, which can differ from what the pass saw (another message
+        id, an argument written differently), and would make the whole view misfit; left out,
+        it is simply new history after the view. None when an inserted message stands for
+        sources on both sides of that cut.
         """
         carried = self._carried
         if carried is None:
             return None
         decisions = self.session_state()
-        if (
-            carried.decisions_before_storage is not None
-            and carried.decisions_before_storage != decisions
-        ):
+        if carried.decisions_before_storage is not None and _view_decisions(
+            carried.decisions_before_storage
+        ) != _view_decisions(decisions):
             return None
         data = _layout_data(carried)
         if data is None:
             return None
-        parts = split_layout_data(data, source_turn_boundary(carried.states))
+        if handed_sources is not None and handed_sources < len(data["sources"]):
+            handed = split_layout_data(data, handed_sources)
+            if handed is None:
+                return None
+            data = handed[0]
+        boundary = min(source_turn_boundary(carried.states), len(data["sources"]))
+        parts = split_layout_data(data, boundary)
         del data
         if parts is None:
             return None
@@ -2247,7 +2288,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         fingerprint = self.configuration_fingerprint()
         if fingerprint is None:
             return None
-        bound = {**decisions, _VIEW_CONFIGURATION_KEY: fingerprint}
+        bound = {**_view_decisions(decisions), _VIEW_CONFIGURATION_KEY: fingerprint}
         return _layout_digest(bound, f"{earlier_digest}\n{current}")
 
     def configuration_fingerprint(self) -> str | None:
