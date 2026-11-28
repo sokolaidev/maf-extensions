@@ -700,6 +700,7 @@ def test_acquisition_reuses_authenticated_platform_scope(context, tmp_path, monk
                 "selected_profiles": tuple(rehearsal.RUNTIME_RECIPES),
                 "planner": rehearsal.acquire_plan,
                 "require_all_profiles": False,
+                "use_catalogue_monitor": False,
             },
         )
         for attempt in range(1, attempts + 1)

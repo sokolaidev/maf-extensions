@@ -200,7 +200,7 @@ def test_discovery_sets_output_only_for_a_new_version(tmp_path, monkeypatch, cha
         "update" if changed else "unchanged"
     )
     assert read(work / "receipt.json")["package"] == SELECTED
-    assert output == [{"updates": str(changed).lower()}]
+    assert output == [{"updates": str(changed).lower(), "source": SOURCE}]
 
 
 @pytest.mark.parametrize(
