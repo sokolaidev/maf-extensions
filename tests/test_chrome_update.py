@@ -555,6 +555,12 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
     assert job["outputs"]["artifact_id"] == "${{ steps.candidate.outputs.artifact-id }}"
     retained = next(step for step in job["steps"] if step.get("id") == "candidate")
     assert retained["uses"].startswith("actions/upload-artifact@")
+    preparation = next(
+        step
+        for step in job["steps"]
+        if step.get("with", {}).get("name", "").startswith("chrome-update-preparation-")
+    )
+    assert "${{ runner.temp }}/chrome-update/discovery.json" in preparation["with"]["path"]
     download = next(
         step
         for step in delivery["steps"]

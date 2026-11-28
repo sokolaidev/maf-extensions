@@ -33,6 +33,7 @@ DOCUMENTS = {
     "deferral.json",
     "competing-pulls.json",
     "delivery-requirement.json",
+    "discovery.json",
     "build.json",
     "assessment.json",
     "grype.json",
@@ -335,6 +336,13 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
         and not values.get("deferral.json")
         and (
             values.get("delivery-requirement.json", {}).get("status") == "no-security-fix"
+            or (
+                values.get("discovery.json", {}).get("status") == "unchanged"
+                and values["discovery.json"].get("before")
+                == values["discovery.json"].get("after")
+                == values["receipt.json"].get("before")
+                == values["receipt.json"]["package"]["version"]
+            )
             or (
                 values.get("delivery-requirement.json", {}).get("kind") in {"security", "package"}
                 and values.get("publication.json", {}).get("status")
