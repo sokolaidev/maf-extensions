@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -238,6 +240,39 @@ class ChromeCoordinationTests(unittest.TestCase):
         )
         self.assertFalse(state["active"])
         self.assertEqual(state["signals"], [])
+
+    def test_unchanged_discovery_snapshot_clears_only_chrome_pending_state(self):
+        with io.BytesIO() as raw:
+            with zipfile.ZipFile(raw, "w") as bundle:
+                bundle.writestr(
+                    "receipt.json",
+                    json.dumps({"before": "158", "package": {"version": "158"}}),
+                )
+                bundle.writestr(
+                    "discovery.json",
+                    json.dumps({"status": "unchanged", "before": "158", "after": "158"}),
+                )
+            raw.seek(0)
+            values = attention.documents(raw)
+        state = self.reconcile_notification(values)
+        self.assertFalse(state["active"])
+        self.assertEqual(state["signals"], [])
+
+    def test_incomplete_or_contradictory_discovery_preserves_pending_state(self):
+        for discovery in (
+            {},
+            {"status": "update", "before": "157", "after": "158"},
+            {"status": "unchanged", "before": "157", "after": "158"},
+            {"status": "unchanged", "before": "157", "after": "157"},
+        ):
+            with self.subTest(discovery=discovery):
+                state = self.reconcile_notification(
+                    {
+                        "receipt.json": {"before": "158", "package": {"version": "158"}},
+                        "discovery.json": discovery,
+                    }
+                )
+                self.assertTrue(state["active"])
 
     def test_unavailable_or_deferred_authorization_preserves_chrome_pending_state(self):
         for values in (
