@@ -552,6 +552,18 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
         "cancel-in-progress": False,
     }
     assert delivery["steps"][0]["with"]["ref"] == "${{ needs.update.outputs.source }}"
+    assert job["outputs"]["artifact_id"] == "${{ steps.candidate.outputs.artifact-id }}"
+    retained = next(step for step in job["steps"] if step.get("id") == "candidate")
+    assert retained["uses"].startswith("actions/upload-artifact@")
+    download = next(
+        step
+        for step in delivery["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert download["with"] == {
+        "artifact-ids": "${{ needs.update.outputs.artifact_id }}",
+        "path": "${{ runner.temp }}/chrome-update",
+    }
     assert workflow["concurrency"]["queue"] == "max"
     assert workflow[True]["workflow_run"] == {
         "workflows": ["Container image monitor"],

@@ -330,10 +330,18 @@ def notify(kind: str, run: dict, values: dict, repo: str, run_id: str, attempt: 
             for record in plan.get("evidence", []):
                 grouped.setdefault(record["profile"], [])
     elif (
-        values.get("delivery-requirement.json", {}).get("kind") == "security"
-        and values.get("publication.json", {}).get("status") in {"created", "updated", "unchanged"}
-        and values.get("publication.json", {}).get("url")
+        kind == "chrome"
         and values.get("receipt.json", {}).get("package", {}).get("version")
+        and not values.get("deferral.json")
+        and (
+            values.get("delivery-requirement.json", {}).get("status") == "no-security-fix"
+            or (
+                values.get("delivery-requirement.json", {}).get("kind") in {"security", "package"}
+                and values.get("publication.json", {}).get("status")
+                in {"created", "updated", "unchanged"}
+                and values.get("publication.json", {}).get("url")
+            )
+        )
     ):
         grouped.setdefault("document-export", [])
     if not grouped:
