@@ -371,13 +371,16 @@ class SessionCompactionRegistry:
         session_id: str,
         strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
         handed: list[Message],
-    ) -> int:
+    ) -> int | None:
         """How many sources the running turn was handed, set by its first pass.
 
         The first pass's sources are all messages the host handed it; a later pass's sources go
         on with the messages the run itself produced. ``handed`` is the list this pass was
-        handed, counted when the pass kept no view to count from.
+        handed, counted when the pass kept no view to count from. None without a view store:
+        nothing is persisted, so nothing is kept for a host whose turns may never end here.
         """
+        if self.view_store is None:
+            return None
         if session_id not in self._handed:
             counted = strategy.carried_source_count
             self._handed[session_id] = (

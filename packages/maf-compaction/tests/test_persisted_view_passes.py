@@ -712,3 +712,13 @@ async def test_a_turn_whose_stack_was_evicted_keeps_its_handed_count() -> None:
     assert registry._handed["evicted"] == handed
     stored = await store.read(ViewKey("evicted", "agent", ViewPart.CURRENT))
     assert stored is not None and stored.data["end"] == handed
+
+
+async def test_without_a_view_store_no_handed_count_is_kept() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [])
+    session = AgentSession(session_id="storeless")
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+
+    assert registry._handed == {}
