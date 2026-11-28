@@ -2225,3 +2225,90 @@ The recovery candidate matches the model run's complete Python distribution inve
 The removal-denied case used the existing private TLS daemon image `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1`, Docker `29.8.2` with `overlay2`, and `go version go1.27.3 linux/amd64`. The daemon remained unchanged. Its authorization-plugin source SHA-256 is `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4` and compiled binary SHA-256 is `923dbc7fe663de0a65a3ee53dff51cb5b38c8a3f7d6f5c1ced5172bb5a725e05`. The unavailable case still covers loss of the replacement worker's Docker connection; neither case establishes actual host or daemon loss.
 
 These selected hosted results support promoting the shared sample and Linux recovery assertion to 2026.11.10. The numbered sample inherits that pin. Historical Windows conformance, credential delegation, native MXC, additional workload tools, model retries after faults, unattended recovery and production operation gain no new qualification. Only bounded Markdown artifacts are retained; private JSON, logs, tokens and sessions remain outside the checkout. Temporary proof workflows are excluded from the delivery.
+
+## Real-model worker restart 2026-11-28
+
+[#3024](https://github.com/sokolaidev/maf-extensions/issues/3024) combines the real-model path with one controlled pre-admission worker outage. The harness stops the installed worker after observing the model's first Bicep selection but before releasing that response to Gateway. It restarts only after receiving Gateway's explicit failed tool result, then forwards that unchanged result to the model. The original prompt, Gateway process and user session remain unchanged. A same-turn retry must use the identical source; the second turn still repairs and validates the greeting declaration.
+
+The attempt budget is one failed Bicep selection followed by exactly one invalid execution and one valid repair. Separate Docker create/destroy observations must account for two distinct containers created after restart readiness, with no extra execution and no retained owned resources. Missing failure/retry evidence, source changes, duplicate identities, exceeded attempts or incomplete cleanup refuse acceptance. The provider's ordinary 32-request/4,096-token limits and hosted 18-minute sample deadline remain in force.
+
+The worker is restarted by the qualification harness. This profile does not cover active-compiler termination, ambiguous-result replay, automatic supervision, host or daemon loss, other providers/models or production operation. Existing deterministic actor-loss evidence remains separate. Worker 0.3.1, the principal dependency pins and compiler image remain unchanged; no additional workload tool or MXC work is included.
+
+### Development attempt
+
+[Run 46082045619](https://github.com/sokolaidev/maf-extensions/actions/runs/46082045619), attempt 1, at proof source `c94f2b24243dce49c36eeb6dcd032872d0104da6`, stopped the worker but did not restart it. The relay compared the emitted model call ID directly with Gateway's replay ID. The pinned custom-provider [transport policy](https://github.com/openclaw/openclaw/blob/v2026.11.10/src/agents/transcript-policy.ts) selects strict normalization; [the implementation](https://github.com/openclaw/openclaw/blob/v2026.11.10/src/agents/tool-call-id.ts) removes non-alphanumeric characters and limits the resulting ID to 40 characters. The failed tool result was therefore recorded by the ordinary provider path rather than joined to the injected fault.
+
+The report retained three completed model responses, one Bicep result and only the worker-stopped event. It refused qualification in the invalid turn. Processes stopped, the owner lock was released, no owned containers remained in the independent inventory, and cleanup reported no errors. This is not evidence of recovery or of model behavior after a successful restart. The corrected harness applies the pinned normalization and refuses replay-ID collisions. Its next qualification remains separate.
+
+### Observed real-model outcome
+
+[Run 46082734330](https://github.com/sokolaidev/maf-extensions/actions/runs/46082734330), attempt 1, used proof source `542d30519abd68974fa84b1103852d50755bc6ef`. It reached the intended fault and restart: the installed worker exited after the injected SIGKILL; its process group was absent; Gateway presented the failed tool result; the replacement worker passed readiness with the same persistent owner; and the original Gateway process remained alive. The relay forwarded the unchanged failure after readiness. The model then ended the turn without selecting another Bicep call.
+
+The observed sequence was `worker_stopped → failure_observed → worker_ready`, with no `retry_selected`. Three model requests/responses completed without provider errors, comprising one tool description, one Bicep dispatch and the response after that failed dispatch. No successful Bicep result was observed and the repair turn was not started. The sample returned `passed: false` at `invalid-turn` with `missing-tool-result`; the independent collector returned `qualified: false`. Missing Docker execution-event evidence was also retained as a collection failure, not replaced by an inferred zero-execution result.
+
+Final cleanup confirmed stopped processes, released owner lock, empty owned scope and zero cleanup errors. The separate Docker inventory also found zero owned containers. This establishes the controlled stop/failure/restart sequence and the absence of a same-turn model retry in this attempt. It does not qualify successful model recovery, a universal model policy, or the two-execution acceptance path.
+
+The measured host was Ubuntu 24.04 image `20261122.23.1`, Docker `28.0.4`, Node `v26.8.1`, uv 0.12.5 and Python 3.13.15. OpenClaw remained 2026.11.10 with the verified published worker 0.3.1 and principal dependency pins. The model profile still used `reasoning_effort: none`, at most 32 provider requests and 4,096 completion tokens per request. The bounded Markdown artifact retains complete runtime details; its ZIP SHA-256 is `44921675f76a7419cd48600dfc4c09d2de2c5641ce90150e729e122b2337ed3f`.
+
+| Evidence identity | SHA-256 |
+|---|---|
+| Private report | `2100378292a8b9c810ed05ed0ae23202d39f434dc7e33562663cddc517c4258c` |
+| Tool evidence | `undefined` |
+| Published worker wheel | `36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1` |
+| Compiler image ID | `fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Model endpoint | `308241e7111832947f4614c87b2bb7f8a135c63fbac6cf5fce09ffa744c635de` |
+| Requested model | `9a7e60cd1c7bb9d5493832103af02aca05272564b29e49852a9a0b5d8d96ec2c` |
+| Returned model | `b8be814ffed8fd2f3fc7c660d5f2038c33c02a1d0ed3a6a31e542bb97c23813a` |
+| Harness `_evidence.py` | `c62290ec1f79a61c7e404d566dc8d38fcfc7b756e5346118049978007a28eb1f` |
+| Harness `_provider.py` | `474aec69ab9a5c6cd93734c528502f734d9dc22f89f050375639d68e08fb2020` |
+| Harness `_windows_job.py` | `92253337af3796e41b45e53a4b7221de973e6e6365b7bdef505f746487a30c3e` |
+| Harness `_worker_restart.py` | `e96822aab03d725e344959c3daff078526efb9dbe54872781e6ebd33ed46aeec` |
+| Harness `agent.py` | `37624eb74e045f5ba353f3f1294e6dfb53bf408a25e76a5fda2d305d63b18af0` |
+
+The complete installed distribution inventory was:
+
+| Distribution | Version |
+|---|---|
+| `PyJWT` | `2.15.1` |
+| `PyYAML` | `6.0.4` |
+| `agent-framework-core` | `1.24.0` |
+| `annotated-types` | `0.8.0` |
+| `anyio` | `4.16.0` |
+| `attrs` | `26.1.0` |
+| `cffi` | `2.1.1` |
+| `click` | `8.5.1` |
+| `cryptography` | `50.0.2` |
+| `h11` | `0.16.0` |
+| `httpcore2` | `2.16.2` |
+| `httpx2` | `2.16.2` |
+| `idna` | `3.20` |
+| `jsonschema` | `4.26.0` |
+| `jsonschema-specifications` | `2025.9.1` |
+| `maf-sandbox` | `0.53.1` |
+| `maf-sandbox-bicep` | `0.25.1` |
+| `maf-sandbox-docker` | `0.30.6` |
+| `maf-sandbox-mcp` | `0.3.1` |
+| `mcp` | `2.2.0` |
+| `mcp-types` | `2.2.0` |
+| `msgspec` | `0.22.0` |
+| `opentelemetry-api` | `1.45.2` |
+| `pycparser` | `3.12` |
+| `pydantic` | `2.14.4` |
+| `pydantic_core` | `2.50.5` |
+| `python-dotenv` | `1.2.4` |
+| `python-multipart` | `0.0.34` |
+| `referencing` | `0.37.0` |
+| `regex` | `2026.11.25` |
+| `rpds-py` | `2026.9.1` |
+| `sse-starlette` | `3.7.1` |
+| `starlette` | `1.7.0` |
+| `truststore` | `0.10.5` |
+| `typing-inspection` | `0.4.5` |
+| `typing_extensions` | `4.16.0` |
+| `uvicorn` | `0.54.0` |
+
+### Disposition
+
+The opt-in harness is delivered as a repeatable qualification attempt with strict success predicates. [#3024](https://github.com/sokolaidev/maf-extensions/issues/3024) remains open because successful retry/repair qualification is unmet. A worker restart alone is insufficient evidence of model recovery. The next proposed experiment is an explicit operator resume in the same Gateway session after the observed failure and confirmed restart, with its extra user turn recorded as part of the profile. That would test supervised recovery rather than silently changing this same-turn criterion. No such resume was executed here.
+
+Only bounded Markdown evidence is retained publicly. Raw model messages, source-bearing private records, runtime JSON, credentials and Gateway state remain outside the checkout. The earlier no-fault real-model and deterministic fifteen-case recovery qualifications are unchanged.
