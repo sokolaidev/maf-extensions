@@ -1450,6 +1450,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._merge_event_counts: Counter[str] = Counter()
         self._merge_event_lock = threading.Lock()
         self._pass_mode = PASS_MODE_UNDECIDED
+        self._pass_continued = False
         # Only source-bound decisions may replay across retained reasoning.
         self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
@@ -2226,6 +2227,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._saved_view_source = source
 
     @property
+    def pass_continued_view(self) -> bool:
+        """Whether the last pass began from the view an earlier pass carried, restored or not.
+
+        False for a pass that declined the carried view and rebuilt from the list, and for one
+        that stopped before choosing what to start from.
+        """
+        return self._pass_continued
+
+    @property
     def carried_source_count(self) -> int | None:
         """How many handed messages the carried view accounts for, or None when it holds none."""
         return None if self._carried is None else len(self._carried.contents)
@@ -2398,6 +2408,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         stops before choosing what to start from is logged as undecided.
         """
         self._pass_mode = PASS_MODE_UNDECIDED
+        self._pass_continued = False
         try:
             return await self._compact_before(messages, options=options)
         finally:
@@ -2429,6 +2440,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             saved_source=self._saved_view_source,
         )
         self._pass_mode = mode
+        self._pass_continued = carried is not None and resumed is not None
         # Handed back as the last pass left it, the list is no account of the stored messages.
         continuing = carried if resumed is not None and not resumed.restored else None
         self._settled = False

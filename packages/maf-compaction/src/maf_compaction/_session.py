@@ -380,11 +380,14 @@ class SessionCompactionRegistry:
         on with the messages the run itself produced. ``handed`` is the list this pass was
         handed, counted when the pass kept no view to count from.
 
-        ``continued`` is whether this pass began from the view an earlier pass carried.
+        ``continued`` is whether this pass began from the view an earlier pass carried
+        (:attr:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.pass_continued_view`):
+        one that declined it rebuilt, as one that had none did.
 
         None when this pass must not write: without a view store, where nothing is kept for a
         host whose turns may never end here, and for the rest of a turn whose carried view was
-        lost after a pass had carried one (an eviction, the carried-view cap, a write conflict).
+        lost or declined after a pass had carried one (an eviction, the carried-view cap, a write
+        conflict, a list that no longer fits it).
         The pass after that rebuilds from the run's list, where the messages the earlier pass
         inserted are sources too, so the count no longer names the handed ones; the turn's
         earlier write stays the stored view.
@@ -683,7 +686,7 @@ class _TurnSources:
     count: int
     #: Whether the last pass left a carried view; the next pass should begin from it.
     carried: bool = False
-    #: False once a pass rebuilt after the turn's carried view was lost.
+    #: False once a pass rebuilt after the turn's carried view was lost or declined.
     mapped: bool = True
 
 
@@ -767,14 +770,16 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                             self.registry._load_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
                         )
                         handed = list(messages)
-                        continued = strategy.carries_view
                         try:
                             return await strategy.compact_before(
                                 messages, options=context.options or {}
                             )
                         finally:
                             handed_sources = self.registry._note_handed(  # pyright: ignore[reportPrivateUsage]
-                                session.session_id, strategy, handed, continued=continued
+                                session.session_id,
+                                strategy,
+                                handed,
+                                continued=strategy.pass_continued_view,
                             )
                             if handed_sources is not None:
                                 await _guarded_view_io(

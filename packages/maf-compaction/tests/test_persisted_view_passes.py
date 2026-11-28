@@ -559,14 +559,13 @@ async def _run_pass(registry: Any, session: AgentSession, messages: list[Message
             strategy = cast(_Composed, stack.strategy)
             await registry._load_view(session.session_id, strategy)
             handed = list(messages)
-            continued = strategy.carries_view
             try:
                 return await strategy.compact_before(messages, options={})
             except CompactionBudgetExceeded:
                 return True
             finally:
                 handed_sources = registry._note_handed(
-                    session.session_id, strategy, handed, continued=continued
+                    session.session_id, strategy, handed, continued=strategy.pass_continued_view
                 )
                 if handed_sources is not None:
                     await registry._persist_view(
@@ -752,3 +751,26 @@ async def test_a_turn_whose_carried_view_was_dropped_writes_no_more_views() -> N
 
     assert registry._handed["dropped"].mapped is False
     assert store._parts[ViewKey("dropped", "agent", ViewPart.CURRENT)].etag == written
+
+
+async def test_a_turn_whose_carried_view_was_declined_writes_no_more_views(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+    session = AgentSession(session_id="declined")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    assert cast(_Composed, registry._cache["declined"].strategy).carries_view
+    written = store._parts[ViewKey("declined", "agent", ViewPart.CURRENT)].etag
+
+    # A list that no longer fits the carried view: an earlier message reads differently.
+    changed = copy.deepcopy(transcript)
+    changed[3] = Message(changed[3].role, ["Rewritten by the host."], message_id="rewritten")
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await _run_pass(registry, session, [*changed, *_call_pair("calls_run1", "{}", None)])
+
+    assert _modes(caplog) == ["full (carried view declined)"], _modes(caplog)
+    assert registry._handed["declined"].mapped is False
+    assert store._parts[ViewKey("declined", "agent", ViewPart.CURRENT)].etag == written
