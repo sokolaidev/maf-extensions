@@ -285,14 +285,17 @@ def acquire(
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
         raise EvidenceChanging("Evidence acquisition requires current main")
+    latest = None if use_catalogue_monitor else latest_monitor(client)
     snapshot = History(client).head()
     if snapshot is None:
         raise ValueError("No completed image release catalogue")
     monitor = (
         committed_monitor(client, snapshot.catalogue, selected)
         if use_catalogue_monitor
-        else latest_monitor(client)
+        else latest
     )
+    if monitor is None:
+        raise ValueError("No authoritative monitoring attempt exists")
     producer = monitor_source(client, monitor)
     if not use_catalogue_monitor and latest_monitor(client) != monitor:
         raise EvidenceChanging("Monitoring changed during acquisition")
