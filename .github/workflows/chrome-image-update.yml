@@ -92,6 +92,7 @@ jobs:
           name: chrome-update-preparation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/chrome-update/receipt.json
+            ${{ runner.temp }}/chrome-update/discovery.json
             ${{ runner.temp }}/chrome-update/deferral.json
           if-no-files-found: warn
           retention-days: 30
