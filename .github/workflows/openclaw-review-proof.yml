@@ -1,0 +1,38 @@
+name: OpenClaw review cleanup regression
+on:
+  push:
+    branches: [antsok-proof-3026-cleanup]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+          ref: 2097792900b66c31283c7564b83e0b61b3e86c81
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --locked
+      - run: uv run pytest -q tests/test_openclaw_model_restart.py tests/test_openclaw_e2e_sample.py tests/test_openclaw_hosted_report.py tests/test_docker_live_workflow.py
+      - run: uv run ruff check samples/experimental/openclaw_bicep_e2e tests/test_openclaw_model_restart.py
+      - run: uv run ruff format --check samples/experimental/openclaw_bicep_e2e tests/test_openclaw_model_restart.py
+      - run: uv run pyright
+      - name: Confirm the regression fails before the fix
+        run: |
+          uv run python - <<'PY'
+          import pathlib, subprocess
+          path = pathlib.Path("samples/experimental/openclaw_bicep_e2e/agent.py")
+          fixed = path.read_bytes()
+          try:
+              path.write_bytes(subprocess.check_output(["git", "show", "HEAD^:" + path.as_posix()]))
+              result = subprocess.run(["uv", "run", "pytest", "-q", "tests/test_openclaw_model_restart.py::test_timeout_drains_restart_before_process_teardown"], text=True, capture_output=True)
+              print(result.stdout)
+              print(result.stderr)
+              assert result.returncode == 1
+              assert "AssertionError" in result.stdout and "teardown" in result.stdout
+          finally:
+              path.write_bytes(fixed)
+          PY
