@@ -17,7 +17,7 @@ from typing import Any
 from container_release import REPOSITORY, digest, now, read, require_digest, timestamp, write
 from container_release_assets import Evidence
 from container_release_history import GitHub, History, HistoryAdvanced, decode, positive_id
-from container_release_status import MONITOR, latest_monitor
+from container_release_status import MONITOR, latest_monitor, state_delivery
 from image_release_needed import git, release_evidence
 from image_security_evidence import PROVIDER_MANIFESTS
 from plan_go_remediation import evidence, plan
@@ -108,6 +108,39 @@ def monitor_source(client: GitHub, monitor: dict[str, Any]) -> str:
     ):
         raise ValueError("Monitor evidence has an unexpected producer")
     return run["head_sha"]
+
+
+def committed_monitor(
+    client: GitHub, catalogue: dict[str, Any], profiles: Iterable[str]
+) -> dict[str, Any]:
+    """Select the delivered attempt for the scoped images, independent of queued work."""
+    attempts = set()
+    for image in catalogue_images(catalogue, profiles).values():
+        if image is None:
+            raise ValueError("A supported current image release is missing")
+        attempt = image["record"].get("latestAttempt", {})
+        if attempt.get("outcome") == "running":
+            raise EvidenceChanging("Current image monitoring is still running")
+        if attempt.get("outcome") not in {"clean", "vulnerable"}:
+            raise ValueError("Current image monitoring has no usable assessment")
+        run_id = attempt.get("monitorRunId")
+        if not isinstance(run_id, str) or not re.fullmatch(r"[1-9][0-9]*", run_id):
+            raise ValueError("Invalid recorded monitoring run")
+        attempts.add((positive_id(int(run_id)), positive_id(attempt.get("monitorRunAttempt"))))
+    if len(attempts) != 1:
+        raise ValueError("Current images do not share one delivered monitoring attempt")
+    run_id, run_attempt = attempts.pop()
+    run = decode(client.request(f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"))
+    if (run.get("id"), run.get("run_attempt")) != (run_id, run_attempt):
+        raise ValueError("Monitor response identifies another attempt")
+    monitor = {
+        field: run.get(field)
+        for field in ("id", "run_attempt", "status", "conclusion", "updated_at")
+    }
+    if monitor["status"] == "completed" and monitor["conclusion"] == "failure":
+        monitor["stateDeliveryVerified"] = state_delivery(client, monitor)
+    monitor_source(client, monitor)
+    return monitor
 
 
 def restore_monitor(
@@ -226,7 +259,11 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
             )
     elif snapshot.reference != receipt["catalogue"]:
         raise EvidenceChanging("Release history changed during remediation")
-    if latest_monitor(client) != receipt["monitor"]:
+    if receipt.get("monitorSelection") == "catalogue":
+        monitor = committed_monitor(client, snapshot.catalogue, receipt["images"])
+    else:
+        monitor = latest_monitor(client)
+    if monitor != receipt["monitor"]:
         raise EvidenceChanging("Monitoring changed during remediation")
 
 
@@ -238,6 +275,7 @@ def acquire(
     selected_profiles: Iterable[str] | None = None,
     planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
     require_all_profiles: bool = True,
+    use_catalogue_monitor: bool = False,
 ) -> dict[str, Any]:
     """Authenticate current released images and fresh monitoring before planning source edits."""
     selected = set(PROVIDER_MANIFESTS if selected_profiles is None else selected_profiles)
@@ -247,12 +285,16 @@ def acquire(
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
         raise EvidenceChanging("Evidence acquisition requires current main")
-    monitor = latest_monitor(client)
-    producer = monitor_source(client, monitor)
     snapshot = History(client).head()
     if snapshot is None:
         raise ValueError("No completed image release catalogue")
-    if latest_monitor(client) != monitor:
+    monitor = (
+        committed_monitor(client, snapshot.catalogue, selected)
+        if use_catalogue_monitor
+        else latest_monitor(client)
+    )
+    producer = monitor_source(client, monitor)
+    if not use_catalogue_monitor and latest_monitor(client) != monitor:
         raise EvidenceChanging("Monitoring changed during acquisition")
     records = {}
     unpublished = []
@@ -312,6 +354,8 @@ def acquire(
     }
     if not require_all_profiles:
         receipt["unpublishedProfiles"] = unpublished
+    if use_catalogue_monitor:
+        receipt["monitorSelection"] = "catalogue"
     result = (plan if planner is None else planner)(root, paths)
     receipt["images"] = catalogue_images(snapshot.catalogue, result["affectedProfiles"] or selected)
     current(client, receipt)
@@ -328,11 +372,14 @@ def acquire_with_retry(
     selected_profiles: Iterable[str] | None = None,
     planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
     require_all_profiles: bool = True,
+    use_catalogue_monitor: bool = False,
 ) -> dict[str, Any] | None:
     """Retry changing snapshots in isolated directories; defer to the next trigger if still busy."""
     selected = None if selected_profiles is None else tuple(selected_profiles)
     directory.mkdir(parents=True, exist_ok=False)
-    for attempt in range(1, 4):
+    # Catalogue callers hold the writer lock; the monitor must acquire it to finish.
+    attempts = 1 if use_catalogue_monitor else 3
+    for attempt in range(1, attempts + 1):
         staging = directory / "attempts" / str(attempt)
         try:
             result = acquire(
@@ -342,11 +389,12 @@ def acquire_with_retry(
                 selected_profiles=selected,
                 planner=planner,
                 require_all_profiles=require_all_profiles,
+                use_catalogue_monitor=use_catalogue_monitor,
             )
         except (EvidenceChanging, HistoryAdvanced) as error:
             write(staging / "deferred.json", {"attempt": attempt, "reason": str(error)})
-            print(f"Acquisition attempt {attempt}/3 deferred: {error}", flush=True)
-            if attempt < 3:
+            print(f"Acquisition attempt {attempt}/{attempts} deferred: {error}", flush=True)
+            if attempt < attempts:
                 time.sleep(30)
         else:
             for child in staging.iterdir():
