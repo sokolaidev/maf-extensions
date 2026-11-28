@@ -10,6 +10,8 @@ from typing import Any
 
 import maf_compaction
 
+VIEW_MODES = ("default", "carried", "saved", "persisted")
+
 
 @dataclass(frozen=True, slots=True)
 class CompactionOptions:
@@ -48,6 +50,9 @@ class CompactionOptions:
     result_rewrite_profile: str = "none"
     record_merge_diagnostics: bool = False
     qualify_record_merges: bool = False
+    view_mode: str = "default"
+    record_merge_max_records: int | None = None
+    record_request_input_tokens: int | None = None
 
     def __post_init__(self) -> None:
         """Reject invalid controls before a provider is contacted."""
@@ -69,6 +74,10 @@ class CompactionOptions:
             raise ValueError("chunk_cache_size must be a non-negative integer.")
         if type(self.record_merge_split_depth) is not int or self.record_merge_split_depth < 0:
             raise ValueError("record_merge_split_depth must be a non-negative integer.")
+        for name, minimum in (("record_merge_max_records", 2), ("record_request_input_tokens", 1)):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < minimum):
+                raise ValueError(f"{name} must be an integer of at least {minimum}, or None.")
         if (
             isinstance(self.tool_delay_seconds, bool)
             or not isfinite(self.tool_delay_seconds)
@@ -98,6 +107,7 @@ class CompactionOptions:
             ("overflow_policy", ("shed", "raise")),
             ("session_mode", ("memory", "roundtrip", "restart")),
             ("history_mode", ("incremental", "replay")),
+            ("view_mode", VIEW_MODES),
             (
                 "persistence_scenario",
                 (
@@ -177,6 +187,9 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
         "record_merge_split_depth": "Recursive halvings of refused merge batches; zero disables.",
         "rewrite_gain_fraction": "Minimum fraction a harder rewrite must remove, in [0, 1).",
         "background_record_merges": "Prepare composed record merges while tools execute.",
+        "view_mode": "Choose the composed strategy's per-call and cross-turn view storage.",
+        "record_merge_max_records": "Maximum records per composed merge or rewrite request.",
+        "record_request_input_tokens": "Input token limit per record merge or rewrite request.",
         "record_merge_diagnostics": "Retain count-only composed record merge diagnostics.",
         "qualify_record_merges": "Require a value-preserving merge in sent history for every seed.",
         "tool_delay_seconds": "Simulated async lookup latency, applied equally to every live row.",
@@ -193,6 +206,7 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
         "overflow_policy": ("shed", "raise"),
         "session_mode": ("memory", "roundtrip", "restart"),
         "history_mode": ("incremental", "replay"),
+        "view_mode": VIEW_MODES,
         "persistence_scenario": (
             "none",
             "fenced",
@@ -229,6 +243,8 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
             "max_consecutive_summary_failures",
             "media_tokens",
             "record_merge_split_depth",
+            "record_merge_max_records",
+            "record_request_input_tokens",
         }:
             kwargs["type"] = int
         else:

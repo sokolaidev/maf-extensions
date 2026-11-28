@@ -4,9 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
+
+from maf_compaction import InMemoryViewStore, StoredView, ViewKey
+
+
+class BenchmarkViewStore:
+    """Count per-part I/O across registry restarts and rewinds of the simulated store."""
+
+    def __init__(self) -> None:
+        self.parts = InMemoryViewStore()
+        self.reads: Counter[str] = Counter()
+        self.writes: Counter[str] = Counter()
+
+    async def read(self, key: ViewKey) -> StoredView | None:
+        value = await self.parts.read(key)
+        self.reads[str(key.part)] += 1
+        return value
+
+    async def write(self, key: ViewKey, data: dict[str, Any], *, etag: str | None) -> str:
+        version = await self.parts.write(key, data, etag=etag)
+        self.writes[str(key.part)] += 1
+        return version
+
+    async def delete(self, key: ViewKey, *, etag: str) -> None:
+        await self.parts.delete(key, etag=etag)
 
 
 def snapshot(data: dict[str, Any]) -> dict[str, Any]:

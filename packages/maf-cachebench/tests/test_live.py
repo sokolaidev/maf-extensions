@@ -9365,7 +9365,7 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
         "retry_without_summary_options",
         "stream",
     }
-    changes_nothing_measured = {"show_answers", "dry_run"}
+    changes_nothing_measured = {"show_answers", "dry_run", "log_compaction"}
 
     assert booleans == changes_the_conversation | a_strategy_setting | changes_nothing_measured, (
         "a new boolean flag belongs in CellParams.workload, in StrategySettings, or in neither "

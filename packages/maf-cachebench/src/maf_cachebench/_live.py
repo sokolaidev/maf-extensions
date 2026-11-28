@@ -1364,6 +1364,7 @@ def build_live_agent(
     max_context_window_tokens: int,
     max_output_tokens: int,
     registry: SessionCompactionRegistry | None = None,
+    background_record_merges: bool = True,
 ) -> Agent[Any]:
     """Assemble the agent under test, with compaction wired the way the harness wires it.
 
@@ -1381,7 +1382,8 @@ def build_live_agent(
         instructions: System instructions for the agent.
         max_context_window_tokens: Window the harness variant sizes its default against.
         max_output_tokens: Output reservation.
-        registry: Session-owned compaction for background record merging.
+        registry: Session-owned compaction for per-call passes.
+        background_record_merges: Prepare merges during tools when a registry is supplied.
 
     Returns:
         The configured agent.
@@ -1403,10 +1405,11 @@ def build_live_agent(
     )
     if registry is not None:
         extra_middleware = [
-            make_session_record_merge_middleware(registry),
             SessionToolResultRecallMiddleware(registry, compact_before=True),
             *extra_middleware,
         ]
+        if background_record_merges:
+            extra_middleware.insert(0, make_session_record_merge_middleware(registry))
     if kind == "harness":
         # The harness resolves both phases itself from the strategies handed in, so it gets
         # the same object twice. Its optional providers are switched off: each adds tools
@@ -1966,15 +1969,17 @@ async def run_live(
             max_context_window_tokens=options.max_context_window_tokens,
             max_output_tokens=options.max_output_tokens,
             registry=registry,
+            background_record_merges=options.compaction.background_record_merges,
         )
         return LiveBinding(agent, strategy, recall_middleware, gate)
 
-    background = (
-        options.compaction.background_record_merges
-        and strategy_name == "tool_and_user_summary_anchored"
-    )
+    composed = strategy_name == "tool_and_user_summary_anchored"
+    background = composed and options.compaction.background_record_merges
+    view_mode = options.compaction.view_mode if composed else "default"
     experiment = SessionExperiment(
-        build_binding, options.compaction, session_build=build_binding if background else None
+        build_binding,
+        options.compaction,
+        session_build=build_binding if background or view_mode != "default" else None,
     )
     agent = experiment.binding.agent
     strategy = experiment.binding.strategy
@@ -2077,6 +2082,7 @@ async def run_live(
                     if delay is None:
                         raise
                     await sleep(delay)
+                    await experiment.invalidate_view(session)
                     restore_state(session, before, recall_middleware, strategy, before_decisions)
         finally:
             # In a ``finally`` because the turn's spend is the turn's spend either way: a seed
@@ -2152,6 +2158,7 @@ async def run_live(
                 dropped.append(option)
                 if option == "tool_choice":
                     forced = {}
+                await experiment.invalidate_view(session)
                 restore_state(session, before, recall_middleware, strategy, before_decisions)
         return None
 
@@ -2179,6 +2186,7 @@ async def run_live(
     seed_prompt_tokens = recorder.calls[-1].input_tokens if recorder.calls else 0
     snapshot = snapshot_state(session)
     snapshot_session_id = session.session_id
+    seed_view = experiment.view_store.parts if experiment.view_store is not None else None
     decided = snapshot_decisions(strategy, recall_middleware)
     snapshot_prompt = serialize_history(agent, snapshot)
 
@@ -2202,6 +2210,7 @@ async def run_live(
             for repeat in range(1, wanted + 1):
                 if options.compaction.persistence_scenario == "branch":
                     session = AgentSession(session_id=snapshot_session_id)
+                experiment.restore_view(seed_view)
                 restore_state(session, snapshot, recall_middleware, strategy, decided)
                 mark = len(recorder.calls)
                 response = await _send(
@@ -2235,10 +2244,9 @@ async def run_live(
                 break
             questions_done += 1
 
-    if background:
-        experiment.release_background_session()
-        if summarizer is not None:
-            await summarizer.wait_for_idle()
+    experiment.release_session()
+    if background and summarizer is not None:
+        await summarizer.wait_for_idle()
     usage_missing = any(call.input_tokens <= 0 for call in recorder.calls) or (
         summarizer is not None and any(call.input_tokens <= 0 for call in summarizer.usage)
     )
@@ -2308,6 +2316,13 @@ async def run_live(
     )
     diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
     diagnostics["background_record_merges"] = background
+    diagnostics["view_mode"] = "carried" if background and view_mode == "default" else view_mode
+    if experiment.view_store is not None:
+        diagnostics["view_store"] = {
+            "storage": "simulated_in_memory",
+            "reads": dict(experiment.view_store.reads),
+            "writes": dict(experiment.view_store.writes),
+        }
     diagnostics["summarizer_requests_cancelled"] = summarizer.cancelled if summarizer else 0
     if merge_evidence is not None:
         diagnostics["record_merge_evidence"] = merge_evidence.snapshot()

@@ -897,6 +897,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Print the plan and its rough size, call nothing."
     )
     add_compaction_arguments(parser)
+    parser.add_argument(
+        "--log-compaction",
+        action="store_true",
+        help="Write maf-compaction INFO diagnostics to stderr.",
+    )
     return parser
 
 
@@ -4514,4 +4519,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         A process exit code.
     """
-    return asyncio.run(run_live_comparison(build_parser().parse_args(argv)))
+    args = build_parser().parse_args(argv)
+    if not args.log_compaction:
+        return asyncio.run(run_live_comparison(args))
+    logger = logging.getLogger("maf_compaction")
+    handler = logging.StreamHandler()
+    level, propagate = logger.level, logger.propagate
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        return asyncio.run(run_live_comparison(args))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        logger.propagate = propagate

@@ -63,7 +63,7 @@ cachebench_live --from-jsonl runs/cell.jsonl
 
 ## Compaction controls and session experiments
 
-`cachebench_live` supports `maf-compaction>=0.12.0,<0.13`, including the `SessionPersistence` API used by record-bearing `roundtrip` and `restart` experiments and the per-part media selector. Persistence support is checked before any model calls.
+`cachebench_live` supports `maf-compaction>=0.20.0,<0.21`. Use `--view-mode persisted` on the composed strategy to benchmark restoring its compacted prompt from the two-part view store. Add `--session-mode restart` to rebuild the registry between requests.
 
 ```bash
 cachebench_live foundry:gpt-5.6-luna --dry-run \
@@ -82,6 +82,8 @@ cachebench_live foundry:gpt-5.6-luna --dry-run \
 | Summary prompts | `--user-summary-prompt`, `--user-fold-prompt`, `--record-merge-prompt` |
 | Composed overflow | `--overflow-policy shed\|raise`, `--estimate-margin` |
 | Request lifecycle | `--session-mode memory\|roundtrip\|restart`, `--history-mode incremental\|replay`, `--stream` |
+| Composed views | `--view-mode default\|carried\|saved\|persisted`, `--log-compaction` |
+| Record merge and rewrite limits | `--record-merge-max-records` (at least two), `--record-request-input-tokens` (positive) |
 | Simulated storage | `--persistence-scenario none\|fenced\|stale\|branch\|migrate\|invalid_migration\|after_save\|save_failure\|after_save_failure` |
 | Synthetic host hooks | `--media-profile none\|preserve\|describe\|decline\|select_pdf`, `--media-tokens`, `--result-rewrite-profile none\|preserve\|invalid` |
 
@@ -125,15 +127,17 @@ The held-out gate requires zero false accepts, zero false refusals and zero fall
 uv run cachebench_capabilities --scenario all --output capabilities.jsonl
 uv run cachebench_capabilities --scenario all --stream --output capabilities-stream.jsonl
 uv run cachebench_capabilities --scenario branch --session-mode roundtrip --history-mode incremental
+uv run cachebench_capabilities --scenario persisted_view --session-mode restart
 uv run cachebench_capabilities --scenario media_select_pdf --media-tokens 800
 uv run cachebench_capabilities --scenario result_invalid
 ```
 
-Output files must not already exist. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. These records are separate from cost/cache benchmark records and must not be averaged with them. Live records use schema 25; the reader still accepts schemas 2–24 and retains older control mappings without filling absent settings with current defaults.
+Choose a new output filename for each run. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. Live cost and cache records use schema 27. The reader accepts schemas 2–26 and preserves the settings recorded by each writer.
 
 | Scenario | Observation |
 | --- | --- |
 | `fenced`, `stale` | Non-None token forwarding and atomic simulated stale-token rejection |
+| `persisted_view` | Both parts written, the same compacted prefix sent on the next request, a stale write rejected, and both parts removed on invalidation |
 | `branch` | Separate source/destination IDs, unchanged source, retained history and restorable compaction state |
 | `migrate`, `invalid_migration` | Migration before validation, including rejection before model work |
 | `after_save`, `save_failure`, `after_save_failure` | Post-save notification inside the lease, failure before commit, and failure after commit |

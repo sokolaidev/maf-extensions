@@ -15,11 +15,18 @@ from typing import Any, cast
 from agent_framework import AgentSession, CharacterEstimatorTokenizer, HistoryProvider, Message
 from agent_framework._compaction import EXCLUDED_KEY
 from maf_compaction import (
+    DEFAULT_TRIGGER_FRACTION,
+    USER_SUMMARY_MARKER,
     MediaTokenEstimator,
     RecallGate,
+    SessionCompactionRegistry,
     ToolResultRecallMiddleware,
+    ViewKey,
+    ViewPart,
+    ViewWriteConflict,
     is_preserved,
     make_recall_tool,
+    make_session_recall_tool,
 )
 
 from ._capability_fixtures import FixtureClient, FixtureSummarizer, media_history, result_history
@@ -43,7 +50,7 @@ PERSISTENCE_SCENARIOS = (
 )
 MEDIA_SCENARIOS = ("media_preserve", "media_describe", "media_decline", "media_select_pdf")
 RESULT_SCENARIOS = ("result_preserve", "result_rewrite", "result_invalid")
-SCENARIOS = (*PERSISTENCE_SCENARIOS, *MEDIA_SCENARIOS, *RESULT_SCENARIOS)
+SCENARIOS = (*PERSISTENCE_SCENARIOS, "persisted_view", *MEDIA_SCENARIOS, *RESULT_SCENARIOS)
 
 
 @dataclass(frozen=True)
@@ -70,14 +77,24 @@ class CapabilityRecord:
         return {**asdict(self), "passed": self.passed}
 
 
-def _binding(model: FixtureClient, controls: CompactionOptions) -> LiveBinding:
+def _binding(
+    model: FixtureClient,
+    controls: CompactionOptions,
+    registry: SessionCompactionRegistry | None = None,
+) -> LiveBinding:
     options = StrategyOptions(
         tokenizer=CharacterEstimatorTokenizer(),
         max_context_window_tokens=100_000,
         max_output_tokens=1000,
         compaction=controls,
+        trigger_fraction=0.01 if registry is not None else DEFAULT_TRIGGER_FRACTION,
+        user_min_band_share=0,
+        summarizer=cast(Any, FixtureSummarizer()) if registry is not None else None,
     )
-    strategy = build_strategy("tool_summary_anchored", options)
+    strategy = build_strategy(
+        "tool_and_user_summary_anchored" if registry is not None else "tool_summary_anchored",
+        options,
+    )
     gate = RecallGate()
     recall = ToolResultRecallMiddleware(
         max_input_tokens=99_000,
@@ -90,13 +107,100 @@ def _binding(model: FixtureClient, controls: CompactionOptions) -> LiveBinding:
         kind="plain",
         strategy=strategy,
         tokenizer=options.tokenizer,
-        tools=[make_recall_tool(gate)],
+        tools=[
+            make_session_recall_tool(registry) if registry is not None else make_recall_tool(gate)
+        ],
         recorder=UsageRecorder(),
-        extra_middleware=[recall],
+        extra_middleware=[recall] if registry is None else [],
+        registry=registry,
+        background_record_merges=False,
         max_context_window_tokens=100_000,
         max_output_tokens=1000,
     )
     return LiveBinding(agent, strategy, recall, gate)
+
+
+async def _persisted_view(
+    *, stream: bool, session_mode: str, history_mode: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, bool]]:
+    controls = CompactionOptions(
+        view_mode="persisted", session_mode=session_mode, history_mode=history_mode, stream=stream
+    )
+    model = FixtureClient()
+
+    def build(registry: SessionCompactionRegistry | None = None) -> LiveBinding:
+        return _binding(model, controls, registry)
+
+    experiment = SessionExperiment(build, controls, session_build=build)
+    store = experiment.view_store
+    assert store is not None
+    session = AgentSession(session_id="view-fixture")
+    history = [
+        Message("user", ["Opening request."], message_id="head"),
+        Message("assistant", ["Ready."], message_id="ready"),
+        Message("user", ["Keep CODE-2466. " * 400], message_id="detail"),
+        Message("assistant", ["Recorded."], message_id="ack"),
+    ]
+    if history_mode == "replay":
+        session.state["cachebench_original_history"] = [message.to_dict() for message in history]
+    else:
+        source_id = next(
+            p.source_id
+            for p in experiment.binding.agent.context_providers
+            if isinstance(p, HistoryProvider)
+        )
+        session.state[source_id] = {"messages": history}
+    _, session = await experiment.run(session, "Remember CODE-2466.", {})
+    first_registry = experiment.registry
+    keys = {part: ViewKey(session.session_id, first_registry.view_agent, part) for part in ViewPart}
+    earlier = await store.read(keys[ViewPart.EARLIER])
+    current = await store.read(keys[ViewPart.CURRENT])
+
+    _, session = await experiment.run(session, "Repeat the code.", {})
+    updated = await store.read(keys[ViewPart.CURRENT])
+    stale_rejected = False
+    if current is not None and updated is not None and current.etag != updated.etag:
+        try:
+            await store.write(keys[ViewPart.CURRENT], current.data, etag=current.etag)
+        except ViewWriteConflict:
+            stale_rejected = True
+    retained = await store.read(keys[ViewPart.CURRENT])
+    await experiment.invalidate_view(session)
+    remaining = [str(part) for part, key in keys.items() if await store.read(key) is not None]
+    resumed = experiment.totals["calls_resumed"]
+    prompts = [[(message.role, message.text) for message in request] for request in model.requests]
+    summary = ("user", f"{USER_SUMMARY_MARKER}\nRemember CODE-2466.")
+    checks = {
+        "stored_both_parts": earlier is not None and current is not None,
+        "registry_lifecycle": (first_registry is not experiment.registry)
+        == (session_mode == "restart"),
+        "resumed_second_pass": resumed == 1,
+        "stale_write_rejected": stale_rejected and retained == updated,
+        "invalidation_removed_both_parts": not remaining,
+        "same_compacted_prompt": len(prompts) == 2
+        and prompts[0].count(summary) == 1
+        and ("user", history[2].text) not in prompts[0]
+        and prompts[1]
+        == [*prompts[0], ("assistant", "Fixture answer CODE-2466."), ("user", "Repeat the code.")],
+    }
+    observations = {
+        "model_requests": len(model.requests),
+        "calls_resumed": resumed,
+        "current_versions": [entry.etag if entry else None for entry in (current, updated)],
+        "remaining_parts": remaining,
+    }
+    return (
+        {
+            "strategy": "tool_and_user_summary_anchored",
+            "max_context_window_tokens": 100_000,
+            "max_output_tokens": 1000,
+            "trigger_fraction": 0.01,
+            "user_min_band_share": 0,
+            "compaction": asdict(controls),
+        },
+        observations,
+        checks,
+    )
 
 
 async def _persistence(
@@ -422,6 +526,10 @@ async def run_capability_scenario(
                 stream=stream,
                 session_mode=session_mode,
                 history_mode=history_mode,
+            )
+        elif scenario == "persisted_view":
+            resolved, observations, checks = await _persisted_view(
+                stream=stream, session_mode=session_mode, history_mode=history_mode
             )
         elif scenario in MEDIA_SCENARIOS:
             resolved, observations, checks = await _media(scenario, media_tokens)
