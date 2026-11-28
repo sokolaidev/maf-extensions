@@ -31,6 +31,7 @@ from agent_framework import (
     TokenizerProtocol,
 )
 
+from ._carryover import _is_transient  # pyright: ignore[reportPrivateUsage]
 from ._composed import (
     PASS_MODE_PERSISTED,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -177,6 +178,9 @@ class SessionCompactionRegistry:
         self.view_agent = view_agent
         # What this process knows of each session's stored view; dropped with the session.
         self._views: dict[str, _ViewState] = {}
+        # Per session, how many sources the running turn's first pass was handed: what the
+        # host has stored. Dropped with the turn's carried view, so bounded by running turns.
+        self._handed: dict[str, _TurnSources] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
@@ -243,6 +247,9 @@ class SessionCompactionRegistry:
                 evicted, _ = self._cache.popitem(last=False)
                 self._owners.pop(evicted, None)
                 self._views.pop(evicted, None)
+                # Not the turn's handed count: a turn can go on after its stack is evicted, and
+                # a later pass would count the run's own messages as handed. It goes when the
+                # turn ends, which releases the view whether the stack is cached or not.
                 self._discard_merge_work(evicted)
             self._release_carried_views()
 
@@ -269,6 +276,7 @@ class SessionCompactionRegistry:
         self._cache.pop(session_id, None)
         self._owners.pop(session_id, None)
         self._views.pop(session_id, None)
+        self._handed.pop(session_id, None)
         self._discard_merge_work(session_id)
 
     def _discard_merge_work(self, session_id: str) -> None:
@@ -278,7 +286,11 @@ class SessionCompactionRegistry:
             entry[1].cancel()
 
     def release_carried_view(self, session_id: str) -> None:
-        """Release a turn's kept list, saving its layout when a saved_view_key is configured."""
+        """Release a turn's kept list, saving its layout when a saved_view_key is configured.
+
+        The turn's count of handed messages goes too: the next pass starts a turn of its own.
+        """
+        self._handed.pop(session_id, None)
         stack = self._cache.get(session_id)
         if stack is None or not isinstance(
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
@@ -354,12 +366,56 @@ class SessionCompactionRegistry:
         state.earlier_digest = earlier_digest
         state.earlier_sources = earlier_sources
 
+    def _note_handed(
+        self,
+        session_id: str,
+        strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        handed: list[Message],
+        *,
+        continued: bool,
+    ) -> int | None:
+        """How many sources the running turn was handed, set by its first pass.
+
+        The first pass's sources are all messages the host handed it; a later pass's sources go
+        on with the messages the run itself produced. ``handed`` is the list this pass was
+        handed, counted when the pass kept no view to count from.
+
+        ``continued`` is whether this pass began from the view an earlier pass carried
+        (:attr:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.pass_continued_view`):
+        one that declined it rebuilt, as one that had none did.
+
+        None when this pass must not write: without a view store, where nothing is kept for a
+        host whose turns may never end here, and for the rest of a turn whose carried view was
+        lost or declined after a pass had carried one (an eviction, the carried-view cap, a write
+        conflict, a list that no longer fits it).
+        The pass after that rebuilds from the run's list, where the messages the earlier pass
+        inserted are sources too, so the count no longer names the handed ones; the turn's
+        earlier write stays the stored view.
+        """
+        if self.view_store is None:
+            return None
+        turn = self._handed.get(session_id)
+        if turn is None:
+            counted = strategy.carried_source_count
+            count = counted if counted is not None else sum(not _is_transient(m) for m in handed)
+            turn = self._handed[session_id] = _TurnSources(count)
+        elif turn.carried and not continued:
+            turn.mapped = False
+        turn.carried = strategy.carries_view
+        return turn.count if turn.mapped else None
+
     async def _persist_view(
         self,
         session_id: str,
         strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        *,
+        handed_sources: int | None = None,
     ) -> None:
-        """Write the view the pass left: the earlier part only when it changed (#2995)."""
+        """Write the view the pass left: the earlier part only when it changed (#2995).
+
+        ``handed_sources`` keeps the view to what the host handed the turn
+        (:meth:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.persisted_view_parts`).
+        """
         store = self.view_store
         if store is None:
             return
@@ -377,7 +433,11 @@ class SessionCompactionRegistry:
             return
         # History-wide work: off the loop, as the pass's own steps are.
         view = await off_loop(
-            partial(strategy.persisted_view_parts, unchanged_earlier=state.earlier_digest)
+            partial(
+                strategy.persisted_view_parts,
+                unchanged_earlier=state.earlier_digest,
+                handed_sources=handed_sources,
+            )
         )
         if view is None:
             return
@@ -440,6 +500,8 @@ class SessionCompactionRegistry:
             for part in ViewPart:
                 await _delete_stored(store, self._view_key(session_id, part))
         self._views.pop(session_id, None)
+        # The turn's handed count belongs to the history being invalidated.
+        self._handed.pop(session_id, None)
         logger.info("Compaction persisted view invalidated by the host.")
 
     def _remember_merge_state(self, session: AgentSession) -> None:
@@ -618,6 +680,17 @@ async def _guarded_view_io(io: Awaitable[None]) -> None:
 
 
 @dataclass
+class _TurnSources:
+    """How many sources a running turn was handed, and whether later passes still name them."""
+
+    count: int
+    #: Whether the last pass left a carried view; the next pass should begin from it.
+    carried: bool = False
+    #: False once a pass rebuilt after the turn's carried view was lost or declined.
+    mapped: bool = True
+
+
+@dataclass
 class _ViewState:
     """What one process knows of one session's stored view."""
 
@@ -696,14 +769,24 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                         await _guarded_view_io(
                             self.registry._load_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
                         )
+                        handed = list(messages)
                         try:
                             return await strategy.compact_before(
                                 messages, options=context.options or {}
                             )
                         finally:
-                            await _guarded_view_io(
-                                self.registry._persist_view(session.session_id, strategy)  # pyright: ignore[reportPrivateUsage]
+                            handed_sources = self.registry._note_handed(  # pyright: ignore[reportPrivateUsage]
+                                session.session_id,
+                                strategy,
+                                handed,
+                                continued=strategy.pass_continued_view,
                             )
+                            if handed_sources is not None:
+                                await _guarded_view_io(
+                                    self.registry._persist_view(  # pyright: ignore[reportPrivateUsage]
+                                        session.session_id, strategy, handed_sources=handed_sources
+                                    )
+                                )
                     return await stack.strategy(messages)
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}

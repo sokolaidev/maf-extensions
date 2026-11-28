@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from collections import Counter
@@ -272,13 +273,16 @@ async def test_release_and_eviction_drop_what_was_known_of_a_sessions_view() -> 
         _budget(transcript, 0.6), [], view_store=InMemoryViewStore(), max_cached_sessions=1
     )
     first, second = AgentSession(session_id="first"), AgentSession(session_id="second")
-    await _pass(registry, first, _Rebuilding(transcript).hand())
-    assert "first" in registry._views
+    await _run_pass(registry, first, _Rebuilding(transcript).hand())
+    assert "first" in registry._views and "first" in registry._handed
 
-    await _pass(registry, second, _Rebuilding(transcript).hand())
+    await _run_pass(registry, second, _Rebuilding(transcript).hand())
     assert "first" not in registry._views
+    # The evicted session's turn has not ended: its handed count stays until it does.
+    assert registry._handed["first"].count > 0
+    registry.release_carried_view("first")
     registry.release("second")
-    assert registry._views == {}
+    assert registry._views == {} and registry._handed == {}
 
 
 async def test_the_layout_is_built_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -545,3 +549,228 @@ async def test_a_callable_setting_is_bound_by_its_code_not_only_its_name(
         strategy.rewrite_prompt = resuming
         await reader._load_view("callable", strategy)
         assert strategy.has_saved_view is offered
+
+
+async def _run_pass(registry: Any, session: AgentSession, messages: list[Message]) -> None:
+    """:func:`_pass` with the turn's handed count kept, as the session middleware keeps it."""
+
+    async def compact(messages: list[Message]) -> bool:
+        with registry.activate(session) as stack:
+            strategy = cast(_Composed, stack.strategy)
+            await registry._load_view(session.session_id, strategy)
+            handed = list(messages)
+            try:
+                return await strategy.compact_before(messages, options={})
+            except CompactionBudgetExceeded:
+                return True
+            finally:
+                handed_sources = registry._note_handed(
+                    session.session_id, strategy, handed, continued=strategy.pass_continued_view
+                )
+                if handed_sources is not None:
+                    await registry._persist_view(
+                        session.session_id, strategy, handed_sources=handed_sources
+                    )
+
+    await apply_compaction(messages, strategy=compact)
+
+
+def _call_pair(
+    message_id: str | None, arguments: str, occurrence: str | None, *, size: int = 400
+) -> list[Message]:
+    call: dict[str, Any] = {
+        "type": "function_call",
+        "call_id": "run1",
+        "name": "read",
+        "arguments": arguments,
+    }
+    result: dict[str, Any] = {"type": "function_result", "call_id": "run1", "result": "z" * size}
+    if occurrence is not None:
+        call["id"] = result["id"] = occurrence
+    return [
+        Message("assistant", [call], message_id=message_id),
+        Message("tool", [result], message_id="results_run1"),
+    ]
+
+
+async def test_a_turn_resumes_a_view_whose_run_produced_messages_the_host_stores_differently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import copy
+
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="replayed")
+    first = _registry(budget, [], view_store=store)
+
+    # Turn 1: the first pass is handed what the host stored, a later one also the run's own
+    # call and a result large enough that the pass compacts it, as the run holds them.
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(first, session, in_run)
+    handed = first._handed["replayed"].count
+    await _run_pass(
+        first, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
+    )
+    await first._end_turn("replayed")
+    stored = await store.read(ViewKey("replayed", "agent", ViewPart.CURRENT))
+    assert stored is not None and stored.data["end"] == handed  # the run's own pair left out
+    assert "replayed" not in first._handed  # the turn's count goes with the turn
+
+    # Turn 2 in another process: the host replays its stored copies, which carry another
+    # message id, the empty arguments written differently and no occurrence id.
+    replayed = [
+        *copy.deepcopy(transcript),
+        *_call_pair("4d61518e-aaaa", "", None, size=20_000),
+        Message("assistant", ["Done."], message_id="answer1"),
+        Message("user", ["Next question."], message_id="question-next"),
+    ]
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await _run_pass(_registry(budget, [], view_store=store), session, replayed)
+
+    assert _modes(caplog)[0].startswith("persisted view"), _modes(caplog)
+
+
+async def test_the_turns_handed_count_goes_with_a_released_view_and_an_invalidation() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [], view_store=InMemoryViewStore())
+    session = AgentSession(session_id="counted")
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+    assert "counted" in registry._handed
+    registry.release_carried_view("counted")  # a host's own end of a run, as at a stop
+    assert "counted" not in registry._handed
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+    assert "counted" in registry._handed
+    await registry.invalidate_view(session)  # a rollback mid-turn shortens the history
+    assert "counted" not in registry._handed
+
+
+async def test_a_cut_that_would_leave_out_an_inserted_message_is_not_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maf_compaction import _composed, _saved_view
+
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [], view_store=InMemoryViewStore())
+    session = AgentSession(session_id="merged")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    handed = registry._handed["merged"].count
+    await _run_pass(registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1")])
+    strategy = cast(_Composed, registry._cache["merged"].strategy)
+    layout_data = _saved_view._layout_data
+
+    def with_merge_after_the_run(carried: Any) -> Any:
+        # A merged record placed after the run's own messages, as a merge spanning handed and
+        # produced records is; it names no summary sources, so the split puts it after them.
+        data = layout_data(carried)
+        assert data is not None
+        merged = Message("assistant", ["Merged record."], message_id="merge1").to_dict()
+        return {**data, "order": [*data["order"], {"insert": merged}]}
+
+    monkeypatch.setattr(_composed, "_layout_data", with_merge_after_the_run)
+
+    assert strategy.persisted_view_parts(handed_sources=handed) is None
+    assert strategy.persisted_view_parts() is not None
+
+
+async def test_a_pending_record_requests_bookkeeping_does_not_unbind_a_stored_view(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    budget = _budget(transcript, 0.6)
+    store = InMemoryViewStore()
+    session = AgentSession(session_id="bookkeeping")
+    await _pass(_registry(budget, [], view_store=store), session, _Rebuilding(transcript).hand())
+    records = session.state["maf_compaction"]["strategy"]["decisions"]["records"]
+    # What a later model answer does to a pending request's targets, after the pass wrote.
+    records["value_target_groups"] = int(records.get("value_target_groups", 0)) + 1
+    records["value_target_anchor"] = "a-later-anchor"
+
+    resuming = _registry(budget, [], view_store=store)
+    with resuming.activate(session) as stack:
+        strategy = cast(_Composed, stack.strategy)
+        with caplog.at_level(logging.INFO, logger=_LOGGER):
+            await resuming._load_view("bookkeeping", strategy)
+        assert strategy.has_saved_view, [r.getMessage() for r in caplog.records]
+
+
+async def test_a_turn_whose_stack_was_evicted_keeps_its_handed_count() -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store, max_cached_sessions=1)
+    session, other = AgentSession(session_id="evicted"), AgentSession(session_id="other")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    handed = registry._handed["evicted"].count
+    after_first = await store.read(ViewKey("evicted", "agent", ViewPart.CURRENT))
+
+    def stored_now(before: Any) -> bool:
+        current = store._parts.get(ViewKey("evicted", "agent", ViewPart.CURRENT))
+        return current is not None and current.etag == before.etag
+
+    await _run_pass(registry, other, _Rebuilding(transcript).hand())  # evicts the turn's stack
+    await _run_pass(
+        registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
+    )
+
+    assert registry._handed["evicted"].count == handed
+    rebuilt = cast(_Composed, registry._cache["evicted"].strategy)
+    assert registry._note_handed("evicted", rebuilt, in_run, continued=False) is None
+    # The rebuilt stack wrote nothing: the turn's first write stays the stored view.
+    assert after_first is not None and stored_now(after_first)
+
+
+async def test_without_a_view_store_no_handed_count_is_kept() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [])
+    session = AgentSession(session_id="storeless")
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+
+    assert registry._handed == {}
+
+
+async def test_a_turn_whose_carried_view_was_dropped_writes_no_more_views() -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+    session = AgentSession(session_id="dropped")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    strategy = cast(_Composed, registry._cache["dropped"].strategy)
+    assert strategy.carries_view
+    written = store._parts[ViewKey("dropped", "agent", ViewPart.CURRENT)].etag
+
+    strategy.forget_carried_view()  # the carried-view cap, or a write conflict, mid-turn
+    await _run_pass(
+        registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
+    )
+
+    assert registry._handed["dropped"].mapped is False
+    assert store._parts[ViewKey("dropped", "agent", ViewPart.CURRENT)].etag == written
+
+
+async def test_a_turn_whose_carried_view_was_declined_writes_no_more_views(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+    session = AgentSession(session_id="declined")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    assert cast(_Composed, registry._cache["declined"].strategy).carries_view
+    written = store._parts[ViewKey("declined", "agent", ViewPart.CURRENT)].etag
+
+    # A list that no longer fits the carried view: an earlier message reads differently.
+    changed = copy.deepcopy(transcript)
+    changed[3] = Message(changed[3].role, ["Rewritten by the host."], message_id="rewritten")
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        await _run_pass(registry, session, [*changed, *_call_pair("calls_run1", "{}", None)])
+
+    assert _modes(caplog) == ["full (carried view declined)"], _modes(caplog)
+    assert registry._handed["declined"].mapped is False
+    assert store._parts[ViewKey("declined", "agent", ViewPart.CURRENT)].etag == written
