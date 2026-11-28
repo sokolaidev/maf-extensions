@@ -319,14 +319,26 @@ def test_proxy_import_anchors_include_external_test_dependencies(tmp_path):
     nested = tmp_path / "nested"
     nested.mkdir()
     (nested / "proxy_test.go").write_text('package proxy\nimport "example.com/test-only"\n')
-    result = subprocess.run(
-        [go, "run", str(ROOT / "scripts/proxy_dependency_imports.go"), str(tmp_path)],
+    executable = tmp_path / ("proxy-imports.exe" if os.name == "nt" else "proxy-imports")
+    environment = {**os.environ, "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off"}
+    # Cold-cache compilation has a separate budget from the parser's execution.
+    subprocess.run(
+        [go, "build", "-o", str(executable), str(ROOT / "scripts/proxy_dependency_imports.go")],
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=True,
-        timeout=60,
-        env={**os.environ, "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off"},
+        timeout=180,
+        env=environment,
+    )
+    result = subprocess.run(
+        [str(executable), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=30,
+        env=environment,
     )
     assert '"example.com/client"' in result.stdout
     assert '"example.com/test-only"' in result.stdout
