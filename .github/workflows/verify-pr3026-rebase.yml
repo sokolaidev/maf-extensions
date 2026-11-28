@@ -1,0 +1,61 @@
+name: Verify PR 3026 rebase
+on:
+  push:
+    branches: [antsok-proof-3026-rebase]
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+jobs:
+  rebase:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_HEAD: 2097792900b66c31283c7564b83e0b61b3e86c81
+      TARGET_MAIN: f6a407a80e27085a842c4c33102c394f21fc515d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2097792900b66c31283c7564b83e0b61b3e86c81
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Rebase and verify tree and patch preservation
+        shell: bash
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/antsok-openclaw-model-restart-3024:refs/remotes/origin/pr3026
+          test "$(git rev-parse origin/main)" = "$TARGET_MAIN"
+          test "$(git rev-parse origin/pr3026)" = "$PR_HEAD"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          OLD_BASE="$(git merge-base "$TARGET_MAIN" "$PR_HEAD")"
+          git merge-tree --write-tree "$TARGET_MAIN" "$PR_HEAD" > "$RUNNER_TEMP/expected-tree"
+          EXPECTED_TREE="$(head -n 1 "$RUNNER_TEMP/expected-tree")"
+          git switch -c rebase-3026 "$PR_HEAD"
+          git rebase --onto "$TARGET_MAIN" "$OLD_BASE"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git range-diff --no-color "$OLD_BASE..$PR_HEAD" "$TARGET_MAIN..HEAD" | tee "$RUNNER_TEMP/range-diff"
+          python3 - <<'PY'
+          import os, pathlib, re
+          lines = pathlib.Path(os.environ["RUNNER_TEMP"], "range-diff").read_text().splitlines()
+          assert len(lines) == 4, lines
+          assert all(re.fullmatch(r"\s*\d+:\s+[0-9a-f]+\s+=\s+\d+:\s+[0-9a-f]+\s+.+", line) for line in lines), lines
+          PY
+          printf 'REBASED_HEAD=%s\nEXPECTED_TREE=%s\n' "$(git rev-parse HEAD)" "$EXPECTED_TREE"
+          git diff --stat "$TARGET_MAIN"...HEAD
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --locked
+      - run: uv run pytest -q tests/test_openclaw_model_restart.py tests/test_openclaw_e2e_sample.py tests/test_openclaw_hosted_report.py tests/test_docker_live_workflow.py
+      - run: uv run ruff check samples/experimental/openclaw_bicep_e2e scripts/report_openclaw_hosted.py tests/test_openclaw_model_restart.py tests/test_openclaw_e2e_sample.py tests/test_openclaw_hosted_report.py tests/test_docker_live_workflow.py
+      - run: uv run ruff format --check samples/experimental/openclaw_bicep_e2e scripts/report_openclaw_hosted.py tests/test_openclaw_model_restart.py tests/test_openclaw_e2e_sample.py tests/test_openclaw_hosted_report.py tests/test_docker_live_workflow.py
+      - run: uv run pyright
+      - run: uv run poe doc-paths
+      - run: uv run python scripts/check_doc_trackers.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: '3026'
+      - name: Retain verified candidate for the leased PR update
+        shell: bash
+        run: |
+          test -z "$(git status --porcelain)"
+          git push --force-with-lease=refs/heads/antsok-rebase-candidate-3026-20977929: origin HEAD:refs/heads/antsok-rebase-candidate-3026-20977929
+          printf 'VERIFIED_HEAD=%s\n' "$(git rev-parse HEAD)"
