@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from collections import Counter
@@ -610,9 +611,6 @@ async def test_a_turn_resumes_a_view_whose_run_produced_messages_the_host_stores
     stored = await store.read(ViewKey("replayed", "agent", ViewPart.CURRENT))
     assert stored is not None and stored.data["end"] == handed  # the run's own pair left out
     assert "replayed" not in first._handed  # the turn's count goes with the turn
-    await _run_pass(first, session, copy.deepcopy(transcript))
-    first.release_carried_view("replayed")  # a host's own end of a run, as at a stop
-    assert "replayed" not in first._handed
 
     # Turn 2 in another process: the host replays its stored copies, which carry another
     # message id, the empty arguments written differently and no occurrence id.
@@ -626,6 +624,51 @@ async def test_a_turn_resumes_a_view_whose_run_produced_messages_the_host_stores
         await _run_pass(_registry(budget, [], view_store=store), session, replayed)
 
     assert _modes(caplog)[0].startswith("persisted view"), _modes(caplog)
+
+
+async def test_the_turns_handed_count_goes_with_a_released_view_and_an_invalidation() -> None:
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [], view_store=InMemoryViewStore())
+    session = AgentSession(session_id="counted")
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+    assert "counted" in registry._handed
+    registry.release_carried_view("counted")  # a host's own end of a run, as at a stop
+    assert "counted" not in registry._handed
+
+    await _run_pass(registry, session, _Rebuilding(transcript).hand())
+    assert "counted" in registry._handed
+    await registry.invalidate_view(session)  # a rollback mid-turn shortens the history
+    assert "counted" not in registry._handed
+
+
+async def test_a_cut_that_would_leave_out_an_inserted_message_is_not_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maf_compaction import _composed, _saved_view
+
+    transcript = _transcript(14, 10, 6)
+    registry = _registry(_budget(transcript, 0.6), [], view_store=InMemoryViewStore())
+    session = AgentSession(session_id="merged")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    handed = registry._handed["merged"]
+    await _run_pass(registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1")])
+    strategy = cast(_Composed, registry._cache["merged"].strategy)
+    layout_data = _saved_view._layout_data
+
+    def with_merge_after_the_run(carried: Any) -> Any:
+        # A merged record placed after the run's own messages, as a merge spanning handed and
+        # produced records is; it names no summary sources, so the split puts it after them.
+        data = layout_data(carried)
+        assert data is not None
+        merged = Message("assistant", ["Merged record."], message_id="merge1").to_dict()
+        return {**data, "order": [*data["order"], {"insert": merged}]}
+
+    monkeypatch.setattr(_composed, "_layout_data", with_merge_after_the_run)
+
+    assert strategy.persisted_view_parts(handed_sources=handed) is None
+    assert strategy.persisted_view_parts() is not None
 
 
 async def test_a_pending_record_requests_bookkeeping_does_not_unbind_a_stored_view(

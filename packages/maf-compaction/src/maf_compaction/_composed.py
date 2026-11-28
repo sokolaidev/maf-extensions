@@ -2262,7 +2262,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return None
         if handed_sources is not None and handed_sources < len(data["sources"]):
             handed = split_layout_data(data, handed_sources)
-            if handed is None:
+            # An inserted message in the part left out can stand for a handed source the kept
+            # part shows excluded, a merge of handed and produced records by its lineage, which
+            # the split does not read: kept without it, the view would lose those facts. The
+            # turn's earlier write, from before that message, stays the stored view.
+            if handed is None or any("insert" in entry for entry in handed[1]["order"]):
                 return None
             data = handed[0]
         boundary = min(source_turn_boundary(carried.states), len(data["sources"]))

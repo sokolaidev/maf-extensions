@@ -479,6 +479,8 @@ class SessionCompactionRegistry:
             for part in ViewPart:
                 await _delete_stored(store, self._view_key(session_id, part))
         self._views.pop(session_id, None)
+        # The turn's handed count belongs to the history being invalidated.
+        self._handed.pop(session_id, None)
         logger.info("Compaction persisted view invalidated by the host.")
 
     def _remember_merge_state(self, session: AgentSession) -> None:
