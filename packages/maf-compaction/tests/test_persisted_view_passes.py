@@ -279,7 +279,7 @@ async def test_release_and_eviction_drop_what_was_known_of_a_sessions_view() -> 
     await _run_pass(registry, second, _Rebuilding(transcript).hand())
     assert "first" not in registry._views
     # The evicted session's turn has not ended: its handed count stays until it does.
-    assert registry._handed["first"][0] > 0
+    assert registry._handed["first"].count > 0
     registry.release_carried_view("first")
     registry.release("second")
     assert registry._views == {} and registry._handed == {}
@@ -559,12 +559,15 @@ async def _run_pass(registry: Any, session: AgentSession, messages: list[Message
             strategy = cast(_Composed, stack.strategy)
             await registry._load_view(session.session_id, strategy)
             handed = list(messages)
+            continued = strategy.carries_view
             try:
                 return await strategy.compact_before(messages, options={})
             except CompactionBudgetExceeded:
                 return True
             finally:
-                handed_sources = registry._note_handed(session.session_id, strategy, handed)
+                handed_sources = registry._note_handed(
+                    session.session_id, strategy, handed, continued=continued
+                )
                 if handed_sources is not None:
                     await registry._persist_view(
                         session.session_id, strategy, handed_sources=handed_sources
@@ -606,7 +609,7 @@ async def test_a_turn_resumes_a_view_whose_run_produced_messages_the_host_stores
     # call and a result large enough that the pass compacts it, as the run holds them.
     in_run = copy.deepcopy(transcript)
     await _run_pass(first, session, in_run)
-    handed = first._handed["replayed"][0]
+    handed = first._handed["replayed"].count
     await _run_pass(
         first, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
     )
@@ -655,7 +658,7 @@ async def test_a_cut_that_would_leave_out_an_inserted_message_is_not_written(
     session = AgentSession(session_id="merged")
     in_run = copy.deepcopy(transcript)
     await _run_pass(registry, session, in_run)
-    handed = registry._handed["merged"][0]
+    handed = registry._handed["merged"].count
     await _run_pass(registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1")])
     strategy = cast(_Composed, registry._cache["merged"].strategy)
     layout_data = _saved_view._layout_data
@@ -702,7 +705,7 @@ async def test_a_turn_whose_stack_was_evicted_keeps_its_handed_count() -> None:
     session, other = AgentSession(session_id="evicted"), AgentSession(session_id="other")
     in_run = copy.deepcopy(transcript)
     await _run_pass(registry, session, in_run)
-    handed = registry._handed["evicted"][0]
+    handed = registry._handed["evicted"].count
     after_first = await store.read(ViewKey("evicted", "agent", ViewPart.CURRENT))
 
     def stored_now(before: Any) -> bool:
@@ -714,9 +717,9 @@ async def test_a_turn_whose_stack_was_evicted_keeps_its_handed_count() -> None:
         registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
     )
 
-    assert registry._handed["evicted"][0] == handed
+    assert registry._handed["evicted"].count == handed
     rebuilt = cast(_Composed, registry._cache["evicted"].strategy)
-    assert registry._note_handed("evicted", rebuilt, in_run) is None  # it must not write
+    assert registry._note_handed("evicted", rebuilt, in_run, continued=False) is None
     # The rebuilt stack wrote nothing: the turn's first write stays the stored view.
     assert after_first is not None and stored_now(after_first)
 
@@ -729,3 +732,23 @@ async def test_without_a_view_store_no_handed_count_is_kept() -> None:
     await _run_pass(registry, session, _Rebuilding(transcript).hand())
 
     assert registry._handed == {}
+
+
+async def test_a_turn_whose_carried_view_was_dropped_writes_no_more_views() -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store)
+    session = AgentSession(session_id="dropped")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    strategy = cast(_Composed, registry._cache["dropped"].strategy)
+    assert strategy.carries_view
+    written = store._parts[ViewKey("dropped", "agent", ViewPart.CURRENT)].etag
+
+    strategy.forget_carried_view()  # the carried-view cap, or a write conflict, mid-turn
+    await _run_pass(
+        registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
+    )
+
+    assert registry._handed["dropped"].mapped is False
+    assert store._parts[ViewKey("dropped", "agent", ViewPart.CURRENT)].etag == written
