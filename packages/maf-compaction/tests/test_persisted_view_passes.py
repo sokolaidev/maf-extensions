@@ -277,7 +277,10 @@ async def test_release_and_eviction_drop_what_was_known_of_a_sessions_view() -> 
     assert "first" in registry._views and "first" in registry._handed
 
     await _run_pass(registry, second, _Rebuilding(transcript).hand())
-    assert "first" not in registry._views and "first" not in registry._handed
+    assert "first" not in registry._views
+    # The evicted session's turn has not ended: its handed count stays until it does.
+    assert registry._handed["first"] > 0
+    registry.release_carried_view("first")
     registry.release("second")
     assert registry._views == {} and registry._handed == {}
 
@@ -690,3 +693,22 @@ async def test_a_pending_record_requests_bookkeeping_does_not_unbind_a_stored_vi
         with caplog.at_level(logging.INFO, logger=_LOGGER):
             await resuming._load_view("bookkeeping", strategy)
         assert strategy.has_saved_view, [r.getMessage() for r in caplog.records]
+
+
+async def test_a_turn_whose_stack_was_evicted_keeps_its_handed_count() -> None:
+    transcript = _transcript(14, 10, 6)
+    store = InMemoryViewStore()
+    registry = _registry(_budget(transcript, 0.6), [], view_store=store, max_cached_sessions=1)
+    session, other = AgentSession(session_id="evicted"), AgentSession(session_id="other")
+    in_run = copy.deepcopy(transcript)
+    await _run_pass(registry, session, in_run)
+    handed = registry._handed["evicted"]
+
+    await _run_pass(registry, other, _Rebuilding(transcript).hand())  # evicts the turn's stack
+    await _run_pass(
+        registry, session, [*in_run, *_call_pair("calls_run1", "{}", "af-call-1", size=20_000)]
+    )
+
+    assert registry._handed["evicted"] == handed
+    stored = await store.read(ViewKey("evicted", "agent", ViewPart.CURRENT))
+    assert stored is not None and stored.data["end"] == handed

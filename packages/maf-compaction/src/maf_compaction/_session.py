@@ -179,7 +179,7 @@ class SessionCompactionRegistry:
         # What this process knows of each session's stored view; dropped with the session.
         self._views: dict[str, _ViewState] = {}
         # Per session, how many sources the running turn's first pass was handed: what the
-        # host has stored. Dropped with the turn's carried view.
+        # host has stored. Dropped with the turn's carried view, so bounded by running turns.
         self._handed: dict[str, int] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
@@ -247,7 +247,9 @@ class SessionCompactionRegistry:
                 evicted, _ = self._cache.popitem(last=False)
                 self._owners.pop(evicted, None)
                 self._views.pop(evicted, None)
-                self._handed.pop(evicted, None)
+                # Not the turn's handed count: a turn can go on after its stack is evicted, and
+                # a later pass would count the run's own messages as handed. It goes when the
+                # turn ends, which releases the view whether the stack is cached or not.
                 self._discard_merge_work(evicted)
             self._release_carried_views()
 
