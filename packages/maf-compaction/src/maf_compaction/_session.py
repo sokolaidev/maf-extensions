@@ -180,7 +180,9 @@ class SessionCompactionRegistry:
         self._views: dict[str, _ViewState] = {}
         # Per session, how many sources the running turn's first pass was handed: what the
         # host has stored. Dropped with the turn's carried view, so bounded by running turns.
-        self._handed: dict[str, int] = {}
+        # The strategy that counted it is kept by identity: a stack rebuilt after an eviction
+        # sees the earlier pass's inserted messages as sources, so its positions differ.
+        self._handed: dict[str, tuple[int, int]] = {}
         self._owners: WeakValueDictionary[str, AgentSession] = WeakValueDictionary()
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
@@ -376,17 +378,21 @@ class SessionCompactionRegistry:
 
         The first pass's sources are all messages the host handed it; a later pass's sources go
         on with the messages the run itself produced. ``handed`` is the list this pass was
-        handed, counted when the pass kept no view to count from. None without a view store:
-        nothing is persisted, so nothing is kept for a host whose turns may never end here.
+        handed, counted when the pass kept no view to count from.
+
+        None when this pass must not write: without a view store, where nothing is kept for a
+        host whose turns may never end here, and after the stack that counted was evicted. A
+        rebuilt stack sees the messages the earlier pass inserted as sources, so the count no
+        longer names the handed ones; the turn's earlier write stays the stored view.
         """
         if self.view_store is None:
             return None
         if session_id not in self._handed:
             counted = strategy.carried_source_count
-            self._handed[session_id] = (
-                counted if counted is not None else sum(not _is_transient(m) for m in handed)
-            )
-        return self._handed[session_id]
+            count = counted if counted is not None else sum(not _is_transient(m) for m in handed)
+            self._handed[session_id] = (count, id(strategy))
+        count, counter = self._handed[session_id]
+        return count if counter == id(strategy) else None
 
     async def _persist_view(
         self,
@@ -751,11 +757,12 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
                             handed_sources = self.registry._note_handed(  # pyright: ignore[reportPrivateUsage]
                                 session.session_id, strategy, handed
                             )
-                            await _guarded_view_io(
-                                self.registry._persist_view(  # pyright: ignore[reportPrivateUsage]
-                                    session.session_id, strategy, handed_sources=handed_sources
+                            if handed_sources is not None:
+                                await _guarded_view_io(
+                                    self.registry._persist_view(  # pyright: ignore[reportPrivateUsage]
+                                        session.session_id, strategy, handed_sources=handed_sources
+                                    )
                                 )
-                            )
                     return await stack.strategy(messages)
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}
