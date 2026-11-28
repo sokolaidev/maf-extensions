@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import tempfile
 import unittest
@@ -170,3 +171,87 @@ class ChromeCoordinationTests(unittest.TestCase):
             attention.artifact_names("chrome", "123", "1", [preparation]),
             [preparation, "chrome-update-delivery-123-1"],
         )
+
+    def reconcile_notification(self, values):
+        issue = {"number": 7, "state": "open", "user": {"login": "github-actions[bot]"}}
+        for lane, signals in (
+            ("chrome", {"finding:Chrome update pending"}),
+            ("scan", {"finding:CVE-other"}),
+            ("release", {"publish:replacement"}),
+        ):
+            issue.update(
+                attention.image_issue.update(issue, PROFILE, lane, f"{lane} evidence", signals)
+                or {}
+            )
+        others = {
+            lane: state
+            for lane, state in attention.image_issue.lanes(issue).items()
+            if lane != "chrome"
+        }
+
+        def gh(endpoint, *args, body=None):
+            if body is None:
+                return json.dumps([[issue]])
+            self.assertEqual(endpoint, "repos/example/repo/issues/7")
+            issue.update(body)
+            return "{}"
+
+        with patch.object(attention, "gh", side_effect=gh):
+            attention.notify(
+                "chrome",
+                {"name": "Chrome image updates", "head_sha": SOURCE},
+                values,
+                "example/repo",
+                "123",
+                "2",
+            )
+        current = attention.image_issue.lanes(issue)
+        self.assertEqual({lane: current[lane] for lane in others}, others)
+        self.assertEqual(issue["state"], "open")
+        self.assertIn("scan evidence", issue["body"])
+        self.assertIn("release evidence", issue["body"])
+        return current["chrome"]
+
+    def test_package_and_security_delivery_clear_only_chrome_pending_state(self):
+        for kind in ("package", "security"):
+            for status in ("created", "updated", "unchanged"):
+                with self.subTest(kind=kind, status=status):
+                    state = self.reconcile_notification(
+                        {
+                            "receipt.json": {"package": {"version": "158"}},
+                            "delivery-requirement.json": {"kind": kind},
+                            "publication.json": {
+                                "status": status,
+                                "url": "https://github.com/example/repo/pull/9",
+                            },
+                        }
+                    )
+                    self.assertFalse(state["active"])
+                    self.assertEqual(state["signals"], [])
+
+    def test_completed_no_security_fix_clears_only_chrome_pending_state(self):
+        state = self.reconcile_notification(
+            {
+                "receipt.json": {"package": {"version": "158"}},
+                "delivery-requirement.json": {"status": "no-security-fix"},
+            }
+        )
+        self.assertFalse(state["active"])
+        self.assertEqual(state["signals"], [])
+
+    def test_unavailable_or_deferred_authorization_preserves_chrome_pending_state(self):
+        for values in (
+            {},
+            {"delivery-requirement.json": {"status": "no-security-fix"}},
+            {
+                "receipt.json": {"package": {"version": "158"}},
+                "delivery-requirement.json": {"kind": "package"},
+            },
+            {
+                "receipt.json": {"package": {"version": "158"}},
+                "delivery-requirement.json": {"status": "no-security-fix"},
+                "deferral.json": {"status": "deferred"},
+            },
+        ):
+            with self.subTest(values=values):
+                self.assertTrue(self.reconcile_notification(values)["active"])
