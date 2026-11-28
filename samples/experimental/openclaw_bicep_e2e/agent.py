@@ -640,6 +640,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ]
         report["error"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
     finally:
+        # Provider callbacks must finish before the process ownership set is torn down.
+        if provider is not None:
+            try:
+                provider.close()
+            except Exception as exc:
+                report["cleanup_errors"].append("Provider cleanup: " + type(exc).__name__)
+            if args.mode == "model":
+                report["provider"] = provider.observations()
         if recovery is not None:
             report.setdefault(
                 "recovery",
@@ -650,13 +658,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 },
             )
         report["cleanup_errors"].extend(processes.close())
-        if provider is not None:
-            try:
-                provider.close()
-            except Exception as exc:
-                report["cleanup_errors"].append("Provider cleanup: " + type(exc).__name__)
-            if args.mode == "model":
-                report["provider"] = provider.observations()
         try:
             if not scope and (root / "owner/owner").exists():
                 owner = (root / "owner/owner").read_text().strip()

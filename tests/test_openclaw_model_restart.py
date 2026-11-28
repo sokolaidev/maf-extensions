@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import sys
+import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -281,3 +284,113 @@ def test_replay_id_truncation_is_bounded_and_collisions_refuse() -> None:
     recovery.response(user(), stream("call_" + "a" * 60))
     with pytest.raises(RuntimeError, match="reused"):
         recovery.response(user(), stream("call_" + "a" * 59 + "b"))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="POSIX worker restart")
+def test_timeout_drains_restart_before_process_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "private"
+    restarting = threading.Event()
+    draining = threading.Event()
+    order: list[str] = []
+    replies: list[tuple[int, bytes]] = []
+    clients: list[threading.Thread] = []
+    providers: list[Any] = []
+    supervisors: list[Any] = []
+    send = agent.request
+
+    class Services(agent.Processes):
+        def __init__(self, directory: Path) -> None:
+            super().__init__(directory)
+            supervisors.append(self)
+
+        def start(self, name: str, command: list[str], env: Any = None) -> None:
+            if name == "worker-restarted":
+                restarting.set()
+                assert draining.wait(10)
+                order.append("replacement")
+            super().start(name, [sys.executable, "-c", "import time; time.sleep(120)"])
+            if name == "worker":
+                (root / "owner").mkdir()
+                (root / "owner/owner").write_text("a" * 32)
+
+        def ready(self, *args: Any) -> None:
+            pass
+
+        def close(self) -> list[str]:
+            order.append("teardown")
+            return super().close()
+
+    class Relay(agent.Provider):
+        def __init__(self, *args: Any) -> None:
+            super().__init__(*args)
+            providers.append(self)
+
+        def close(self) -> None:
+            order.append("drain")
+            draining.set()
+            super().close()
+
+    def timeout(*args: Any) -> None:
+        provider = providers[0]
+        provider.before_response(user(), stream("failed"))
+        client = threading.Thread(
+            target=lambda: replies.append(
+                send(
+                    provider.server.server_port,
+                    "/v1/chat/completions",
+                    provider.token,
+                    failure(),
+                )
+            )
+        )
+        clients.append(client)
+        client.start()
+        assert restarting.wait(10)
+        raise TimeoutError("Gateway response deadline")
+
+    monkeypatch.setattr(agent, "Processes", Services)
+    monkeypatch.setattr(agent, "Provider", Relay)
+    monkeypatch.setattr(agent, "model_settings", lambda mode: ("", "", ""))
+    monkeypatch.setattr(agent, "program", lambda name: name)
+    monkeypatch.setattr(agent, "install", lambda *args: (tmp_path / "python", tmp_path, {}))
+    monkeypatch.setattr(
+        agent,
+        "execute",
+        lambda command, *args, **kwargs: (
+            json.dumps([{"Id": IMAGE}]) if "inspect" in command else ""
+        ),
+    )
+    monkeypatch.setattr(agent, "request", timeout)
+    args = argparse.Namespace(
+        mode="model",
+        worker_restart=True,
+        output=root,
+        image=IMAGE,
+        reasoning_effort="provider-default",
+    )
+    try:
+        result = agent.run(args)
+        assert order == ["drain", "replacement", "teardown"]
+        assert result["error_type"] == "TimeoutError"
+        assert not result["passed"]
+        assert result["processes_stopped"]
+        assert result["cleanup_errors"] == []
+        assert result["owner_lock_released"]
+        assert [event["event"] for event in result["recovery"]["events"]] == [
+            "worker_stopped",
+            "failure_observed",
+            "worker_ready",
+        ]
+        assert all(child.poll() is not None for child, _ in supervisors[0].children)
+    finally:
+        draining.set()
+        for provider in providers:
+            provider.close()
+        for client in clients:
+            client.join(10)
+            assert not client.is_alive()
+        for supervisor in supervisors:
+            supervisor.close()
+    assert [status for status, _ in replies] == [200]
