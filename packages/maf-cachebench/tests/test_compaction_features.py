@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any, cast
@@ -399,6 +400,47 @@ async def test_run_live_exposes_modes_and_reproduces_costs(mode, strategy, backg
     )
     assert outcome.compaction_diagnostics["chain_timeouts"] == 0
     assert outcome.compaction_diagnostics["summarizer_requests_cancelled"] == 0
+
+
+@pytest.mark.parametrize("kind", ["plain", "harness"])
+@pytest.mark.parametrize("view_mode", ["carried", "saved", "persisted"])
+async def test_composed_view_modes_reach_repeated_probes(caplog, kind, view_mode):
+    options = StrategyOptions(
+        tokenizer=CharacterEstimatorTokenizer(),
+        max_context_window_tokens=5000,
+        max_output_tokens=1000,
+        trigger_fraction=0.05,
+        user_min_band_share=0,
+        summarizer=cast(Any, Summarizer()),
+        compaction=CompactionOptions(
+            view_mode=view_mode, session_mode="restart", history_mode="replay"
+        ),
+    )
+    scenario = build_live_scenario(
+        salt="views", filler_turns=3, filler_tokens=150, tool_turns=1, subset_questions=False
+    )
+    with caplog.at_level(logging.INFO, logger="maf_compaction"):
+        outcome = await run_live(
+            ProviderRuntime(Model(), "stub", {}),
+            strategy_name="tool_and_user_summary_anchored",
+            agent_kind=kind,
+            options=options,
+            scenario=scenario,
+            force_tool_calls=False,
+            combined_repeats=2,
+        )
+    assert outcome.error is None
+    assert len(outcome.probes) == 2
+    assert outcome.probes[0].prompt_text == outcome.probes[1].prompt_text
+    diagnostics = outcome.compaction_diagnostics
+    assert diagnostics["view_mode"] == view_mode
+    assert diagnostics["background_record_merges"] is False
+    if view_mode in {"saved", "persisted"}:
+        assert f"mode={view_mode} view restored" in caplog.text
+    if view_mode == "persisted":
+        assert all(diagnostics["view_store"]["writes"][part] > 0 for part in ("earlier", "current"))
+    else:
+        assert "view_store" not in diagnostics
 
 
 def test_cli_controls_reach_settings_and_distinguish_cells():

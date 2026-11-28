@@ -492,6 +492,8 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         record_budget_share=options.compaction.record_budget_share,
         chain_seconds=options.compaction.chain_seconds,
         record_merge_split_depth=options.compaction.record_merge_split_depth,
+        record_merge_max_records=options.compaction.record_merge_max_records,
+        record_request_input_tokens=options.compaction.record_request_input_tokens,
         rewrite_gain_fraction=options.compaction.rewrite_gain_fraction,
     )
 

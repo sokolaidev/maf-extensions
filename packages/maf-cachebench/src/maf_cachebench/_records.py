@@ -264,7 +264,8 @@ __all__ = [
 # Named persistence and host-hook profiles are part of schema 24's cell identity.
 # Schema 25 records reduction controls and background execution; older controls stay unknown.
 # Schema 26 distinguishes merge diagnostics and qualification from ordinary comparisons.
-SCHEMA_VERSION: Final[int] = 26
+# Schema 27 records the composed view mode and record request limits.
+SCHEMA_VERSION: Final[int] = 27
 
 #: Versions this reader accepts, which is not only the current one.
 #:

@@ -53,6 +53,12 @@ def test_record_controls_reach_cli_strategy_and_saved_identity(share, seconds):
             "--rewrite-gain-fraction",
             "0.25",
             "--background-record-merges",
+            "--view-mode",
+            "persisted",
+            "--record-merge-max-records",
+            "3",
+            "--record-request-input-tokens",
+            "2048",
             "--tool-delay-seconds",
             "0.25",
         ]
@@ -68,6 +74,8 @@ def test_record_controls_reach_cli_strategy_and_saved_identity(share, seconds):
     assert strategy.record_budget_share == (None if share == "none" else 0.2)
     assert strategy.chain_seconds == (None if seconds == "none" else 4.5)
     assert strategy.record_merge_split_depth == 3
+    assert strategy.record_merge_max_records == 3
+    assert strategy.record_request_input_tokens == 2048
     assert strategy.rewrite_gain_fraction == 0.25
     settings = _strategy_settings(args, options, summarizer=None)
     assert _settings_from_dict(settings.to_dict()) == settings
@@ -79,6 +87,9 @@ def test_record_controls_reach_cli_strategy_and_saved_identity(share, seconds):
         "record_merge_split_depth": 0,
         "rewrite_gain_fraction": 0.0,
         "background_record_merges": False,
+        "view_mode": "saved",
+        "record_merge_max_records": None,
+        "record_request_input_tokens": None,
         "record_merge_diagnostics": True,
         "qualify_record_merges": True,
         "tool_delay_seconds": 0.0,
@@ -99,6 +110,9 @@ def test_older_record_controls_remain_absent_on_roundtrip():
         "record_merge_split_depth",
         "rewrite_gain_fraction",
         "background_record_merges",
+        "view_mode",
+        "record_merge_max_records",
+        "record_request_input_tokens",
         "record_merge_diagnostics",
         "qualify_record_merges",
         "tool_delay_seconds",
@@ -109,7 +123,8 @@ def test_older_record_controls_remain_absent_on_roundtrip():
     assert "rewrite_gain_fraction" in restored.unrecorded_compaction_fields
     assert "qualify_record_merges" in restored.unrecorded_compaction_fields
     assert hash(restored) == hash(_settings_from_dict(data))
-    assert SCHEMA_VERSION == 26
+    assert "view_mode" in restored.unrecorded_compaction_fields
+    assert SCHEMA_VERSION == 27
 
 
 def test_worker_acceptance_does_not_qualify_and_observed_fingerprints_stay_private():
@@ -248,6 +263,10 @@ async def test_qualification_checkpoint_adds_pressure_once():
         ("record_merge_split_depth", -1),
         ("record_merge_split_depth", 1.5),
         ("record_merge_split_depth", True),
+        ("record_merge_max_records", 1),
+        ("record_merge_max_records", True),
+        ("record_request_input_tokens", 0),
+        ("view_mode", "other"),
         ("rewrite_gain_fraction", -0.1),
         ("rewrite_gain_fraction", 1),
         ("rewrite_gain_fraction", True),

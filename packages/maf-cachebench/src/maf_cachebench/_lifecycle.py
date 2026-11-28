@@ -17,7 +17,12 @@ from agent_framework import Agent, AgentSession, HistoryProvider, Message
 from ._behavior import restore_behavior, snapshot_behavior
 from ._configuration import CompactionOptions, validate_session_support
 from ._diagnostics import OBSERVATION_LABELS, counters, summary_measurements
-from ._persistence_scenarios import ScenarioFailure, ScenarioInterruption, ScenarioStore
+from ._persistence_scenarios import (
+    BenchmarkViewStore,
+    ScenarioFailure,
+    ScenarioInterruption,
+    ScenarioStore,
+)
 from ._tokenizers import REASONING_TOKENS_KEY
 
 _REPLAY_MESSAGES: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
@@ -89,8 +94,13 @@ class SessionExperiment:
         self.build = build
         self.options = options
         self.session_build = session_build
+        self.view_store = (
+            BenchmarkViewStore()
+            if options.view_mode == "persisted" and session_build is not None
+            else None
+        )
         self.registry = self._registry()
-        self._background_session: str | None = None
+        self._cached_session_id: str | None = None
         self.binding = self._build()
         self.lock = asyncio.Lock()
         self.totals = counters(self.binding.strategy, self.binding.recall)
@@ -112,13 +122,34 @@ class SessionExperiment:
             self.binding = self._build()
             return self.binding.stack()
 
-        return maf_compaction.SessionCompactionRegistry(build, max_cached_sessions=1)
+        return maf_compaction.SessionCompactionRegistry(
+            build,
+            max_cached_sessions=1,
+            view_store=self.view_store,
+            view_agent="cachebench",
+            saved_view_key="cachebench_saved_view"
+            if self.options.view_mode == "saved" and self.session_build is not None
+            else None,
+        )
 
-    def release_background_session(self) -> None:
-        """Discard work owned by the benchmark process that is about to stop."""
-        if self._background_session is not None:
-            self.registry.release(self._background_session)
-            self._background_session = None
+    def release_session(self) -> None:
+        """Drop the process-local stack and any worker it owns."""
+        if self._cached_session_id is not None:
+            self.registry.release(self._cached_session_id)
+            self._cached_session_id = None
+
+    async def invalidate_view(self, session: AgentSession) -> None:
+        """Discard view decisions made after the history being restored."""
+        if self.session_build is not None and self.options.view_mode != "default":
+            await self.registry.invalidate_view(session)
+            self.release_session()
+
+    def restore_view(self, checkpoint: maf_compaction.InMemoryViewStore | None) -> None:
+        """Start each probe with its own copy of the seed's persisted parts."""
+        if self.session_build is not None and self.options.view_mode != "default":
+            self.release_session()
+        if checkpoint is not None and self.view_store is not None:
+            self.view_store.parts = deepcopy(checkpoint)
 
     async def run(
         self,
@@ -155,7 +186,7 @@ class SessionExperiment:
                     if isinstance(provider, HistoryProvider):
                         active.state.pop(provider.source_id, None)
 
-        def remember(active: AgentSession) -> None:
+        async def remember(active: AgentSession) -> None:
             user_strategy = maf_compaction.find_nested_strategy(
                 self.binding.strategy,
                 maf_compaction.UserTurnAnchoredSummarizationCompactionStrategy,
@@ -171,6 +202,11 @@ class SessionExperiment:
                     break
             if self.options.history_mode == "replay":
                 active.state[replay_key] = list(captured.values())
+            if (
+                self.persistence_store is not None
+                and self.persistence_store.destination != active.session_id
+            ):
+                await self.invalidate_view(active)
 
         async def call(active: AgentSession) -> Any:
             nonlocal before, model_in_progress
@@ -188,16 +224,16 @@ class SessionExperiment:
             else:
                 result = await self.binding.agent.run(inputs, session=active, options=options)
             model_in_progress = False
-            remember(active)
+            await remember(active)
             return result
 
         token = _REPLAY_MESSAGES.set(captured if self.options.history_mode == "replay" else None)
         try:
             mode = self.options.session_mode
             if self.session_build is not None:
-                if mode == "restart" or self._background_session != session.session_id:
-                    self.release_background_session()
-                self._background_session = session.session_id
+                if mode == "restart" or self._cached_session_id != session.session_id:
+                    self.release_session()
+                self._cached_session_id = session.session_id
             if mode == "memory":
                 if self.session_build is None:
                     result = await call(session)
@@ -278,7 +314,7 @@ class SessionExperiment:
                         result = await response.get_final_response()
                         model_in_progress = False
                         assert active_session is not None
-                        remember(active_session)
+                        await remember(active_session)
                 else:
                     result = await persistence.run(session.session_id, complete, **request_kwargs)
                 if self.persistence_store is not None:

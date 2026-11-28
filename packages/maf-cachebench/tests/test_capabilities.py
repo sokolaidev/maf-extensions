@@ -66,6 +66,18 @@ async def test_persistence_matrix_reports_observed_commits_and_cleanup(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("history", ["replay", "incremental"])
+@pytest.mark.parametrize("mode", ["restart", "roundtrip"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_persisted_view_restores_the_compacted_prompt(stream, mode, history):
+    record = await capabilities.run_capability_scenario(
+        "persisted_view", stream=stream, session_mode=mode, history_mode=history
+    )
+    assert record.passed, record.to_dict()
+    assert record.observations["calls_resumed"] == 1
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "scenario", (*capabilities.MEDIA_SCENARIOS, *capabilities.RESULT_SCENARIOS)
 )
@@ -596,9 +608,7 @@ def test_cli_writes_distinct_records_and_refuses_to_overwrite(tmp_path):
     target = tmp_path / "capabilities.jsonl"
     assert capabilities.main(["--scenario", "all", "--stream", "--output", str(target)]) == 0
     records = [json.loads(line) for line in target.read_text().splitlines()]
-    assert len(records) == len(capabilities.PERSISTENCE_SCENARIOS) + len(
-        capabilities.MEDIA_SCENARIOS
-    ) + len(capabilities.RESULT_SCENARIOS)
+    assert [row["scenario"] for row in records] == list(capabilities.SCENARIOS)
     assert all(row["passed"] and row["record_type"] == "cachebench_capability" for row in records)
     previous = target.read_bytes()
     with pytest.raises(FileExistsError):
